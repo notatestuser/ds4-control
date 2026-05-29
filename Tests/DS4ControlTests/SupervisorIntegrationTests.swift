@@ -29,4 +29,23 @@ final class SupervisorIntegrationTests: XCTestCase {
         token.cancel()
         s.stop()
     }
+
+    func testDownloadProgressAgainstFakeScript() throws {
+        let repoRoot = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
+        let fixtures = repoRoot.appendingPathComponent("Tests/Fixtures")
+        let dir = URL(fileURLWithPath: NSTemporaryDirectory()).appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        try FileManager.default.copyItem(at: fixtures.appendingPathComponent("fake-ds4-server.sh"), to: dir.appendingPathComponent("ds4-server"))
+        try FileManager.default.copyItem(at: fixtures.appendingPathComponent("fake-download_model.sh"), to: dir.appendingPathComponent("download_model.sh"))
+        for f in ["ds4-server", "download_model.sh"] {
+            try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: dir.appendingPathComponent(f).path)
+        }
+        let s = SupervisorService(ds4Dir: dir, runner: RealProcessRunner())
+        let done = expectation(description: "download idle")
+        let token = s.$state.sink { if $0 == .idle, s.download?.pct == 100 { done.fulfill() } }
+        s.download(variant: .flash)
+        wait(for: [done], timeout: 10)
+        token.cancel()
+    }
 }

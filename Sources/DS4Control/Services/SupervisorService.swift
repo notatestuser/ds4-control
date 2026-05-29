@@ -99,6 +99,44 @@ final class SupervisorService: ObservableObject {
         runner.terminate(graceSeconds: 30)
     }
 
+    // MARK: - Download
+    private let downloadRunner = RealProcessRunner()
+
+    func download(variant: Variant) {
+        guard state == .idle || isErrorState else { emitBadState("download"); return }
+        if let e = validateDs4Dir() { state = .error(e); return }
+        let q = Quant.for(variant, ramGiB: systemRamGiB())
+        download = DownloadProgress(pct: 0, file: q.ggufFilename, receivedBytes: 0, totalBytes: nil)
+        state = .downloading
+        var buf = ""
+        do {
+            try downloadRunner.launch(executable: ds4Dir.appendingPathComponent("download_model.sh"),
+                args: [q.arg], cwd: ds4Dir,
+                onStderrLine: { [weak self] line in
+                    buf += line + "\n"
+                    let pct = parseCurlProgress(buf)
+                    Self.onMain {
+                        guard let self else { return }
+                        if let pct { self.download = DownloadProgress(pct: pct, file: q.ggufFilename, receivedBytes: 0, totalBytes: nil) }
+                    }
+                },
+                onExit: { [weak self] code in Self.onMain {
+                    guard let self else { return }
+                    if code == 0 {
+                        self.download = DownloadProgress(pct: 100, file: q.ggufFilename, receivedBytes: 0, totalBytes: nil)
+                        self.state = .idle
+                    } else {
+                        self.state = .error(.downloadFailed(detail: "exit \(code)"))
+                    }
+                } })
+        } catch { state = .error(.downloadFailed(detail: "\(error)")) }
+    }
+
+    /// True when the selected variant's gguf exists on disk.
+    func isDownloaded(_ variant: Variant) -> Bool {
+        FileManager.default.fileExists(atPath: ggufURL(for: variant, ramGiB: systemRamGiB()).path)
+    }
+
     // MARK: - Health
     private func startHealthPolling() {
         pollHealth()
