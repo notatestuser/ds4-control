@@ -8,6 +8,7 @@ final class SupervisorService: ObservableObject {
     @Published private(set) var port: Int = 8000
     @Published private(set) var ctx: Int = 393_216
     @Published private(set) var health: HealthStatus?
+    // Populated by download(variant:) — see Task 9.
     @Published private(set) var download: DownloadProgress?
     @Published private(set) var recentLog: [String] = []
 
@@ -23,6 +24,11 @@ final class SupervisorService: ObservableObject {
     init(ds4Dir: URL, runner: ProcessRunner) {
         self.ds4Dir = ds4Dir
         self.runner = runner
+    }
+
+    deinit {
+        healthTimer?.invalidate()
+        startupTimer?.invalidate()
     }
 
     // MARK: - Path resolution
@@ -78,7 +84,7 @@ final class SupervisorService: ObservableObject {
     }
 
     private func handleExit(_ code: Int32) {
-        healthTimer?.invalidate(); startupTimer?.invalidate()
+        healthTimer?.invalidate(); healthTimer = nil; startupTimer?.invalidate(); startupTimer = nil
         if expectingExit { state = .idle; return }
         state = .error(.crashed(tail: stderrTail.suffix(10).joined(separator: "\n")))
     }
@@ -89,8 +95,8 @@ final class SupervisorService: ObservableObject {
         expectingExit = true
         state = .stopping
         healthTimer?.invalidate(); healthTimer = nil
+        startupTimer?.invalidate(); startupTimer = nil
         runner.terminate(graceSeconds: 30)
-        if !runner.isRunning { state = .idle }   // fake runner exits synchronously
     }
 
     // MARK: - Health
@@ -107,6 +113,7 @@ final class SupervisorService: ObservableObject {
         URLSession.shared.dataTask(with: url) { [weak self] _, resp, _ in
             let ok = (resp as? HTTPURLResponse)?.statusCode == 200
             Task { @MainActor in
+                // The `.ready` guard is load-bearing: it makes a stale in-flight health callback a no-op after stop(). Do not remove.
                 guard let self, self.state == .ready else { return }
                 self.health = HealthStatus(ok: ok, latencyMs: Int(Date().timeIntervalSince(start) * 1000))
                 self.healthFailures = ok ? 0 : self.healthFailures + 1
@@ -128,6 +135,6 @@ final class SupervisorService: ObservableObject {
         }
     }
     private var isErrorState: Bool { if case .error = state { return true }; return false }
-    private func fail(_ e: ServerError) { healthTimer?.invalidate(); state = .error(e) }
+    private func fail(_ e: ServerError) { healthTimer?.invalidate(); healthTimer = nil; startupTimer?.invalidate(); startupTimer = nil; state = .error(e) }
     private func emitBadState(_ cmd: String) { recentLog.append("ignored '\(cmd)' in state \(state)") }
 }
