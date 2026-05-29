@@ -1,0 +1,56 @@
+import Foundation
+
+enum Variant: String, CaseIterable, Identifiable, Codable {
+    case pro, flash
+    var id: String { rawValue }
+    var displayName: String { self == .pro ? "V4 Pro" : "V4 Flash" }
+    var modelId: String { self == .pro ? "deepseek-v4-pro" : "deepseek-v4-flash" }
+    /// Transformer layers (DS4 shape): Pro 61, Flash 43.
+    var layers: Int { self == .pro ? 61 : 43 }
+    /// Eager fp32 compressed-KV bytes per context token, summed over layers
+    /// (= layers × 640; from comp_cap=ctx/4 × (n_head_dim 512 + indexer 128) × 4B).
+    var kvBytesPerToken: Int { layers * 640 }
+    /// Default-ctx ceiling: Pro → full 1M model context; Flash → Think-Max threshold.
+    var ctxCeiling: Int { self == .pro ? 1_000_000 : 393_216 }
+}
+
+enum Quant {
+    case proImatrix, q4Imatrix, q2Imatrix
+
+    static func `for`(_ variant: Variant, ramGiB: Double) -> Quant {
+        switch variant {
+        case .pro: return .proImatrix
+        case .flash: return ramGiB >= 256 ? .q4Imatrix : .q2Imatrix
+        }
+    }
+
+    /// Argument passed to `download_model.sh`.
+    var arg: String {
+        switch self {
+        case .proImatrix: return "pro-imatrix"
+        case .q4Imatrix:  return "q4-imatrix"
+        case .q2Imatrix:  return "q2-imatrix"
+        }
+    }
+
+    /// Exact GGUF filename produced by `download_model.sh` (under $DS4_GGUF_DIR / gguf).
+    var ggufFilename: String {
+        switch self {
+        case .proImatrix:
+            return "DeepSeek-V4-Pro-IQ2XXS-w2Q2K-AProjQ8-SExpQ8-OutQ8-Instruct-imatrix.gguf"
+        case .q4Imatrix:
+            return "DeepSeek-V4-Flash-Q4KExperts-F16HC-F16Compressor-F16Indexer-Q8Attn-Q8Shared-Q8Out-chat-v2-imatrix.gguf"
+        case .q2Imatrix:
+            return "DeepSeek-V4-Flash-IQ2XXS-w2Q2K-AProjQ8-SExpQ8-OutQ8-chat-v2-imatrix.gguf"
+        }
+    }
+
+    /// Approx resident weights, GiB (mmap'd GGUF ≈ file size).
+    var weightsGiB: Double {
+        switch self {
+        case .proImatrix: return 432
+        case .q4Imatrix:  return 153
+        case .q2Imatrix:  return 81
+        }
+    }
+}
