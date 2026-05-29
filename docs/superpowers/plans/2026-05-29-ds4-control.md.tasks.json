@@ -27,11 +27,11 @@
       "description": "Popup: header/status, Pro|Flash + Start/Stop/Download w/ feasibility gating, download progress, four mini cards (Memory hero).\n\n```json:metadata\n{\"files\":[\"Sources/DS4Control/Views/PopupView.swift\",\"Sources/DS4Control/Views/ModelRowView.swift\"],\"verifyCommand\":\"swift build 2>&1 | tee /tmp/b.log && ! grep -i warning /tmp/b.log\",\"acceptanceCriteria\":[\"zero warnings\",\"memory hero+gpu/power/cpu\",\"Pro hidden <512\",\"Start gated\"]}\n```" },
     { "id": 13, "subject": "Task 12: AppState + SettingsView", "status": "completed", "blockedBy": [3],
       "description": "Persisted settings + settings sheet; effectiveCtx override-else-default.\n\n```json:metadata\n{\"files\":[\"Sources/DS4Control/AppState.swift\",\"Sources/DS4Control/Views/SettingsView.swift\",\"Tests/DS4ControlTests/AppStateTests.swift\"],\"verifyCommand\":\"swift test --filter AppStateTests\",\"acceptanceCriteria\":[\"effectiveCtx\",\"persistence\",\"settings fields\"]}\n```" },
-    { "id": 14, "subject": "Task 13: App entry — wire everything", "status": "pending", "blockedBy": [10, 12, 13],
+    { "id": 14, "subject": "Task 13: App entry — wire everything", "status": "completed", "blockedBy": [10, 12, 13],
       "description": "Real @main: MenuBarExtra(.window) popup + settings window + state-tinted icon; wires AppState/Metrics/Supervisor.\n\n```json:metadata\n{\"files\":[\"Sources/DS4Control/DS4ControlApp.swift\"],\"verifyCommand\":\"swift build 2>&1 | tee /tmp/b.log && ! grep -i warning /tmp/b.log\",\"acceptanceCriteria\":[\"zero warnings\",\"popup+settings\",\"icon tint by state\"]}\n```" },
-    { "id": 15, "subject": "Task 14: build.sh — bundle + signing", "status": "pending", "blockedBy": [14],
+    { "id": 15, "subject": "Task 14: build.sh — bundle + signing", "status": "completed", "blockedBy": [14],
       "description": "Assemble DS4 Control.app + auto-detect Apple Development signing (ad-hoc fallback).\n\n```json:metadata\n{\"files\":[\"build.sh\"],\"verifyCommand\":\"bash build.sh && codesign -vv \\\"DS4 Control.app\\\" 2>&1 | grep -E \\\"satisfies|valid on disk\\\"\",\"acceptanceCriteria\":[\"bundle layout\",\"Apple Development + ad-hoc fallback\",\"codesign valid\"]}\n```" },
-    { "id": 16, "subject": "Task 15: CI gate + repo docs", "status": "pending", "blockedBy": [15],
+    { "id": 16, "subject": "Task 15: CI gate + repo docs", "status": "completed", "blockedBy": [15],
       "description": "CI (lint + warnings-as-errors build + test + bundle smoke) + README/LICENSE/CHANGELOG/.swift-format.\n\n```json:metadata\n{\"files\":[\".github/workflows/ci.yml\",\"README.md\",\"LICENSE\",\"CHANGELOG.md\",\".swift-format\"],\"verifyCommand\":\"swift-format lint -r -s Sources Tests && swift test\",\"acceptanceCriteria\":[\"CI lint+build+test+smoke\",\"README full\",\"MIT + attribution\"]}\n```" }
   ],
   "lastUpdated": "2026-05-29"
