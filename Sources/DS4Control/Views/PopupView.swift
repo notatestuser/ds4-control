@@ -17,7 +17,7 @@ struct PopupView: View {
                 ProgressView(value: d.pct, total: 100) {
                     Text(d.file).font(.caption2).lineLimit(1).truncationMode(.middle)
                 } currentValueLabel: {
-                    Text(String(format: "%.0f%%", d.pct)).font(.caption2)
+                    Text(String(format: "%.0f%%", d.pct) + (d.rate.map { " · \($0)" } ?? "")).font(.caption2)
                 }
             }
             if case let .error(e) = supervisor.state {

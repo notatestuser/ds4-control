@@ -119,12 +119,16 @@ final class SupervisorService: ObservableObject {
                 args: args, cwd: ds4Dir,
                 onStderrLine: { [weak self] line in
                     buf += line + "\n"
+                    // Bound the buffer: downloads run for hours and emit a progress
+                    // repaint per tick; keep only the tail (latest update lives there).
+                    if buf.count > 4096 { buf = String(buf.suffix(2048)) }
                     let pct = parseCurlProgress(buf)
+                    let rate = parseDownloadRate(buf)
                     Self.onMain {
                         guard let self else { return }
                         if let pct {
                             self.download = DownloadProgress(
-                                pct: pct, file: q.ggufFilename, receivedBytes: 0, totalBytes: nil)
+                                pct: pct, file: q.ggufFilename, receivedBytes: 0, totalBytes: nil, rate: rate)
                         }
                     }
                 },

@@ -31,4 +31,21 @@ final class CurlProgressParserTests: XCTestCase {
         let line = "file.gguf:   5%|▌ | 21G/430G [01:00<19:00, 336MB/s]"
         XCTAssertEqual(parseCurlProgress(line) ?? .nan, 5, accuracy: 0.001)
     }
+
+    // Transfer-rate extraction for the popup.
+    func testRateFromTqdmLine() {
+        let line = "file.gguf:  37%|███▋ | 159G/430G [12:34<21:10, 213MB/s]"
+        XCTAssertEqual(parseDownloadRate(line), "213MB/s")
+    }
+    func testRateLatestOfMany() {
+        let buf = "f:  3%| 13G/430G, 90MB/s\rf:  41%| 176G/430G, 1.2GB/s"
+        XCTAssertEqual(parseDownloadRate(buf), "1.2GB/s")
+    }
+    func testRateDecimalAndKilo() {
+        XCTAssertEqual(parseDownloadRate("f:  9%| 4G/430G, 850kB/s]"), "850kB/s")
+    }
+    func testRateNilWhenAbsent() {
+        XCTAssertNil(parseDownloadRate(" 14 80.8G  14 11.5G  85.2M  0:13:54 85.1M"))
+        XCTAssertNil(parseDownloadRate(""))
+    }
 }
