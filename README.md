@@ -111,7 +111,7 @@ swift test
 
 Tests cover the pure logic (variant/feasibility/context math, readiness and curl-progress parsers) plus model-free integration of the supervisor via a fake `ds4-server` and a fake `download_model.sh`. No real model is needed.
 
-CI (GitHub Actions, `macos-15`) runs, on every pull request:
+CI (GitHub Actions, `macos-26`) runs, on every pull request:
 
 - `swift format` lint (strict),
 - a release build with warnings treated as errors,
