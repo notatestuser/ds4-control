@@ -1,0 +1,108 @@
+# DS4 Control
+
+A macOS menu-bar control pane for **DeepSeek V4** via [`ds4`](https://github.com/deepseek-ai). It launches, supervises, and monitors a local `ds4-server`, lets you pick **V4 Pro** or **V4 Flash**, and shows mini resource-monitoring widgets right in the popup.
+
+## What it does
+
+- **Start / stop / monitor** the local `ds4-server` child process — spawn, stderr readiness detection, health polling, graceful stop, and crash detection.
+- **Pro / Flash selector** with a RAM-feasibility gate (Pro defaults on machines with ≥ 512 GiB unified memory).
+- **Model downloads** delegated to ds4's `download_model.sh`, with live progress parsed from `curl`.
+- **Mini resource widgets**: unified memory (hero), GPU, power/ANE, and CPU, sampled on a 2 s timer.
+
+What it is **not**:
+
+- No chat UI — it does not send prompts or render completions.
+- No model search or registry browsing.
+- No embedded inference — all inference is delegated to `ds4-server`. This app only supervises the process and surfaces system metrics.
+
+## Screenshot
+
+<!-- TODO: add screenshot of the popup -->
+
+## Requirements
+
+- **macOS 14+**.
+- A built [`ds4`](https://github.com/deepseek-ai) checkout that provides the `ds4-server` binary and `download_model.sh`. You point DS4 Control at this directory in Settings.
+- **Apple Silicon** recommended: power/ANE metrics use the Apple Silicon IOReport interface. Intel Macs run the app, but without power metrics.
+- You do **not** pre-download the model — DS4 Control downloads it for you via ds4's `download_model.sh`.
+
+## RAM feasibility
+
+DeepSeek V4 is memory-hungry, and `ds4-server` enforces no RAM floor itself — so DS4 Control gates feasibility before launching.
+
+| Variant | Quant | RAM | Notes |
+| --- | --- | --- | --- |
+| V4 Pro | pro-imatrix | **≥ 512 GiB required** | Anything below is blocked. |
+| V4 Flash | q4-imatrix | ≥ 256 GiB | Standard. |
+| V4 Flash | q2-imatrix | **128 GiB recommended**, 96 GiB minimum | 96–127 GiB requires raising the Metal wired limit (see below). |
+| V4 Flash | — | **< 96 GiB unsupported** | Hidden behind an opt-in "unsupported low-RAM mode" toggle; may swap or crash. Not usable for real generation. |
+
+On **96–127 GiB** machines you must raise the Metal wired limit so the GPU working set fits, e.g.:
+
+```sh
+sudo sysctl iogpu.wired_limit_mb=<~0.9 × RAM_MB>
+```
+
+DS4 Control shows the advisory value for your machine when this applies.
+
+**Default context** scales with RAM: `1,000,000` on ≥ 512 GiB (Pro's full model context), up to `393216` ("Think-Max") on Flash with ≥ 128 GiB, and stepped down through a snap set (`393216 → 250000 → 131072 → 65536 → 32768`) for lower-RAM machines based on a weights-plus-KV memory budget. You can override the context in Settings.
+
+## Build & Run
+
+For development:
+
+```sh
+swift run
+```
+
+To produce a distributable bundle:
+
+```sh
+bash build.sh
+```
+
+This builds a release binary and assembles `DS4 Control.app`.
+
+**First run:** open **Settings** (the gear in the popup) and set the **ds4 directory** — the folder that contains `ds4-server` and `download_model.sh`.
+
+## Signing
+
+`build.sh` auto-detects your **Apple Development** identity via `security find-identity` and signs the bundle with it. If no Apple Development identity is installed, it falls back to **ad-hoc** signing (the app runs locally but is not distributable).
+
+To sign with your own key:
+
+- Install an Apple Development certificate (Xcode → Settings → Accounts → Manage Certificates → **+** → Apple Development), **or**
+- Set `DS4_SIGN_IDENTITY="Apple Development: …"` before running `build.sh`.
+
+There is no notarization in v1.
+
+## Known limitations
+
+1. Changing the **ds4 directory** in Settings takes effect on the next launch.
+2. Power sampling briefly blocks the main thread (~100 ms every 2 s) on Apple Silicon — imperceptible in normal use. An off-main refactor is planned.
+3. No app icon yet; the menu-bar glyph is an SF Symbol.
+4. ds4 enforces no RAM floor itself — DS4 Control is what gates feasibility.
+
+## Testing / QA
+
+```sh
+swift test
+```
+
+Tests cover the pure logic (variant/feasibility/context math, readiness and curl-progress parsers) plus model-free integration of the supervisor via a fake `ds4-server` and a fake `download_model.sh`. No real model is needed.
+
+CI (GitHub Actions, `macos-15`) runs, on every pull request:
+
+- `swift format` lint (strict),
+- a release build with warnings treated as errors,
+- the test suite,
+- a bundle smoke build (`build.sh`, ad-hoc signed in CI).
+
+## Attribution
+
+- The resource collectors and widgets are adapted from **mac-resource-monitor**, which in turn credits **[macmon](https://github.com/vladkens/macmon)** (MIT) for the IOReport power-sampling approach.
+- The server-supervision pattern is built on the lineage of **mlx-serve**.
+
+## License
+
+MIT — see [LICENSE](LICENSE).
