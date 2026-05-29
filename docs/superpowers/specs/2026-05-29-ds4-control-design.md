@@ -96,7 +96,7 @@ Template image, tinted by state: **gray** idle · **orange** downloading/startin
 
 ### 4.2 Popup layout (~320 pt wide)
 1. **Header** — app name + status dot + state label (e.g. "Ready · V4 Pro · :8000 · Think-Max").
-2. **Model row** — segmented **Pro / Flash** (default per §5.2; **Pro shown only when RAM ≥ 512 GB**, otherwise Flash-only) + **Start/Stop**. If the selected variant's gguf is absent, the action becomes **Download** (size shown).
+2. **Model row** — segmented **Pro / Flash** (default per §5.2; **Pro shown only when RAM ≥ 512 GiB**, otherwise Flash-only) + **Start/Stop**. If the selected variant's gguf is absent, the action becomes **Download** (size shown). If RAM is below the variant feasibility floor (§5.2), **Start is disabled with a "Not supported" note** (96–127 GiB shows the wired-limit warning instead; < 96 GiB requires the unsupported-mode toggle).
 3. **Download progress** — visible only while `downloading`: bar + `% / received / total / file`.
 4. **Mini metric cards** — §4.4.
 5. **Footer** — gear → Settings; quit.
@@ -120,6 +120,7 @@ Thermal/disk/network omitted (low signal here). Cards use `.ultraThinMaterial` +
 - **Port** (default 8000).
 - **GPU power duty** (1–100, default 100).
 - Optional **HF token** (else ds4 script's `HF_TOKEN`/cache).
+- **Enable unsupported low-RAM mode** (default off) — only surfaced when RAM < 96 GiB; re-enables Start below the Flash floor with the §5.2 progressive ctx and a persistent red UNSUPPORTED banner.
 - Persisted in `UserDefaults`.
 
 ## 5. ds4 integration specifics
@@ -127,37 +128,45 @@ Thermal/disk/network omitted (low signal here). Cards use `.ultraThinMaterial` +
 ### 5.1 RAM detection
 `sysctl hw.memsize` → GB. Drives offered variants, default variant, and default context.
 
-### 5.2 RAM → variants + default context
+### 5.2 RAM → variants, feasibility, and default context
+
+> **Critical: ds4 enforces no RAM floor of its own.** It `mmap`s the whole GGUF (`MAP_SHARED`, no `mlock`/`MAP_POPULATE`/wiring; `hw.memsize` is read only to print it — `ds4.c:1486`, `ds4_metal.m:180`). It will *begin* loading on any machine and never refuses an undersized one. **The control pane owns feasibility.** (Source: §App-research, 2026-05-29.)
 
 **Variants offered / default variant:**
-- **Pro** offered only when RAM ≥ 512 GB; it is then the default. Below 512 GB: **Flash only** (default).
+- **Pro** offered only when RAM ≥ 512 GiB; it is then the default. Below 512 GiB: **Flash only** (default).
+- Per-variant feasibility floors (unified memory, GiB): **Flash q2 ⇒ 96** · Flash q4 ⇒ 256 · **Pro ⇒ 512**. (Researched: 96 GiB official min / 128 GiB recommended for Flash; q4 ~153 GiB / Pro ~432 GiB weights.)
 
-**Default context — budget-derived (scales continuously with RAM).** KV is allocated *eagerly at start, linear in ctx* (`kv_cache_init`): per token ≈ `layers × 640 B` (Flash 43 → 27,520 B; Pro 61 → 39,040 B; from `n_head_dim=512` + `n_indexer_head_dim=128`, `comp_cap=ctx/4`, fp32). So the default ctx is computed from the RAM left after weights + a lean reserve:
+**Feasibility gate (Flash):**
+| RAM | Behavior |
+|---|---|
+| **≥ 128 GiB** | Standard Flash config. |
+| **96–127 GiB** | Allowed **with warning**: reduced context, and a **wired-limit advisory** — show copy-paste `sudo sysctl iogpu.wired_limit_mb=<~0.9×RAM_MB>` (macOS caps GPU alloc at ~75% RAM); expect ~25–27 tok/s; close other memory-heavy apps. |
+| **< 96 GiB** | **Blocked by default** (Start disabled, "Not supported"). Reason: ds4 will mmap-load the ~81 GiB model, but the GPU-wired working set + KV exceed RAM → swap death-spiral / kernel instability on Apple Silicon, not graceful thrash. **Opt-in escape hatch:** a Settings toggle *"Enable unsupported low-RAM mode"* re-enables Start with a persistent red **UNSUPPORTED — may swap or crash** banner and the progressive step-down ctx below. |
+
+**Default context — budget-derived (scales continuously).** KV is allocated *eagerly at start, linear in ctx* (`kv_cache_init`): per token ≈ `layers × 640 B` (Flash 43 → 27,520 B; Pro 61 → 39,040 B; from `n_head_dim=512` + `n_indexer_head_dim=128`, `comp_cap=ctx/4`, fp32; research-validated ≈ 26 GB for Flash @ 1M). Default ctx = RAM left after weights + a lean reserve:
 
 ```
-reserveGB   = 8                              # OS + app + prefill scratch + page cache (lean, per README 96GB report)
-weightsGB   = variant gguf resident estimate # Flash-q2 81, Flash-q4 153, Pro 430
+reserveGiB  = 8                              # OS + app + prefill scratch + page cache (lean, matches README 96GiB report)
+weightsGiB  = variant resident estimate      # Flash-q2 81, Flash-q4 153, Pro 432
 kvPerTok    = layers × 640 bytes             # Flash 27,520 ; Pro 39,040
 ceiling     = (variant == Pro) ? 1_000_000 : 393_216   # Pro→full 1M; Flash→Think-Max
-budget      = max(0, RAM_GB − weightsGB − reserveGB) × 2^30  bytes
+budget      = max(0, RAM_GiB − weightsGiB − reserveGiB) × 2^30  bytes
 defaultCtx  = snapDown( clamp(budget / kvPerTok, 32_768, ceiling) )
 snap set    = {32768, 65536, 131072, 250000, 393216, 1000000} (≤ ceiling)   # snapDown = largest ≤ value
-feasible    = RAM_GB ≥ weightsGB + reserveGB + (32_768 × kvPerTok)/2^30      # else: warn "insufficient RAM", Start disabled
 ```
 
-**Representative results** (Flash-q2, reserve 8 GB; Pro at ≥512 GB):
+**Representative results** (Flash-q2, reserve 8 GiB; Pro at ≥512 GiB):
 
-| RAM | Variant | Default ctx | Think-Max? | Note |
+| RAM | Variant | Default ctx | Think-Max? | Gate |
 |---|---|---|---|---|
-| ≥ 512 GB | **Pro** | **1,000,000** | yes | budget≈2M → clamped to ceiling |
-| 128–511 GB | Flash | 393216 | yes | budget ≫ ceiling → clamped |
-| ~96 GB | Flash | 250000 | no | README-validated point |
-| ~93 GB | Flash | 131072 | no | progressive step-down |
-| ~92 GB | Flash | 65536 | no | tight |
-| ~90 GB | Flash | 32768 | no | floor |
-| < ~90 GB | Flash | — | — | infeasible: ~81 GB weights + reserve won't fit → warn, Start disabled |
+| ≥ 512 GiB | **Pro** | **1,000,000** | yes | standard (budget≈2M → clamped) |
+| 128–511 GiB | Flash | 393216 | yes | standard (budget ≫ ceiling → clamped) |
+| 96–127 GiB | Flash | 250000 | no | allowed **+ warning + wired-limit advisory** |
+| ~93 GiB | Flash | 131072 | no | **unsupported mode only** (red banner) |
+| ~92 GiB | Flash | 65536 | no | unsupported mode only |
+| ≤ ~90 GiB | Flash | 32768 (floor) | no | unsupported mode only |
 
-Rationale: one formula reproduces every agreed anchor (96→250k, ≥128→393216, ≥512→1M) *and* steps down smoothly below 96 GB instead of a flat floor. `reserveGB=8` is deliberately lean to match the README's "96 GB at 250k" report; the Memory hero card surfaces live pressure, and ctx is user-overridable (1 … 1,000,000) on either side of the default.
+Rationale: the formula governs ctx within the supported 96→128 GiB band (96→~250k, ramping to 393216) and, in opt-in unsupported mode, continues the progressive step-down below 96 GiB the user requested — but the *default* gate blocks <96 GiB, matching the evidence that sub-96 GiB is not a viable Apple-Silicon config. The Memory hero card surfaces live pressure; ctx is user-overridable (1 … 1,000,000) throughout.
 
 ### 5.3 Variant → download arg + gguf
 | Variant | RAM | `download_model.sh` arg | gguf (approx size) |
@@ -188,7 +197,8 @@ Before download, compare free space on the gguf volume to the variant's approx s
 
 ### 7.1 Swift unit tests (`swift test`)
 - **Pure parser fns:** `isReadyLine`, `parseCurlProgress`, variant → script-arg + gguf-filename mapping.
-- **`defaultCtx(ramGB, variant)` formula (§5.2):** anchors (512→1M/Pro, 128→393216, 96→250000), progressive step-down (93→131072, 92→65536, 90→32768), snapDown set membership, clamp to [32768, ceiling], Pro-vs-Flash ceiling, and **feasibility** boundary (~90 GB Flash floor → infeasible). Think-Max boundary (393216).
+- **`defaultCtx(ramGiB, variant)` formula (§5.2):** anchors (512→1M/Pro, 128→393216, 96→250000), progressive step-down (93→131072, 92→65536, 90→32768), snapDown set membership, clamp to [32768, ceiling], Pro-vs-Flash ceiling. Think-Max boundary (393216).
+- **Feasibility gate (§5.2):** Flash blocked < 96 GiB by default; allowed-with-warning 96–127 GiB; standard ≥ 128 GiB; q4 floor 256 GiB; Pro floor 512 GiB. Unsupported-low-RAM override re-enables < 96 GiB. Wired-limit advisory value (`~0.9×RAM_MB`).
 - **Supervisor logic:** state-machine transitions, illegal-command no-ops, error mapping, stderr-tail capture.
 - **Collectors:** memory math, percent clamping, severity thresholds; event/snapshot decode resilience to malformed input.
 - **RAM → default-variant** logic; settings validation/persistence.
@@ -220,4 +230,4 @@ Before download, compare free space on the gguf volume to the variant's approx s
 5. `swift test` (unit + stub integration), `swift-format` lint, and a zero-warning release build all pass in CI.
 
 ## 10. Open questions
-None outstanding. (Name, metric set, **budget-derived default ctx** (§5.2: 1M on ≥512 GB/Pro, 393216 on ≥128 GB, progressive step-down below 96 GB to a ~90 GB feasibility floor), **Pro gated to ≥512 GB**, external ds4-dir, and pure-Swift single-binary architecture all resolved with the user.)
+None outstanding. (Name; metric set; **budget-derived default ctx** (§5.2); **96 GiB Flash feasibility floor** with allowed-with-warning 96–127 GiB and an opt-in *unsupported low-RAM mode* below 96 GiB; **Pro gated to ≥512 GiB**; the fact that **ds4 has no RAM gate so the app enforces feasibility**; external ds4-dir; pure-Swift single-binary architecture — all resolved with the user and the 2026-05-29 RAM research.)
