@@ -1,0 +1,23 @@
+import XCTest
+@testable import DS4Control
+
+@MainActor
+final class AppStateTests: XCTestCase {
+    func testEffectiveCtxFallsBackToDefault() {
+        let d = UserDefaults(suiteName: "test.\(UUID().uuidString)")!
+        let app = AppState(defaults: d)
+        app.selectedVariant = .flash
+        app.ctxOverride = 0
+        XCTAssertEqual(app.effectiveCtx(ramGiB: 128), defaultCtx(ramGiB: 128, variant: .flash))
+        app.ctxOverride = 50_000
+        XCTAssertEqual(app.effectiveCtx(ramGiB: 128), 50_000)
+    }
+    func testPersistence() {
+        let name = "test.\(UUID().uuidString)"
+        let d1 = UserDefaults(suiteName: name)!
+        let a1 = AppState(defaults: d1); a1.port = 9001; a1.ds4Dir = "/tmp/ds4"
+        let d2 = UserDefaults(suiteName: name)!
+        let a2 = AppState(defaults: d2)
+        XCTAssertEqual(a2.port, 9001); XCTAssertEqual(a2.ds4Dir, "/tmp/ds4")
+    }
+}
