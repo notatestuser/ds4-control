@@ -1,6 +1,8 @@
 # DS4 Control
 
-A macOS menu-bar control pane for **DeepSeek V4** via [`ds4`](https://github.com/antirez/ds4). It launches, supervises, and monitors a local `ds4-server`, lets you pick **V4 Pro** or **V4 Flash**, and shows mini resource-monitoring widgets right in the popup.
+[![CI](https://github.com/notatestuser/ds4-control/actions/workflows/ci.yml/badge.svg)](https://github.com/notatestuser/ds4-control/actions/workflows/ci.yml)
+
+A macOS menu-bar control pane for **DeepSeek V4** via [`ds4`](https://github.com/antirez/ds4). It launches, supervises, and monitors a local `ds4-server`, lets you pick **V4 Pro** or **V4 Flash**, and shows mini resource-monitoring widgets right in the popup — so you can run a frontier local model without ever touching a terminal.
 
 ## What it does
 
@@ -18,6 +20,14 @@ What it is **not**:
 ## Screenshot
 
 <!-- TODO: add screenshot of the popup -->
+
+## Quick start
+
+1. **Build ds4** — clone and build [antirez/ds4](https://github.com/antirez/ds4) so you have the `ds4-server` binary and `download_model.sh`.
+2. **Build DS4 Control** — `bash build.sh`, then open `DS4 Control.app` (or `swift run` during development).
+3. **Point it at ds4** — click the menu-bar icon → the gear → set the **ds4 directory** to your ds4 checkout.
+4. **Pick a model** — choose **Pro** or **Flash** (the app preselects based on your installed RAM).
+5. **Start** — click **Start** (or **Download** first if the model isn't present yet). Watch the icon go orange → green and unified memory climb as the model loads — no terminal required.
 
 ## Requirements
 
@@ -82,6 +92,16 @@ There is no notarization in v1.
 2. Power sampling briefly blocks the main thread (~100 ms every 2 s) on Apple Silicon — imperceptible in normal use. An off-main refactor is planned.
 3. No app icon yet; the menu-bar glyph is an SF Symbol.
 4. ds4 enforces no RAM floor itself — DS4 Control is what gates feasibility.
+
+## How it works
+
+DS4 Control is a single Swift binary — no embedded inference and no second process language. Three `@MainActor` objects do the work, and the SwiftUI layer just observes them:
+
+- **`SupervisorService`** owns the `ds4-server` lifecycle through `Foundation.Process`: it builds the launch arguments, watches stderr for the `listening on http://` readiness line, polls `GET /v1/models` for health, and stops gracefully with SIGTERM (SIGKILL fallback). Model downloads shell out to ds4's `download_model.sh` with live `curl` progress.
+- **`MetricsManager`** samples CPU, memory, GPU, and power/ANE via Mach, IOKit, and the private IOReport interface every 2 s, publishing a `SystemSnapshot` to the widgets.
+- **`Feasibility`** turns installed RAM into a variant choice and a budget-derived default context (pure, fully unit-tested).
+
+The pieces with real logic — the feasibility/context math, the readiness and `curl`-progress parsers, and the supervisor state machine — are pure and covered by tests. The supervisor is exercised end-to-end against a fake `ds4-server` and a fake `download_model.sh`, so the full lifecycle is tested without downloading a multi-hundred-gigabyte model.
 
 ## Testing / QA
 
