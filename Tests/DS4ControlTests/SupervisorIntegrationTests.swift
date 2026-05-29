@@ -57,4 +57,32 @@ final class SupervisorIntegrationTests: XCTestCase {
         wait(for: [done], timeout: 10)
         token.cancel()
     }
+
+    func testDownloadStreamsIntermediateProgress() throws {
+        let repoRoot = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
+        let fixtures = repoRoot.appendingPathComponent("Tests/Fixtures")
+        let dir = URL(fileURLWithPath: NSTemporaryDirectory()).appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        try FileManager.default.copyItem(
+            at: fixtures.appendingPathComponent("fake-ds4-server.sh"), to: dir.appendingPathComponent("ds4-server"))
+        // Use the CR-style script as download_model.sh
+        try FileManager.default.copyItem(
+            at: fixtures.appendingPathComponent("fake-download_cr.sh"),
+            to: dir.appendingPathComponent("download_model.sh"))
+        for f in ["ds4-server", "download_model.sh"] {
+            try FileManager.default.setAttributes(
+                [.posixPermissions: 0o755], ofItemAtPath: dir.appendingPathComponent(f).path)
+        }
+        let s = SupervisorService(ds4Dir: dir, runner: RealProcessRunner())
+        var seenPcts: [Double] = []
+        let token = s.$download.sink { if let p = $0?.pct { seenPcts.append(p) } }
+        let done = expectation(description: "download idle")
+        let stateToken = s.$state.sink { if $0 == .idle, s.download?.pct == 100 { done.fulfill() } }
+        s.download(variant: .flash)
+        wait(for: [done], timeout: 10)
+        token.cancel(); stateToken.cancel()
+        // Must have observed at least one intermediate (>0, <100) value — proves live streaming, not a 0→100 jump.
+        XCTAssertTrue(seenPcts.contains { $0 > 0 && $0 < 100 }, "expected intermediate progress, saw: \(seenPcts)")
+    }
 }

@@ -41,7 +41,7 @@ func feasibility(ramGiB: Double, variant: Variant) -> Feasibility {
             ? .standard
             : .blocked(reason: "V4 Pro needs ≥ 512 GiB unified memory.")
     case .flash:
-        if ramGiB >= 256 || ramGiB >= 128 { return .standard }  // q4 (≥256) or q2 (128–255)
+        if ramGiB >= 128 { return .standard }  // Flash standard ≥128 GiB (q4 ≥256, q2 128–255)
         if ramGiB >= 96 {
             return .warnWiredLimit(advisoryMB: Int(ramGiB * 1024 * 0.9))
         }

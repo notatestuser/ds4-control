@@ -30,7 +30,7 @@ final class RealProcessRunner: ProcessRunner {
         var buffer = Data()
         err.fileHandleForReading.readabilityHandler = { h in
             buffer.append(h.availableData)
-            while let nl = buffer.firstIndex(of: 0x0A) {
+            while let nl = buffer.firstIndex(where: { $0 == 0x0A || $0 == 0x0D }) {
                 let line = String(data: buffer[..<nl], encoding: .utf8) ?? ""
                 buffer.removeSubrange(...nl)
                 onStderrLine(line)

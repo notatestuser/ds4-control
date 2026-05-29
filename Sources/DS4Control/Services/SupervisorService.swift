@@ -104,17 +104,19 @@ final class SupervisorService: ObservableObject {
     // MARK: - Download
     private let downloadRunner = RealProcessRunner()
 
-    func download(variant: Variant) {
+    func download(variant: Variant, hfToken: String = "") {
         guard state == .idle || isErrorState else { emitBadState("download"); return }
         if let e = validateDs4Dir() { state = .error(e); return }
         let q = Quant.for(variant, ramGiB: systemRamGiB())
         download = DownloadProgress(pct: 0, file: q.ggufFilename, receivedBytes: 0, totalBytes: nil)
         state = .downloading
         var buf = ""
+        var args = [q.arg]
+        if !hfToken.isEmpty { args += ["--token", hfToken] }
         do {
             try downloadRunner.launch(
                 executable: ds4Dir.appendingPathComponent("download_model.sh"),
-                args: [q.arg], cwd: ds4Dir,
+                args: args, cwd: ds4Dir,
                 onStderrLine: { [weak self] line in
                     buf += line + "\n"
                     let pct = parseCurlProgress(buf)
