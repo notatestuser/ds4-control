@@ -165,6 +165,20 @@ final class SupervisorService: ObservableObject {
         }
     }
 
+    /// Cancel whatever download is being tracked (owned process or an attached
+    /// orphan) and start a fresh one — the user's escape hatch from a stuck/stalled
+    /// or errored progress bar.
+    func retryDownload(variant: Variant) {
+        downloadRunner.terminate(graceSeconds: 0)  // no-op if nothing is running
+        downloadPollTimer?.invalidate()
+        downloadPollTimer = nil
+        downloadAttached = false
+        lastDownloadSample = nil
+        download = nil
+        state = .idle
+        download(variant: variant)
+    }
+
     /// If a download is already in flight from a previous session (an .incomplete
     /// file under the hf cache) and we're idle, re-attach the progress UI without
     /// spawning a new download — avoids the hf lock collision a re-click would cause.
@@ -209,13 +223,20 @@ final class SupervisorService: ObservableObject {
         }
         let received = downloadedBytes(ggufDir: baseDir, filename: filename)
         if downloadAttached {
-            // No growth for ~15s ⇒ the external download stopped; revert to idle so
-            // the Download button re-enables (a click resumes from the .incomplete).
             if let last = lastDownloadSample, received <= last.bytes {
                 staleDownloadPolls += 1
-                if staleDownloadPolls >= 15 {
-                    endAttachedDownload()
-                    return
+                if staleDownloadPolls >= 10 {
+                    // ~10s without growth. If the external downloader is still alive
+                    // (slow network, or finalizing/verifying near 100%), keep showing
+                    // progress; only revert to idle if the process is truly gone, so a
+                    // click resumes from the .incomplete (and never collides with a
+                    // running download's hf lock).
+                    if isDownloadProcessRunning() {
+                        staleDownloadPolls = 0
+                    } else {
+                        endAttachedDownload()
+                        return
+                    }
                 }
             } else {
                 staleDownloadPolls = 0
@@ -232,6 +253,23 @@ final class SupervisorService: ObservableObject {
         let pct = expected > 0 ? min(100, Double(received) / Double(expected) * 100) : 0
         download = DownloadProgress(
             pct: pct, file: filename, receivedBytes: received, totalBytes: expected, rate: rate ?? download?.rate)
+    }
+
+    /// Whether ds4's downloader (download_model.sh / hf for this repo) is running.
+    /// Used only when growth stalls, to distinguish "slow/finalizing" from "dead".
+    private func isDownloadProcessRunning() -> Bool {
+        let p = Process()
+        p.executableURL = URL(fileURLWithPath: "/usr/bin/pgrep")
+        p.arguments = ["-f", "download_model|deepseek-v4-gguf"]
+        p.standardOutput = Pipe()
+        p.standardError = Pipe()
+        do {
+            try p.run()
+            p.waitUntilExit()
+        } catch {
+            return false
+        }
+        return p.terminationStatus == 0
     }
 
     private func endAttachedDownload() {

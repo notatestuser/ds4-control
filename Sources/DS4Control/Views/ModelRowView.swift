@@ -34,7 +34,20 @@ struct ModelRowView: View {
         case .ready, .starting:
             Button("Stop") { supervisor.stop() }.tint(.red).frame(maxWidth: .infinity)
         case .downloading:
-            Button("Downloading…") {}.disabled(true).frame(maxWidth: .infinity)
+            // Retry restarts the download — the escape hatch from a stalled bar.
+            Button("Retry download") { supervisor.retryDownload(variant: app.selectedVariant) }
+                .tint(.orange).frame(maxWidth: .infinity).disabled(blocked)
+        case .error:
+            Button(downloaded ? "Retry" : "Retry download") {
+                if downloaded {
+                    supervisor.start(
+                        variant: app.selectedVariant, ctx: app.effectiveCtx(ramGiB: ramGiB),
+                        port: app.port, power: app.power)
+                } else {
+                    supervisor.retryDownload(variant: app.selectedVariant)
+                }
+            }
+            .tint(.orange).frame(maxWidth: .infinity).disabled(blocked)
         default:
             if !downloaded {
                 Button("Download \(app.selectedVariant.displayName)") {

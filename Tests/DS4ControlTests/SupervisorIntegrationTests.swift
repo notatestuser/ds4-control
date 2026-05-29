@@ -34,6 +34,31 @@ final class SupervisorIntegrationTests: XCTestCase {
         XCTAssertEqual(s.state, .idle)
     }
 
+    func testRetryStartsFreshDownload() throws {
+        let repoRoot = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
+        let fixtures = repoRoot.appendingPathComponent("Tests/Fixtures")
+        let dir = URL(fileURLWithPath: NSTemporaryDirectory()).appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(
+            at: dir.appendingPathComponent("gguf/.cache/huggingface/download"), withIntermediateDirectories: true)
+        try FileManager.default.copyItem(
+            at: fixtures.appendingPathComponent("fake-ds4-server.sh"), to: dir.appendingPathComponent("ds4-server"))
+        try FileManager.default.copyItem(
+            at: fixtures.appendingPathComponent("fake-download_cr.sh"),
+            to: dir.appendingPathComponent("download_model.sh"))
+        for f in ["ds4-server", "download_model.sh"] {
+            try FileManager.default.setAttributes(
+                [.posixPermissions: 0o755], ofItemAtPath: dir.appendingPathComponent(f).path)
+        }
+        // Simulate a stuck partial, then retry from idle.
+        try Data(count: 1024).write(
+            to: dir.appendingPathComponent("gguf/.cache/huggingface/download/h.incomplete"))
+        let s = SupervisorService(ds4Dir: dir, runner: RealProcessRunner())
+        s.retryDownload(variant: .pro)
+        XCTAssertEqual(s.state, .downloading)
+        XCTAssertNotNil(s.download)
+    }
+
     func testReachesReadyAgainstFakeServer() throws {
         let repoRoot = URL(fileURLWithPath: #filePath)
             .deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
