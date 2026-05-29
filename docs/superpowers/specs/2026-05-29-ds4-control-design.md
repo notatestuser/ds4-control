@@ -96,7 +96,7 @@ Template image, tinted by state: **gray** idle · **orange** downloading/startin
 
 ### 4.2 Popup layout (~320 pt wide)
 1. **Header** — app name + status dot + state label (e.g. "Ready · V4 Pro · :8000 · Think-Max").
-2. **Model row** — segmented **Pro / Flash** (default per §5.2) + **Start/Stop**. If the selected variant's gguf is absent, the action becomes **Download** (size shown).
+2. **Model row** — segmented **Pro / Flash** (default per §5.2; **Pro shown only when RAM ≥ 512 GB**, otherwise Flash-only) + **Start/Stop**. If the selected variant's gguf is absent, the action becomes **Download** (size shown).
 3. **Download progress** — visible only while `downloading`: bar + `% / received / total / file`.
 4. **Mini metric cards** — §4.4.
 5. **Footer** — gear → Settings; quit.
@@ -116,7 +116,7 @@ Thermal/disk/network omitted (low signal here). Cards use `.ultraThinMaterial` +
 
 ### 4.5 Settings (small sheet)
 - **ds4 directory** picker (must contain `ds4-server` + `download_model.sh`).
-- **Context size** (default **393216**; validates ≥ 1; badges "Think-Max" when ≥ 393216).
+- **Context size** (default is **RAM-tiered**, §5.2; range 1 … 1,000,000 = model ceiling; badges "Think-Max" when ≥ 393216).
 - **Port** (default 8000).
 - **GPU power duty** (1–100, default 100).
 - Optional **HF token** (else ds4 script's `HF_TOKEN`/cache).
@@ -125,26 +125,35 @@ Thermal/disk/network omitted (low signal here). Cards use `.ultraThinMaterial` +
 ## 5. ds4 integration specifics
 
 ### 5.1 RAM detection
-`sysctl hw.memsize` → GB. Drives default variant + download recommendations.
+`sysctl hw.memsize` → GB. Drives offered variants, default variant, and default context.
 
-### 5.2 Variant mapping & default
-| UI choice | RAM | `download_model.sh` arg | gguf (approx size) |
+### 5.2 RAM tiers → variants + default context
+Model context ceiling is **1,000,000 tokens**; KV cache is heavily compressed. Per ds4 README, Flash runs on 128 GB (and reportedly 96 GB *at ≤ 250k context*), Pro on 512 GB-class only.
+
+| RAM | Variants offered | Default variant | Default ctx | Think-Max? |
+|---|---|---|---|---|
+| **≥ 512 GB** | Pro + Flash | **Pro** | 393216 | yes |
+| **97–511 GB** | Flash only | Flash | 393216 | yes |
+| **≤ 96 GB** | Flash only | Flash | **250000** | no |
+
+Rationale: 393216 is the Think-Max threshold and the "best juice" default on capable machines; ≤ 96 GB drops to 250000 to stay within memory headroom (README). All values are user-overridable up to the 1M ceiling. On ≥ 512 GB the Pro resident set (~430 GB) leaves limited headroom — the Memory hero card surfaces pressure, and ctx can be lowered if Pro proves tight at 393216.
+
+### 5.3 Variant → download arg + gguf
+| Variant | RAM | `download_model.sh` arg | gguf (approx size) |
 |---|---|---|---|
-| **Pro** | (any; intended ≥ 512 GB) | `pro-imatrix` | `…Pro-IQ2XXS…-imatrix.gguf` (~430 GB) |
+| **Pro** | ≥ 512 GB | `pro-imatrix` | `…Pro-IQ2XXS…-imatrix.gguf` (~430 GB) |
 | **Flash** | ≥ 256 GB | `q4-imatrix` | `…Flash-Q4K…-imatrix.gguf` (~153 GB) |
 | **Flash** | < 256 GB | `q2-imatrix` | `…Flash-IQ2XXS…-imatrix.gguf` (~81 GB) |
 
-**Default selection:** RAM ≥ 512 GB ⇒ **Pro**; otherwise **Flash**.
+### 5.4 Launch flags
+`ds4-server -m <resolved.gguf> --ctx <ctx> --host 127.0.0.1 --port 8000 --metal [--power <n>]`, cwd = ds4 directory. `<ctx>` = the RAM-tiered default (§5.2) unless overridden. At ≥ 393216 this unlocks **Think-Max** and the full 384K output budget (`max_completion = min(default_tokens, ctx)`).
 
-### 5.3 Launch flags
-`ds4-server -m <resolved.gguf> --ctx 393216 --host 127.0.0.1 --port 8000 --metal [--power <n>]`, cwd = ds4 directory. Default ctx 393216 unlocks **Think-Max** and sets the full 384K output budget (`max_completion = min(default_tokens, ctx)`).
-
-### 5.4 Readiness / health / stop
+### 5.5 Readiness / health / stop
 - Ready: stderr `listening on http://127.0.0.1:<port>`.
 - Health: `GET /v1/models` → 200 with `deepseek-v4-pro`/`deepseek-v4-flash` in the list.
 - Stop: SIGTERM (graceful KV flush) → SIGKILL fallback.
 
-### 5.5 Disk-space pre-check
+### 5.6 Disk-space pre-check
 Before download, compare free space on the gguf volume to the variant's approx size; warn (non-blocking) if short.
 
 ## 6. Build, packaging & signing
@@ -157,7 +166,7 @@ Before download, compare free space on the gguf volume to the variant's approx s
 ## 7. Testing & QA gate
 
 ### 7.1 Swift unit tests (`swift test`)
-- **Pure parser fns:** `isReadyLine`, `parseCurlProgress`, variant → script-arg + gguf-filename mapping (incl. RAM tiers), Think-Max boundary (393216).
+- **Pure parser fns:** `isReadyLine`, `parseCurlProgress`, variant → script-arg + gguf-filename mapping; **RAM-tier logic** (offered variants, default variant, default ctx: ≤96→250000/Flash, 97–511→393216/Flash, ≥512→393216/Pro), Think-Max boundary (393216).
 - **Supervisor logic:** state-machine transitions, illegal-command no-ops, error mapping, stderr-tail capture.
 - **Collectors:** memory math, percent clamping, severity thresholds; event/snapshot decode resilience to malformed input.
 - **RAM → default-variant** logic; settings validation/persistence.
@@ -189,4 +198,4 @@ Before download, compare free space on the gguf volume to the variant's approx s
 5. `swift test` (unit + stub integration), `swift-format` lint, and a zero-warning release build all pass in CI.
 
 ## 10. Open questions
-None outstanding. (Name, metric set, default ctx = 393216/Think-Max, external ds4-dir, and pure-Swift single-binary architecture all resolved with the user.)
+None outstanding. (Name, metric set, **RAM-tiered ctx** — 393216/Think-Max on ≥97 GB, 250000 on ≤96 GB — **Pro gated to ≥512 GB**, external ds4-dir, and pure-Swift single-binary architecture all resolved with the user.)
