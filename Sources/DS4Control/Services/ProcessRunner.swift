@@ -1,9 +1,11 @@
 import Foundation
 
 protocol ProcessRunner: AnyObject {
-    /// Launch `executable` with `args` in `cwd`; deliver stderr lines and termination.
+    /// Launch `executable` with `args` in `cwd`; `env` is merged over the inherited
+    /// environment (used to pass HF_TOKEN securely, never on the command line).
+    /// Delivers stderr lines and termination.
     func launch(
-        executable: URL, args: [String], cwd: URL,
+        executable: URL, args: [String], cwd: URL, env: [String: String],
         onStderrLine: @escaping (String) -> Void,
         onExit: @escaping (Int32) -> Void) throws
     func terminate(graceSeconds: Double)
@@ -17,7 +19,7 @@ final class RealProcessRunner: ProcessRunner {
     var isRunning: Bool { process?.isRunning ?? false }
 
     func launch(
-        executable: URL, args: [String], cwd: URL,
+        executable: URL, args: [String], cwd: URL, env: [String: String],
         onStderrLine: @escaping (String) -> Void,
         onExit: @escaping (Int32) -> Void
     ) throws {
@@ -25,6 +27,11 @@ final class RealProcessRunner: ProcessRunner {
         p.executableURL = executable
         p.arguments = args
         p.currentDirectoryURL = cwd
+        if !env.isEmpty {
+            var merged = ProcessInfo.processInfo.environment
+            for (k, v) in env { merged[k] = v }
+            p.environment = merged
+        }
         let err = Pipe()
         p.standardError = err
         var buffer = Data()

@@ -30,4 +30,22 @@ final class DownloadProbeTests: XCTestCase {
         let dir = URL(fileURLWithPath: NSTemporaryDirectory()).appendingPathComponent(UUID().uuidString)
         XCTAssertEqual(downloadedBytes(ggufDir: dir, filename: "model.gguf"), 0)
     }
+
+    func testResolveHFTokenFromEnv() {
+        XCTAssertEqual(
+            resolveHFToken(env: ["HF_TOKEN": "envtok"], cacheFile: URL(fileURLWithPath: "/nope")), "envtok")
+    }
+    func testResolveHFTokenFromCache() throws {
+        let f = URL(fileURLWithPath: NSTemporaryDirectory()).appendingPathComponent("\(UUID().uuidString)")
+        try "cachetok\n".write(to: f, atomically: true, encoding: .utf8)
+        XCTAssertEqual(resolveHFToken(env: [:], cacheFile: f), "cachetok")
+    }
+    func testResolveHFTokenEnvBeatsCache() throws {
+        let f = URL(fileURLWithPath: NSTemporaryDirectory()).appendingPathComponent("\(UUID().uuidString)")
+        try "cachetok".write(to: f, atomically: true, encoding: .utf8)
+        XCTAssertEqual(resolveHFToken(env: ["HF_TOKEN": "envtok"], cacheFile: f), "envtok")
+    }
+    func testResolveHFTokenNilWhenNone() {
+        XCTAssertNil(resolveHFToken(env: [:], cacheFile: URL(fileURLWithPath: "/nope/token")))
+    }
 }

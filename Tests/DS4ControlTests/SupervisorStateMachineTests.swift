@@ -4,13 +4,14 @@ import XCTest
 private final class FakeRunner: ProcessRunner {
     var isRunning = false
     var lastArgs: [String] = []
+    var lastEnv: [String: String] = [:]
     private var stderr: ((String) -> Void)?
     private var exit: ((Int32) -> Void)?
     func launch(
-        executable: URL, args: [String], cwd: URL,
+        executable: URL, args: [String], cwd: URL, env: [String: String],
         onStderrLine: @escaping (String) -> Void, onExit: @escaping (Int32) -> Void
     ) throws {
-        lastArgs = args; isRunning = true; stderr = onStderrLine; exit = onExit
+        lastArgs = args; lastEnv = env; isRunning = true; stderr = onStderrLine; exit = onExit
     }
     func terminate(graceSeconds: Double) { isRunning = false; exit?(0) }
     func emit(_ line: String) { stderr?(line) }

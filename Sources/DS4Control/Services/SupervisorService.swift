@@ -71,7 +71,7 @@ final class SupervisorService: ObservableObject {
         do {
             try runner.launch(
                 executable: ds4Dir.appendingPathComponent("ds4-server"),
-                args: args, cwd: ds4Dir,
+                args: args, cwd: ds4Dir, env: [:],
                 onStderrLine: { [weak self] line in Self.onMain { self?.handleStderr(line) } },
                 onExit: { [weak self] code in Self.onMain { self?.handleExit(code) } })
         } catch {
@@ -125,10 +125,18 @@ final class SupervisorService: ObservableObject {
         startDownloadPolling(baseDir: baseDir, filename: q.ggufFilename, expected: expectedBytes)
         var buf = ""
         let args = [q.arg]
+        // Optional auth: pass any HF_TOKEN (env or hf cache) to the child via the
+        // environment so hf can authenticate — never on the command line (no ps leak).
+        var env: [String: String] = [:]
+        let cache = FileManager.default.homeDirectoryForCurrentUser
+            .appendingPathComponent(".cache/huggingface/token")
+        if let token = resolveHFToken(env: ProcessInfo.processInfo.environment, cacheFile: cache) {
+            env["HF_TOKEN"] = token
+        }
         do {
             try downloadRunner.launch(
                 executable: ds4Dir.appendingPathComponent("download_model.sh"),
-                args: args, cwd: ds4Dir,
+                args: args, cwd: ds4Dir, env: env,
                 onStderrLine: { [weak self] line in
                     buf += line + "\n"
                     // Bound the buffer: downloads run for hours and emit a progress

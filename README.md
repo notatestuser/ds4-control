@@ -36,6 +36,7 @@ What it is **not**:
 - **Apple Silicon** recommended: power/ANE metrics use the Apple Silicon IOReport interface. Intel Macs run the app, but without power metrics.
 - You do **not** pre-download the model — DS4 Control downloads it for you via ds4's `download_model.sh`.
 - **HuggingFace Xet:** the model GGUFs are served from HF's Xet storage, which a plain-`curl` downloader can't fetch (HTTP 400). `download_model.sh` must use the `hf` CLI (`pip install -U huggingface_hub`); the app parses progress from either `hf`/tqdm or `curl` output.
+- **Auth (optional):** the repo is public, so no token is required. If a token is present in the `HF_TOKEN` environment variable or the local hf cache (`hf auth login`), the app forwards it to the downloader **via the environment** (never `--token`, so it can't leak in `ps`). Authenticating can help avoid anonymous rate-limits/throttling.
 
 ## RAM feasibility
 
