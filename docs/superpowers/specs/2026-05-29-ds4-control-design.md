@@ -127,16 +127,37 @@ Thermal/disk/network omitted (low signal here). Cards use `.ultraThinMaterial` +
 ### 5.1 RAM detection
 `sysctl hw.memsize` → GB. Drives offered variants, default variant, and default context.
 
-### 5.2 RAM tiers → variants + default context
-Model context ceiling is **1,000,000 tokens**; KV cache is heavily compressed. Per ds4 README, Flash runs on 128 GB (and reportedly 96 GB *at ≤ 250k context*), Pro on 512 GB-class only.
+### 5.2 RAM → variants + default context
 
-| RAM | Variants offered | Default variant | Default ctx | Think-Max? |
+**Variants offered / default variant:**
+- **Pro** offered only when RAM ≥ 512 GB; it is then the default. Below 512 GB: **Flash only** (default).
+
+**Default context — budget-derived (scales continuously with RAM).** KV is allocated *eagerly at start, linear in ctx* (`kv_cache_init`): per token ≈ `layers × 640 B` (Flash 43 → 27,520 B; Pro 61 → 39,040 B; from `n_head_dim=512` + `n_indexer_head_dim=128`, `comp_cap=ctx/4`, fp32). So the default ctx is computed from the RAM left after weights + a lean reserve:
+
+```
+reserveGB   = 8                              # OS + app + prefill scratch + page cache (lean, per README 96GB report)
+weightsGB   = variant gguf resident estimate # Flash-q2 81, Flash-q4 153, Pro 430
+kvPerTok    = layers × 640 bytes             # Flash 27,520 ; Pro 39,040
+ceiling     = (variant == Pro) ? 1_000_000 : 393_216   # Pro→full 1M; Flash→Think-Max
+budget      = max(0, RAM_GB − weightsGB − reserveGB) × 2^30  bytes
+defaultCtx  = snapDown( clamp(budget / kvPerTok, 32_768, ceiling) )
+snap set    = {32768, 65536, 131072, 250000, 393216, 1000000} (≤ ceiling)   # snapDown = largest ≤ value
+feasible    = RAM_GB ≥ weightsGB + reserveGB + (32_768 × kvPerTok)/2^30      # else: warn "insufficient RAM", Start disabled
+```
+
+**Representative results** (Flash-q2, reserve 8 GB; Pro at ≥512 GB):
+
+| RAM | Variant | Default ctx | Think-Max? | Note |
 |---|---|---|---|---|
-| **≥ 512 GB** | Pro + Flash | **Pro** | **1000000** (full ceiling) | yes |
-| **97–511 GB** | Flash only | Flash | 393216 | yes |
-| **≤ 96 GB** | Flash only | Flash | **250000** | no |
+| ≥ 512 GB | **Pro** | **1,000,000** | yes | budget≈2M → clamped to ceiling |
+| 128–511 GB | Flash | 393216 | yes | budget ≫ ceiling → clamped |
+| ~96 GB | Flash | 250000 | no | README-validated point |
+| ~93 GB | Flash | 131072 | no | progressive step-down |
+| ~92 GB | Flash | 65536 | no | tight |
+| ~90 GB | Flash | 32768 | no | floor |
+| < ~90 GB | Flash | — | — | infeasible: ~81 GB weights + reserve won't fit → warn, Start disabled |
 
-Rationale: 393216 is the Think-Max threshold; ≤ 96 GB drops to 250000 for headroom (README). On the 512 GB-class box the user opted for the **full 1M ceiling** to maximize usable context. Memory note: KV is allocated **eagerly at start, linear in ctx** (`kv_cache_init`); estimated Pro persistent KV ≈ 15 GB @ 393216 and ≈ 39 GB @ 1M (61 layers, `n_head_dim=512` + `n_indexer_head_dim=128`, `comp_cap=ctx/4`, fp32), on top of the ~430 GB weights — leaving ~43 GB headroom on 512 GB (accepted). The Memory hero card surfaces live pressure; ctx is user-overridable (1 … 1,000,000) so it can be lowered if a given machine proves tight.
+Rationale: one formula reproduces every agreed anchor (96→250k, ≥128→393216, ≥512→1M) *and* steps down smoothly below 96 GB instead of a flat floor. `reserveGB=8` is deliberately lean to match the README's "96 GB at 250k" report; the Memory hero card surfaces live pressure, and ctx is user-overridable (1 … 1,000,000) on either side of the default.
 
 ### 5.3 Variant → download arg + gguf
 | Variant | RAM | `download_model.sh` arg | gguf (approx size) |
@@ -166,7 +187,8 @@ Before download, compare free space on the gguf volume to the variant's approx s
 ## 7. Testing & QA gate
 
 ### 7.1 Swift unit tests (`swift test`)
-- **Pure parser fns:** `isReadyLine`, `parseCurlProgress`, variant → script-arg + gguf-filename mapping; **RAM-tier logic** (offered variants, default variant, default ctx: ≤96→250000/Flash, 97–511→393216/Flash, ≥512→1000000/Pro), Think-Max boundary (393216), ctx clamp to 1…1,000,000.
+- **Pure parser fns:** `isReadyLine`, `parseCurlProgress`, variant → script-arg + gguf-filename mapping.
+- **`defaultCtx(ramGB, variant)` formula (§5.2):** anchors (512→1M/Pro, 128→393216, 96→250000), progressive step-down (93→131072, 92→65536, 90→32768), snapDown set membership, clamp to [32768, ceiling], Pro-vs-Flash ceiling, and **feasibility** boundary (~90 GB Flash floor → infeasible). Think-Max boundary (393216).
 - **Supervisor logic:** state-machine transitions, illegal-command no-ops, error mapping, stderr-tail capture.
 - **Collectors:** memory math, percent clamping, severity thresholds; event/snapshot decode resilience to malformed input.
 - **RAM → default-variant** logic; settings validation/persistence.
@@ -198,4 +220,4 @@ Before download, compare free space on the gguf volume to the variant's approx s
 5. `swift test` (unit + stub integration), `swift-format` lint, and a zero-warning release build all pass in CI.
 
 ## 10. Open questions
-None outstanding. (Name, metric set, **RAM-tiered ctx** — 1000000 on ≥512 GB, 393216/Think-Max on 97–511 GB, 250000 on ≤96 GB — **Pro gated to ≥512 GB**, external ds4-dir, and pure-Swift single-binary architecture all resolved with the user.)
+None outstanding. (Name, metric set, **budget-derived default ctx** (§5.2: 1M on ≥512 GB/Pro, 393216 on ≥128 GB, progressive step-down below 96 GB to a ~90 GB feasibility floor), **Pro gated to ≥512 GB**, external ds4-dir, and pure-Swift single-binary architecture all resolved with the user.)
