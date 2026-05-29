@@ -17,7 +17,7 @@ struct PopupView: View {
                 ProgressView(value: d.pct, total: 100) {
                     Text(d.file).font(.caption2).lineLimit(1).truncationMode(.middle)
                 } currentValueLabel: {
-                    Text(String(format: "%.0f%%", d.pct) + (d.rate.map { " · \($0)" } ?? "")).font(.caption2)
+                    Text(downloadStatusLabel(d)).font(.caption2)
                 }
             }
             if case let .error(e) = supervisor.state {
@@ -108,6 +108,15 @@ struct PopupView: View {
         case let .downloadFailed(detail): return "Download failed (\(detail))."
         case let .badState(message): return message
         }
+    }
+
+    private func downloadStatusLabel(_ d: DownloadProgress) -> String {
+        var parts = [String(format: "%.0f%%", d.pct)]
+        if let total = d.totalBytes, total > 0 {
+            parts.append(String(format: "%.0f/%.0f GB", Double(d.receivedBytes) / 1e9, Double(total) / 1e9))
+        }
+        if let rate = d.rate { parts.append(rate) }
+        return parts.joined(separator: " · ")
     }
 
     private func gb(_ b: UInt64) -> String { String(format: "%.0f GB", Double(b) / 1_073_741_824) }

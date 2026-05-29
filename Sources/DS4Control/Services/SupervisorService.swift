@@ -20,6 +20,8 @@ final class SupervisorService: ObservableObject {
     private var expectingExit = false
     private var healthTimer: Timer?
     private var startupTimer: Timer?
+    private var downloadPollTimer: Timer?
+    private var lastDownloadSample: (bytes: Int64, time: Date)?
 
     init(ds4Dir: URL, runner: ProcessRunner) {
         self.ds4Dir = ds4Dir
@@ -29,15 +31,16 @@ final class SupervisorService: ObservableObject {
     deinit {
         healthTimer?.invalidate()
         startupTimer?.invalidate()
+        downloadPollTimer?.invalidate()
     }
 
     // MARK: - Path resolution
-    private func ggufURL(for variant: Variant, ramGiB: Double) -> URL {
-        let q = Quant.for(variant, ramGiB: ramGiB)
-        let base =
-            ProcessInfo.processInfo.environment["DS4_GGUF_DIR"].map(URL.init(fileURLWithPath:))
+    private func ggufBaseDir() -> URL {
+        ProcessInfo.processInfo.environment["DS4_GGUF_DIR"].map(URL.init(fileURLWithPath:))
             ?? ds4Dir.appendingPathComponent("gguf")
-        return base.appendingPathComponent(q.ggufFilename)
+    }
+    private func ggufURL(for variant: Variant, ramGiB: Double) -> URL {
+        ggufBaseDir().appendingPathComponent(Quant.for(variant, ramGiB: ramGiB).ggufFilename)
     }
     private func validateDs4Dir() -> ServerError? {
         for f in ["ds4-server", "download_model.sh"] {
@@ -108,8 +111,19 @@ final class SupervisorService: ObservableObject {
         guard state == .idle || isErrorState else { emitBadState("download"); return }
         if let e = validateDs4Dir() { state = .error(e); return }
         let q = Quant.for(variant, ramGiB: systemRamGiB())
-        download = DownloadProgress(pct: 0, file: q.ggufFilename, receivedBytes: 0, totalBytes: nil)
+        let baseDir = ggufBaseDir()
+        let expectedBytes = Int64(q.weightsGiB * 1_073_741_824)
+        download = DownloadProgress(pct: 0, file: q.ggufFilename, receivedBytes: 0, totalBytes: expectedBytes)
         state = .downloading
+        // Progress comes from polling the file on disk: the hf downloader emits no
+        // parseable progress to a non-TTY pipe, so stderr-parsing alone stays at 0%.
+        lastDownloadSample = nil
+        downloadPollTimer?.invalidate()
+        downloadPollTimer = Timer.scheduledTimer(withTimeInterval: 1, repeats: true) { [weak self] _ in
+            Task { @MainActor in
+                self?.pollDownload(baseDir: baseDir, filename: q.ggufFilename, expected: expectedBytes)
+            }
+        }
         var buf = ""
         var args = [q.arg]
         if !hfToken.isEmpty { args += ["--token", hfToken] }
@@ -135,6 +149,8 @@ final class SupervisorService: ObservableObject {
                 onExit: { [weak self] code in
                     Self.onMain {
                         guard let self else { return }
+                        self.downloadPollTimer?.invalidate()
+                        self.downloadPollTimer = nil
                         if code == 0 {
                             self.download = DownloadProgress(
                                 pct: 100, file: q.ggufFilename, receivedBytes: 0, totalBytes: nil)
@@ -144,7 +160,32 @@ final class SupervisorService: ObservableObject {
                         }
                     }
                 })
-        } catch { state = .error(.downloadFailed(detail: "\(error)")) }
+        } catch {
+            downloadPollTimer?.invalidate()
+            downloadPollTimer = nil
+            state = .error(.downloadFailed(detail: "\(error)"))
+        }
+    }
+
+    /// Poll the on-disk download size to publish % and rate (TTY-independent).
+    private func pollDownload(baseDir: URL, filename: String, expected: Int64) {
+        guard state == .downloading else {
+            downloadPollTimer?.invalidate()
+            downloadPollTimer = nil
+            return
+        }
+        let received = downloadedBytes(ggufDir: baseDir, filename: filename)
+        guard received > 0 else { return }  // nothing on disk yet — leave any stderr-driven value
+        let now = Date()
+        var rate: String?
+        if let last = lastDownloadSample {
+            let dt = now.timeIntervalSince(last.time)
+            if dt > 0.1 { rate = formatRate(Double(received - last.bytes) / dt) }
+        }
+        lastDownloadSample = (received, now)
+        let pct = expected > 0 ? min(100, Double(received) / Double(expected) * 100) : 0
+        download = DownloadProgress(
+            pct: pct, file: filename, receivedBytes: received, totalBytes: expected, rate: rate ?? download?.rate)
     }
 
     /// True when the selected variant's gguf exists on disk.
