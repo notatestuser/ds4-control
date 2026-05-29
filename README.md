@@ -8,7 +8,7 @@ A macOS menu-bar control pane for **DeepSeek V4** via [`ds4`](https://github.com
 
 - **Start / stop / monitor** the local `ds4-server` child process — spawn, stderr readiness detection, health polling, graceful stop, and crash detection.
 - **Pro / Flash selector** with a RAM-feasibility gate (Pro defaults on machines with ≥ 512 GiB unified memory).
-- **Model downloads** delegated to ds4's `download_model.sh`, with live progress parsed from `curl`.
+- **Model downloads** delegated to ds4's `download_model.sh`, with a live progress bar parsed from the downloader's output (`hf`/tqdm or `curl`).
 - **Mini resource widgets**: unified memory (hero), GPU, power/ANE, and CPU, sampled on a 2 s timer.
 
 What it is **not**:
@@ -35,6 +35,7 @@ What it is **not**:
 - A built [`ds4`](https://github.com/antirez/ds4) checkout that provides the `ds4-server` binary and `download_model.sh`. You point DS4 Control at this directory in Settings.
 - **Apple Silicon** recommended: power/ANE metrics use the Apple Silicon IOReport interface. Intel Macs run the app, but without power metrics.
 - You do **not** pre-download the model — DS4 Control downloads it for you via ds4's `download_model.sh`.
+- **HuggingFace Xet:** the model GGUFs are served from HF's Xet storage, which a plain-`curl` downloader can't fetch (HTTP 400). `download_model.sh` must use the `hf` CLI (`pip install -U huggingface_hub`); the app parses progress from either `hf`/tqdm or `curl` output.
 
 ## RAM feasibility
 

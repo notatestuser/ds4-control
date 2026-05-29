@@ -20,6 +20,9 @@ struct PopupView: View {
                     Text(String(format: "%.0f%%", d.pct)).font(.caption2)
                 }
             }
+            if case let .error(e) = supervisor.state {
+                errorBanner(e)
+            }
             Divider()
             cards
             Divider()
@@ -85,6 +88,25 @@ struct PopupView: View {
             }.buttonStyle(.plain)
             Spacer()
             Button("Quit") { NSApplication.shared.terminate(nil) }.buttonStyle(.plain).foregroundStyle(.secondary)
+        }
+    }
+
+    @ViewBuilder private func errorBanner(_ e: ServerError) -> some View {
+        HStack(alignment: .top, spacing: 6) {
+            Image(systemName: "exclamationmark.triangle.fill").foregroundStyle(.red)
+            Text(errorMessage(e)).font(.caption2).foregroundStyle(.red).fixedSize(horizontal: false, vertical: true)
+        }
+    }
+
+    private func errorMessage(_ e: ServerError) -> String {
+        switch e {
+        case let .ds4DirInvalid(missing): return "ds4 directory invalid — missing \(missing). Set it in Settings."
+        case let .modelMissing(filename): return "Model not downloaded (\(filename)). Use Download first."
+        case .startupTimeout: return "ds4-server didn't become ready in time."
+        case .unhealthy: return "ds4-server stopped responding."
+        case let .crashed(tail): return "ds4-server exited unexpectedly. \(tail.suffix(160))"
+        case let .downloadFailed(detail): return "Download failed (\(detail))."
+        case let .badState(message): return message
         }
     }
 
