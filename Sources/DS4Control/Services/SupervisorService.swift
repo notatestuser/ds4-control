@@ -22,6 +22,10 @@ final class SupervisorService: ObservableObject {
     private var startupTimer: Timer?
     private var downloadPollTimer: Timer?
     private var lastDownloadSample: (bytes: Int64, time: Date)?
+    /// True when tracking a download started by a previous session (we poll its
+    /// .incomplete file but don't own the process — see resumeInFlightDownloadIfAny).
+    private var downloadAttached = false
+    private var staleDownloadPolls = 0
 
     init(ds4Dir: URL, runner: ProcessRunner) {
         self.ds4Dir = ds4Dir
@@ -115,15 +119,10 @@ final class SupervisorService: ObservableObject {
         let expectedBytes = Int64(q.weightsGiB * 1_073_741_824)
         download = DownloadProgress(pct: 0, file: q.ggufFilename, receivedBytes: 0, totalBytes: expectedBytes)
         state = .downloading
+        downloadAttached = false
         // Progress comes from polling the file on disk: the hf downloader emits no
         // parseable progress to a non-TTY pipe, so stderr-parsing alone stays at 0%.
-        lastDownloadSample = nil
-        downloadPollTimer?.invalidate()
-        downloadPollTimer = Timer.scheduledTimer(withTimeInterval: 1, repeats: true) { [weak self] _ in
-            Task { @MainActor in
-                self?.pollDownload(baseDir: baseDir, filename: q.ggufFilename, expected: expectedBytes)
-            }
-        }
+        startDownloadPolling(baseDir: baseDir, filename: q.ggufFilename, expected: expectedBytes)
         var buf = ""
         var args = [q.arg]
         if !hfToken.isEmpty { args += ["--token", hfToken] }
@@ -167,6 +166,35 @@ final class SupervisorService: ObservableObject {
         }
     }
 
+    /// If a download is already in flight from a previous session (an .incomplete
+    /// file under the hf cache) and we're idle, re-attach the progress UI without
+    /// spawning a new download — avoids the hf lock collision a re-click would cause.
+    /// Variant-agnostic on the partial bytes; uses the selected variant for the total.
+    func resumeInFlightDownloadIfAny(variant: Variant) {
+        guard state == .idle else { return }
+        let base = ggufBaseDir()
+        let q = Quant.for(variant, ramGiB: systemRamGiB())
+        // Already fully downloaded → nothing to attach.
+        if FileManager.default.fileExists(atPath: base.appendingPathComponent(q.ggufFilename).path) { return }
+        let received = downloadedBytes(ggufDir: base, filename: q.ggufFilename)
+        guard received > 0 else { return }  // no in-flight partial
+        let expected = Int64(q.weightsGiB * 1_073_741_824)
+        downloadAttached = true
+        let pct = expected > 0 ? min(100, Double(received) / Double(expected) * 100) : 0
+        download = DownloadProgress(pct: pct, file: q.ggufFilename, receivedBytes: received, totalBytes: expected)
+        state = .downloading
+        startDownloadPolling(baseDir: base, filename: q.ggufFilename, expected: expected)
+    }
+
+    private func startDownloadPolling(baseDir: URL, filename: String, expected: Int64) {
+        lastDownloadSample = nil
+        staleDownloadPolls = 0
+        downloadPollTimer?.invalidate()
+        downloadPollTimer = Timer.scheduledTimer(withTimeInterval: 1, repeats: true) { [weak self] _ in
+            Task { @MainActor in self?.pollDownload(baseDir: baseDir, filename: filename, expected: expected) }
+        }
+    }
+
     /// Poll the on-disk download size to publish % and rate (TTY-independent).
     private func pollDownload(baseDir: URL, filename: String, expected: Int64) {
         guard state == .downloading else {
@@ -174,11 +202,30 @@ final class SupervisorService: ObservableObject {
             downloadPollTimer = nil
             return
         }
+        // Attached (externally-owned) download completed: the final file appeared.
+        if downloadAttached, FileManager.default.fileExists(atPath: baseDir.appendingPathComponent(filename).path) {
+            download = DownloadProgress(pct: 100, file: filename, receivedBytes: 0, totalBytes: nil)
+            endAttachedDownload()
+            return
+        }
         let received = downloadedBytes(ggufDir: baseDir, filename: filename)
+        if downloadAttached {
+            // No growth for ~15s ⇒ the external download stopped; revert to idle so
+            // the Download button re-enables (a click resumes from the .incomplete).
+            if let last = lastDownloadSample, received <= last.bytes {
+                staleDownloadPolls += 1
+                if staleDownloadPolls >= 15 {
+                    endAttachedDownload()
+                    return
+                }
+            } else {
+                staleDownloadPolls = 0
+            }
+        }
         guard received > 0 else { return }  // nothing on disk yet — leave any stderr-driven value
         let now = Date()
         var rate: String?
-        if let last = lastDownloadSample {
+        if let last = lastDownloadSample, received > last.bytes {
             let dt = now.timeIntervalSince(last.time)
             if dt > 0.1 { rate = formatRate(Double(received - last.bytes) / dt) }
         }
@@ -186,6 +233,14 @@ final class SupervisorService: ObservableObject {
         let pct = expected > 0 ? min(100, Double(received) / Double(expected) * 100) : 0
         download = DownloadProgress(
             pct: pct, file: filename, receivedBytes: received, totalBytes: expected, rate: rate ?? download?.rate)
+    }
+
+    private func endAttachedDownload() {
+        downloadAttached = false
+        staleDownloadPolls = 0
+        downloadPollTimer?.invalidate()
+        downloadPollTimer = nil
+        state = .idle
     }
 
     /// True when the selected variant's gguf exists on disk.

@@ -17,7 +17,10 @@ struct DS4ControlApp: App {
         MenuBarExtra {
             PopupView()
                 .environmentObject(app).environmentObject(metrics).environmentObject(supervisor)
-                .onAppear { metrics.start() }
+                .onAppear {
+                    metrics.start()
+                    supervisor.resumeInFlightDownloadIfAny(variant: app.selectedVariant)
+                }
         } label: {
             Image(systemName: iconName(for: supervisor.state))
                 .renderingMode(.template)

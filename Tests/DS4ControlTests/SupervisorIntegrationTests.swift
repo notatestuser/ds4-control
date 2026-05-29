@@ -4,6 +4,36 @@ import Combine
 
 @MainActor
 final class SupervisorIntegrationTests: XCTestCase {
+    func testResumeAttachesToInFlightPartial() throws {
+        let dir = URL(fileURLWithPath: NSTemporaryDirectory()).appendingPathComponent(UUID().uuidString)
+        let dl = dir.appendingPathComponent("gguf/.cache/huggingface/download")
+        try FileManager.default.createDirectory(at: dl, withIntermediateDirectories: true)
+        try Data(count: 5_000_000).write(to: dl.appendingPathComponent("h.incomplete"))
+        let s = SupervisorService(ds4Dir: dir, runner: RealProcessRunner())
+        s.resumeInFlightDownloadIfAny(variant: .pro)
+        XCTAssertEqual(s.state, .downloading)
+        XCTAssertEqual(s.download?.receivedBytes, 5_000_000)
+    }
+
+    func testResumeNoOpWhenNoPartial() throws {
+        let dir = URL(fileURLWithPath: NSTemporaryDirectory()).appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(
+            at: dir.appendingPathComponent("gguf"), withIntermediateDirectories: true)
+        let s = SupervisorService(ds4Dir: dir, runner: RealProcessRunner())
+        s.resumeInFlightDownloadIfAny(variant: .pro)
+        XCTAssertEqual(s.state, .idle)
+    }
+
+    func testResumeNoOpWhenComplete() throws {
+        let dir = URL(fileURLWithPath: NSTemporaryDirectory()).appendingPathComponent(UUID().uuidString)
+        let g = dir.appendingPathComponent("gguf")
+        try FileManager.default.createDirectory(at: g, withIntermediateDirectories: true)
+        try Data(count: 10).write(to: g.appendingPathComponent(Quant.proImatrix.ggufFilename))
+        let s = SupervisorService(ds4Dir: dir, runner: RealProcessRunner())
+        s.resumeInFlightDownloadIfAny(variant: .pro)
+        XCTAssertEqual(s.state, .idle)
+    }
+
     func testReachesReadyAgainstFakeServer() throws {
         let repoRoot = URL(fileURLWithPath: #filePath)
             .deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
