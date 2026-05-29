@@ -13,7 +13,7 @@ final class PowerCollector {
             return
         }
         self.bridge = IOReportBridge(channels: [
-            ("Energy Model", nil),                              // CPU/GPU/ANE power
+            ("Energy Model", nil)  // CPU/GPU/ANE power
         ])
     }
 
@@ -38,9 +38,9 @@ final class PowerCollector {
             let ch = it.channel
             if ch == "GPU Energy" {
                 gpuW += w
-            } else if ch.hasSuffix("CPU Energy") {       // "CPU Energy" or "DIE_N_CPU Energy" on Ultra
+            } else if ch.hasSuffix("CPU Energy") {  // "CPU Energy" or "DIE_N_CPU Energy" on Ultra
                 cpuW += w
-            } else if ch.hasPrefix("ANE") {              // "ANE", "ANE0", "ANE0_N"
+            } else if ch.hasPrefix("ANE") {  // "ANE", "ANE0", "ANE0_N"
                 aneW += w
             }
         }

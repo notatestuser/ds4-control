@@ -77,9 +77,12 @@ struct MetricCardView: View {
             }
 
             // Sparkline
-            SparklineView(dataPoints: sparklineData, lineColor: severity.color, fixedRange: sparklineFixedRange, timeRangeSeconds: sparklineTimeRangeSeconds, valueFormatter: sparklineValueFormatter)
-                .frame(height: sparklineHeight)
-                .padding(.top, 2)
+            SparklineView(
+                dataPoints: sparklineData, lineColor: severity.color, fixedRange: sparklineFixedRange,
+                timeRangeSeconds: sparklineTimeRangeSeconds, valueFormatter: sparklineValueFormatter
+            )
+            .frame(height: sparklineHeight)
+            .padding(.top, 2)
 
             // Detail breakdown rows
             if showDetails {
@@ -130,13 +133,13 @@ struct MetricCardView: View {
 /// 3/4-arc ring gauge with the metric value text centered inside. Used as the
 /// hero readout for percentage-based metric cards.
 struct ValueGaugeView: View {
-    let fraction: Double           // 0.0 – 1.0
+    let fraction: Double  // 0.0 – 1.0
     let text: String
     let textFontSize: CGFloat
-    let trackColor: Color          // severity-driven fill color
+    let trackColor: Color  // severity-driven fill color
     var diameter: CGFloat = 60
 
-    private let sweep: Double = 0.75   // 270° arc, gap at the bottom
+    private let sweep: Double = 0.75  // 270° arc, gap at the bottom
     private var lineWidth: CGFloat { max(diameter * 0.09, 3) }
     private var clamped: Double { min(max(fraction, 0), 1) }
 
@@ -173,8 +176,8 @@ enum MetricSeverity {
 
     var color: Color {
         switch self {
-        case .normal:   return .green
-        case .warning:  return .orange
+        case .normal: return .green
+        case .warning: return .orange
         case .critical: return .red
         }
     }
@@ -182,7 +185,7 @@ enum MetricSeverity {
     /// Create severity from a 0-100 percentage value.
     static func from(percent: Double, warningAt: Double = 70, criticalAt: Double = 90) -> MetricSeverity {
         if percent >= criticalAt { return .critical }
-        if percent >= warningAt  { return .warning }
+        if percent >= warningAt { return .warning }
         return .normal
     }
 }

@@ -182,10 +182,12 @@ final class IOReportBridge {
     private static func iterate(deltaPtr: OpaquePointer) -> [IOReportItem] {
         let deltaCF = Unmanaged<CFDictionary>.fromOpaque(UnsafeRawPointer(deltaPtr)).takeUnretainedValue()
         let key = "IOReportChannels" as CFString
-        guard let arrayPtr = CFDictionaryGetValue(
-            deltaCF,
-            Unmanaged.passUnretained(key).toOpaque()
-        ) else { return [] }
+        guard
+            let arrayPtr = CFDictionaryGetValue(
+                deltaCF,
+                Unmanaged.passUnretained(key).toOpaque()
+            )
+        else { return [] }
         let array = Unmanaged<CFArray>.fromOpaque(arrayPtr).takeUnretainedValue()
         let count = CFArrayGetCount(array)
 
@@ -195,11 +197,11 @@ final class IOReportBridge {
             guard let itemPtr = CFArrayGetValueAtIndex(array, i) else { continue }
             let cfPtr = OpaquePointer(itemPtr)
 
-            let group   = cfStringFromOpaque(IOReportChannelGetGroup(cfPtr))
-            let subgrp  = cfStringFromOpaque(IOReportChannelGetSubGroup(cfPtr))
+            let group = cfStringFromOpaque(IOReportChannelGetGroup(cfPtr))
+            let subgrp = cfStringFromOpaque(IOReportChannelGetSubGroup(cfPtr))
             let channel = cfStringFromOpaque(IOReportChannelGetChannelName(cfPtr))
-            let unit    = cfStringFromOpaque(IOReportChannelGetUnitLabel(cfPtr))
-                            .trimmingCharacters(in: .whitespacesAndNewlines)
+            let unit = cfStringFromOpaque(IOReportChannelGetUnitLabel(cfPtr))
+                .trimmingCharacters(in: .whitespacesAndNewlines)
 
             let stateCount = IOReportStateGetCount(cfPtr)
             var states: [(String, Int64)] = []
@@ -215,10 +217,11 @@ final class IOReportBridge {
                 simple = IOReportSimpleGetIntegerValue(cfPtr, 0)
             }
 
-            out.append(IOReportItem(
-                group: group, subgroup: subgrp, channel: channel,
-                unit: unit, simpleValue: simple, states: states
-            ))
+            out.append(
+                IOReportItem(
+                    group: group, subgroup: subgrp, channel: channel,
+                    unit: unit, simpleValue: simple, states: states
+                ))
         }
         return out
     }
@@ -233,7 +236,7 @@ final class IOReportBridge {
         case "mJ": return perSecond / 1e3
         case "uJ": return perSecond / 1e6
         case "nJ": return perSecond / 1e9
-        default:   return nil
+        default: return nil
         }
     }
 

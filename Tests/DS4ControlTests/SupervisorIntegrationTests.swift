@@ -9,11 +9,16 @@ final class SupervisorIntegrationTests: XCTestCase {
             .deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
         let fixtures = repoRoot.appendingPathComponent("Tests/Fixtures")
         let dir = URL(fileURLWithPath: NSTemporaryDirectory()).appendingPathComponent(UUID().uuidString)
-        try FileManager.default.createDirectory(at: dir.appendingPathComponent("gguf"), withIntermediateDirectories: true)
-        try FileManager.default.copyItem(at: fixtures.appendingPathComponent("fake-ds4-server.sh"), to: dir.appendingPathComponent("ds4-server"))
-        try FileManager.default.copyItem(at: fixtures.appendingPathComponent("fake-download_model.sh"), to: dir.appendingPathComponent("download_model.sh"))
+        try FileManager.default.createDirectory(
+            at: dir.appendingPathComponent("gguf"), withIntermediateDirectories: true)
+        try FileManager.default.copyItem(
+            at: fixtures.appendingPathComponent("fake-ds4-server.sh"), to: dir.appendingPathComponent("ds4-server"))
+        try FileManager.default.copyItem(
+            at: fixtures.appendingPathComponent("fake-download_model.sh"),
+            to: dir.appendingPathComponent("download_model.sh"))
         for f in ["ds4-server", "download_model.sh"] {
-            try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: dir.appendingPathComponent(f).path)
+            try FileManager.default.setAttributes(
+                [.posixPermissions: 0o755], ofItemAtPath: dir.appendingPathComponent(f).path)
         }
         // The supervisor resolves the gguf via Quant.for(.flash, ramGiB: systemRamGiB());
         // create the file the host's RAM actually selects so the fixture matches on any machine.
@@ -36,10 +41,14 @@ final class SupervisorIntegrationTests: XCTestCase {
         let fixtures = repoRoot.appendingPathComponent("Tests/Fixtures")
         let dir = URL(fileURLWithPath: NSTemporaryDirectory()).appendingPathComponent(UUID().uuidString)
         try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
-        try FileManager.default.copyItem(at: fixtures.appendingPathComponent("fake-ds4-server.sh"), to: dir.appendingPathComponent("ds4-server"))
-        try FileManager.default.copyItem(at: fixtures.appendingPathComponent("fake-download_model.sh"), to: dir.appendingPathComponent("download_model.sh"))
+        try FileManager.default.copyItem(
+            at: fixtures.appendingPathComponent("fake-ds4-server.sh"), to: dir.appendingPathComponent("ds4-server"))
+        try FileManager.default.copyItem(
+            at: fixtures.appendingPathComponent("fake-download_model.sh"),
+            to: dir.appendingPathComponent("download_model.sh"))
         for f in ["ds4-server", "download_model.sh"] {
-            try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: dir.appendingPathComponent(f).path)
+            try FileManager.default.setAttributes(
+                [.posixPermissions: 0o755], ofItemAtPath: dir.appendingPathComponent(f).path)
         }
         let s = SupervisorService(ds4Dir: dir, runner: RealProcessRunner())
         let done = expectation(description: "download idle")

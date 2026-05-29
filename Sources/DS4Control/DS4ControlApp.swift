@@ -33,10 +33,19 @@ struct DS4ControlApp: App {
 
     private func iconName(for s: ServerState) -> String {
         if case .error = s { return "exclamationmark.triangle.fill" }
-        switch s { case .ready: return "bolt.fill"; case .starting, .downloading: return "bolt.badge.clock"; default: return "bolt.slash" }
+        switch s {
+        case .ready: return "bolt.fill";
+        case .starting, .downloading: return "bolt.badge.clock";
+        default: return "bolt.slash"
+        }
     }
     private func iconColor(for s: ServerState) -> Color {
-        switch s { case .ready: return .green; case .starting, .downloading: return .orange; case .error: return .red; default: return .secondary }
+        switch s {
+        case .ready: return .green;
+        case .starting, .downloading: return .orange;
+        case .error: return .red;
+        default: return .secondary
+        }
     }
 }
 

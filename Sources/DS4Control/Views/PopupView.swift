@@ -16,7 +16,9 @@ struct PopupView: View {
             if supervisor.state == .downloading, let d = supervisor.download {
                 ProgressView(value: d.pct, total: 100) {
                     Text(d.file).font(.caption2).lineLimit(1).truncationMode(.middle)
-                } currentValueLabel: { Text(String(format: "%.0f%%", d.pct)).font(.caption2) }
+                } currentValueLabel: {
+                    Text(String(format: "%.0f%%", d.pct)).font(.caption2)
+                }
             }
             Divider()
             cards
@@ -46,31 +48,41 @@ struct PopupView: View {
                 sparklineData: metrics.history.memory(), accentColor: .blue,
                 sparklineFixedRange: (0, 100), emphasized: true, gaugeFraction: s.memory.usagePercent / 100)
             HStack(spacing: 10) {
-                MetricCardView(title: "GPU", icon: "cpu",
+                MetricCardView(
+                    title: "GPU", icon: "cpu",
                     value: String(format: "%.0f%%", s.gpu.utilizationPercent), subtitle: "\(s.gpu.coreCount) cores",
                     severity: .from(percent: s.gpu.utilizationPercent),
                     sparklineData: metrics.history.gpu(), accentColor: .purple,
                     sparklineFixedRange: (0, 100), compact: true)
-                MetricCardView(title: "CPU", icon: "cpu",
+                MetricCardView(
+                    title: "CPU", icon: "cpu",
                     value: String(format: "%.0f%%", s.cpu.totalUsage), subtitle: "\(s.cpu.coreCount) cores",
                     severity: .from(percent: s.cpu.totalUsage),
                     sparklineData: metrics.history.cpu(), accentColor: .green,
                     sparklineFixedRange: (0, 100), compact: true)
             }
             if let p = s.power {
-                MetricCardView(title: "Power", icon: "bolt.fill",
+                MetricCardView(
+                    title: "Power", icon: "bolt.fill",
                     value: String(format: "%.1f W", p.totalPowerWatts),
-                    subtitle: String(format: "CPU %.1f · GPU %.1f · ANE %.1f", p.cpuPowerWatts, p.gpuPowerWatts, p.anePowerWatts),
+                    subtitle: String(
+                        format: "CPU %.1f · GPU %.1f · ANE %.1f", p.cpuPowerWatts, p.gpuPowerWatts, p.anePowerWatts),
                     severity: .normal, sparklineData: metrics.history.power(), accentColor: .orange, compact: true)
             }
         } else {
-            HStack { Spacer(); ProgressView().controlSize(.small); Text("Collecting…").font(.caption); Spacer() }
+            HStack {
+                Spacer(); ProgressView().controlSize(.small); Text("Collecting…").font(.caption); Spacer()
+            }
         }
     }
 
     private var footer: some View {
         HStack {
-            Button { openWindow(id: "settings") } label: { Image(systemName: "gearshape") }.buttonStyle(.plain)
+            Button {
+                openWindow(id: "settings")
+            } label: {
+                Image(systemName: "gearshape")
+            }.buttonStyle(.plain)
             Spacer()
             Button("Quit") { NSApplication.shared.terminate(nil) }.buttonStyle(.plain).foregroundStyle(.secondary)
         }
@@ -90,7 +102,9 @@ struct PopupView: View {
         case .idle: return "Idle"
         case .downloading: return "Downloading"
         case .starting: return "Starting"
-        case .ready: return "\(supervisor.activeModel ?? "") · :\(supervisor.port)" + (supervisor.thinkMaxActive ? " · Think-Max" : "")
+        case .ready:
+            return "\(supervisor.activeModel ?? "") · :\(supervisor.port)"
+                + (supervisor.thinkMaxActive ? " · Think-Max" : "")
         case .stopping: return "Stopping"
         case .error: return "Error"
         }

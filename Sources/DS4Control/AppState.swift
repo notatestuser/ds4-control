@@ -7,7 +7,7 @@ final class AppState: ObservableObject {
 
     @Published var ds4Dir: String { didSet { d.set(ds4Dir, forKey: "ds4Dir") } }
     @Published var port: Int { didSet { d.set(port, forKey: "port") } }
-    @Published var ctxOverride: Int { didSet { d.set(ctxOverride, forKey: "ctxOverride") } } // 0 = auto
+    @Published var ctxOverride: Int { didSet { d.set(ctxOverride, forKey: "ctxOverride") } }  // 0 = auto
     @Published var power: Int? { didSet { d.set(power ?? 0, forKey: "power") } }
     @Published var hfToken: String { didSet { d.set(hfToken, forKey: "hfToken") } }
     @Published var unsupportedLowRAM: Bool { didSet { d.set(unsupportedLowRAM, forKey: "unsupportedLowRAM") } }
@@ -25,7 +25,7 @@ final class AppState: ObservableObject {
         unsupportedLowRAM = d.bool(forKey: "unsupportedLowRAM")
         let ram = systemRamGiB()
         let stored = d.string(forKey: "selectedVariant").flatMap(Variant.init(rawValue:))
-        selectedVariant = stored ?? (ram >= 512 ? .pro : .flash)   // default Pro on ≥512 GiB
+        selectedVariant = stored ?? (ram >= 512 ? .pro : .flash)  // default Pro on ≥512 GiB
     }
 
     func effectiveCtx(ramGiB: Double) -> Int {

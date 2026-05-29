@@ -15,13 +15,17 @@ struct SettingsView: View {
             }
             Section("Server") {
                 TextField("Context size", value: $app.ctxOverride, format: .number)
-                Text(app.ctxOverride > 0
-                     ? (thinkMax(ctx: app.ctxOverride) ? "Think-Max active (≥393216)" : "Below Think-Max")
-                     : "Auto: \(defaultCtx(ramGiB: ram, variant: app.selectedVariant)) for \(Int(ram)) GiB")
-                    .font(.caption).foregroundStyle(.secondary)
+                Text(
+                    app.ctxOverride > 0
+                        ? (thinkMax(ctx: app.ctxOverride) ? "Think-Max active (≥393216)" : "Below Think-Max")
+                        : "Auto: \(defaultCtx(ramGiB: ram, variant: app.selectedVariant)) for \(Int(ram)) GiB"
+                )
+                .font(.caption).foregroundStyle(.secondary)
                 TextField("Port", value: $app.port, format: .number)
-                Stepper("GPU power duty: \(app.power ?? 100)", value: Binding(
-                    get: { app.power ?? 100 }, set: { app.power = $0 }), in: 1...100)
+                Stepper(
+                    "GPU power duty: \(app.power ?? 100)",
+                    value: Binding(
+                        get: { app.power ?? 100 }, set: { app.power = $0 }), in: 1...100)
             }
             Section("Hugging Face") {
                 SecureField("HF token (optional)", text: $app.hfToken)

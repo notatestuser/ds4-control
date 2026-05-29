@@ -2,9 +2,10 @@ import Foundation
 
 protocol ProcessRunner: AnyObject {
     /// Launch `executable` with `args` in `cwd`; deliver stderr lines and termination.
-    func launch(executable: URL, args: [String], cwd: URL,
-                onStderrLine: @escaping (String) -> Void,
-                onExit: @escaping (Int32) -> Void) throws
+    func launch(
+        executable: URL, args: [String], cwd: URL,
+        onStderrLine: @escaping (String) -> Void,
+        onExit: @escaping (Int32) -> Void) throws
     func terminate(graceSeconds: Double)
     var isRunning: Bool { get }
 }
@@ -15,9 +16,11 @@ final class RealProcessRunner: ProcessRunner {
 
     var isRunning: Bool { process?.isRunning ?? false }
 
-    func launch(executable: URL, args: [String], cwd: URL,
-                onStderrLine: @escaping (String) -> Void,
-                onExit: @escaping (Int32) -> Void) throws {
+    func launch(
+        executable: URL, args: [String], cwd: URL,
+        onStderrLine: @escaping (String) -> Void,
+        onExit: @escaping (Int32) -> Void
+    ) throws {
         let p = Process()
         p.executableURL = executable
         p.arguments = args

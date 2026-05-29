@@ -28,8 +28,8 @@ enum Quant {
     var arg: String {
         switch self {
         case .proImatrix: return "pro-imatrix"
-        case .q4Imatrix:  return "q4-imatrix"
-        case .q2Imatrix:  return "q2-imatrix"
+        case .q4Imatrix: return "q4-imatrix"
+        case .q2Imatrix: return "q2-imatrix"
         }
     }
 
@@ -39,7 +39,8 @@ enum Quant {
         case .proImatrix:
             return "DeepSeek-V4-Pro-IQ2XXS-w2Q2K-AProjQ8-SExpQ8-OutQ8-Instruct-imatrix.gguf"
         case .q4Imatrix:
-            return "DeepSeek-V4-Flash-Q4KExperts-F16HC-F16Compressor-F16Indexer-Q8Attn-Q8Shared-Q8Out-chat-v2-imatrix.gguf"
+            return
+                "DeepSeek-V4-Flash-Q4KExperts-F16HC-F16Compressor-F16Indexer-Q8Attn-Q8Shared-Q8Out-chat-v2-imatrix.gguf"
         case .q2Imatrix:
             return "DeepSeek-V4-Flash-IQ2XXS-w2Q2K-AProjQ8-SExpQ8-OutQ8-chat-v2-imatrix.gguf"
         }
@@ -49,8 +50,8 @@ enum Quant {
     var weightsGiB: Double {
         switch self {
         case .proImatrix: return 432
-        case .q4Imatrix:  return 153
-        case .q2Imatrix:  return 81
+        case .q4Imatrix: return 153
+        case .q2Imatrix: return 81
         }
     }
 }

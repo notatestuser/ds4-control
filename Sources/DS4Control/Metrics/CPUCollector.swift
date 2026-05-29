@@ -2,7 +2,7 @@ import Foundation
 import Darwin
 
 final class CPUCollector {
-    private var previousTicks: [UInt64]? // [user, system, idle, nice] per core flattened
+    private var previousTicks: [UInt64]?  // [user, system, idle, nice] per core flattened
 
     func collect() -> CPUMetrics {
         let timestamp = Date()

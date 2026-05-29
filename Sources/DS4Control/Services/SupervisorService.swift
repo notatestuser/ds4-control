@@ -34,7 +34,8 @@ final class SupervisorService: ObservableObject {
     // MARK: - Path resolution
     private func ggufURL(for variant: Variant, ramGiB: Double) -> URL {
         let q = Quant.for(variant, ramGiB: ramGiB)
-        let base = ProcessInfo.processInfo.environment["DS4_GGUF_DIR"].map(URL.init(fileURLWithPath:))
+        let base =
+            ProcessInfo.processInfo.environment["DS4_GGUF_DIR"].map(URL.init(fileURLWithPath:))
             ?? ds4Dir.appendingPathComponent("gguf")
         return base.appendingPathComponent(q.ggufFilename)
     }
@@ -61,10 +62,11 @@ final class SupervisorService: ObservableObject {
         if let power { args += ["--power", "\(power)"] }
         state = .starting
         do {
-            try runner.launch(executable: ds4Dir.appendingPathComponent("ds4-server"),
-                              args: args, cwd: ds4Dir,
-                              onStderrLine: { [weak self] line in Self.onMain { self?.handleStderr(line) } },
-                              onExit: { [weak self] code in Self.onMain { self?.handleExit(code) } })
+            try runner.launch(
+                executable: ds4Dir.appendingPathComponent("ds4-server"),
+                args: args, cwd: ds4Dir,
+                onStderrLine: { [weak self] line in Self.onMain { self?.handleStderr(line) } },
+                onExit: { [weak self] code in Self.onMain { self?.handleExit(code) } })
         } catch {
             state = .error(.crashed(tail: "\(error)")); return
         }
@@ -110,25 +112,32 @@ final class SupervisorService: ObservableObject {
         state = .downloading
         var buf = ""
         do {
-            try downloadRunner.launch(executable: ds4Dir.appendingPathComponent("download_model.sh"),
+            try downloadRunner.launch(
+                executable: ds4Dir.appendingPathComponent("download_model.sh"),
                 args: [q.arg], cwd: ds4Dir,
                 onStderrLine: { [weak self] line in
                     buf += line + "\n"
                     let pct = parseCurlProgress(buf)
                     Self.onMain {
                         guard let self else { return }
-                        if let pct { self.download = DownloadProgress(pct: pct, file: q.ggufFilename, receivedBytes: 0, totalBytes: nil) }
+                        if let pct {
+                            self.download = DownloadProgress(
+                                pct: pct, file: q.ggufFilename, receivedBytes: 0, totalBytes: nil)
+                        }
                     }
                 },
-                onExit: { [weak self] code in Self.onMain {
-                    guard let self else { return }
-                    if code == 0 {
-                        self.download = DownloadProgress(pct: 100, file: q.ggufFilename, receivedBytes: 0, totalBytes: nil)
-                        self.state = .idle
-                    } else {
-                        self.state = .error(.downloadFailed(detail: "exit \(code)"))
+                onExit: { [weak self] code in
+                    Self.onMain {
+                        guard let self else { return }
+                        if code == 0 {
+                            self.download = DownloadProgress(
+                                pct: 100, file: q.ggufFilename, receivedBytes: 0, totalBytes: nil)
+                            self.state = .idle
+                        } else {
+                            self.state = .error(.downloadFailed(detail: "exit \(code)"))
+                        }
                     }
-                } })
+                })
         } catch { state = .error(.downloadFailed(detail: "\(error)")) }
     }
 
@@ -173,6 +182,8 @@ final class SupervisorService: ObservableObject {
         }
     }
     private var isErrorState: Bool { if case .error = state { return true }; return false }
-    private func fail(_ e: ServerError) { healthTimer?.invalidate(); healthTimer = nil; startupTimer?.invalidate(); startupTimer = nil; state = .error(e) }
+    private func fail(_ e: ServerError) {
+        healthTimer?.invalidate(); healthTimer = nil; startupTimer?.invalidate(); startupTimer = nil; state = .error(e)
+    }
     private func emitBadState(_ cmd: String) { recentLog.append("ignored '\(cmd)' in state \(state)") }
 }

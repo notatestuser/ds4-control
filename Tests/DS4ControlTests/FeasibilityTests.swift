@@ -5,7 +5,7 @@ final class FeasibilityTests: XCTestCase {
     func testDefaultCtxAnchors() {
         XCTAssertEqual(defaultCtx(ramGiB: 600, variant: .pro), 1_000_000)
         XCTAssertEqual(defaultCtx(ramGiB: 128, variant: .flash), 393_216)
-        XCTAssertEqual(defaultCtx(ramGiB: 96,  variant: .flash), 250_000)
+        XCTAssertEqual(defaultCtx(ramGiB: 96, variant: .flash), 250_000)
     }
     func testDefaultCtxProgressiveStepDown() {
         XCTAssertEqual(defaultCtx(ramGiB: 93, variant: .flash), 131_072)
@@ -22,7 +22,9 @@ final class FeasibilityTests: XCTestCase {
     func testWiredLimitAdvisory() {
         if case let .warnWiredLimit(mb) = feasibility(ramGiB: 96, variant: .flash) {
             XCTAssertEqual(mb, Int(96.0 * 1024 * 0.9))
-        } else { XCTFail() }
+        } else {
+            XCTFail()
+        }
     }
     func testThinkMax() {
         XCTAssertTrue(thinkMax(ctx: 393_216))

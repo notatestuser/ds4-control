@@ -37,13 +37,16 @@ struct ModelRowView: View {
             Button("Downloading…") {}.disabled(true).frame(maxWidth: .infinity)
         default:
             if !downloaded {
-                Button("Download \(app.selectedVariant.displayName)") { supervisor.download(variant: app.selectedVariant) }
-                    .frame(maxWidth: .infinity).disabled(blocked)
+                Button("Download \(app.selectedVariant.displayName)") {
+                    supervisor.download(variant: app.selectedVariant)
+                }
+                .frame(maxWidth: .infinity).disabled(blocked)
             } else {
                 Button("Start") {
-                    supervisor.start(variant: app.selectedVariant,
-                                     ctx: app.effectiveCtx(ramGiB: ramGiB),
-                                     port: app.port, power: app.power)
+                    supervisor.start(
+                        variant: app.selectedVariant,
+                        ctx: app.effectiveCtx(ramGiB: ramGiB),
+                        port: app.port, power: app.power)
                 }.frame(maxWidth: .infinity).disabled(blocked)
             }
         }
@@ -53,8 +56,10 @@ struct ModelRowView: View {
         switch feas {
         case .standard: EmptyView()
         case let .warnWiredLimit(mb):
-            Text("96–127 GiB: reduced context, ~25–27 tok/s. Raise the Metal wired limit:\nsudo sysctl iogpu.wired_limit_mb=\(mb)")
-                .font(.caption2).foregroundStyle(.orange)
+            Text(
+                "96–127 GiB: reduced context, ~25–27 tok/s. Raise the Metal wired limit:\nsudo sysctl iogpu.wired_limit_mb=\(mb)"
+            )
+            .font(.caption2).foregroundStyle(.orange)
         case let .blocked(reason):
             Text(reason).font(.caption2).foregroundStyle(.red)
         case let .unsupported(reason):

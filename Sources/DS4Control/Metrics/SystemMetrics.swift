@@ -2,7 +2,7 @@ import Foundation
 
 struct CPUMetrics {
     let timestamp: Date
-    let totalUsage: Double        // 0–100
+    let totalUsage: Double  // 0–100
     let coreCount: Int
 }
 

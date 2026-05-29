@@ -2,9 +2,9 @@ import Foundation
 
 enum Feasibility: Equatable {
     case standard
-    case warnWiredLimit(advisoryMB: Int)   // 96–127 GiB Flash
-    case unsupported(reason: String)       // < 96 GiB Flash: allowed only via opt-in toggle
-    case blocked(reason: String)           // variant cannot run on this machine
+    case warnWiredLimit(advisoryMB: Int)  // 96–127 GiB Flash
+    case unsupported(reason: String)  // < 96 GiB Flash: allowed only via opt-in toggle
+    case blocked(reason: String)  // variant cannot run on this machine
 }
 
 /// Physical unified memory in GiB.
@@ -41,11 +41,13 @@ func feasibility(ramGiB: Double, variant: Variant) -> Feasibility {
             ? .standard
             : .blocked(reason: "V4 Pro needs ≥ 512 GiB unified memory.")
     case .flash:
-        if ramGiB >= 256 || ramGiB >= 128 { return .standard }       // q4 (≥256) or q2 (128–255)
+        if ramGiB >= 256 || ramGiB >= 128 { return .standard }  // q4 (≥256) or q2 (128–255)
         if ramGiB >= 96 {
             return .warnWiredLimit(advisoryMB: Int(ramGiB * 1024 * 0.9))
         }
-        return .unsupported(reason:
-            "V4 Flash needs ≥ 96 GiB. ds4 will begin mmap-loading the ~81 GiB model, but the GPU-wired working set plus KV exceed RAM → swap and instability, not usable generation.")
+        return .unsupported(
+            reason:
+                "V4 Flash needs ≥ 96 GiB. ds4 will begin mmap-loading the ~81 GiB model, but the GPU-wired working set plus KV exceed RAM → swap and instability, not usable generation."
+        )
     }
 }

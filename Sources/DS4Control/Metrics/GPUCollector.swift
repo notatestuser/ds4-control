@@ -21,7 +21,8 @@ final class GPUCollector {
             while service != 0 {
                 var properties: Unmanaged<CFMutableDictionary>?
                 if IORegistryEntryCreateCFProperties(service, &properties, kCFAllocatorDefault, 0) == KERN_SUCCESS,
-                   let dict = properties?.takeRetainedValue() as? [String: Any] {
+                    let dict = properties?.takeRetainedValue() as? [String: Any]
+                {
 
                     // "PerformanceStatistics" contains GPU utilization data
                     if let perfStats = dict["PerformanceStatistics"] as? [String: Any] {
@@ -80,14 +81,14 @@ final class GPUCollector {
         if lower.contains("m3 ultra") { return 80 }
         if lower.contains("m2 ultra") { return 76 }
         if lower.contains("m1 ultra") { return 64 }
-        if lower.contains("m4 max")   { return 40 }
-        if lower.contains("m3 max")   { return 40 }
-        if lower.contains("m2 max")   { return 38 }
-        if lower.contains("m1 max")   { return 32 }
-        if lower.contains("m4 pro")   { return 20 }
-        if lower.contains("m3 pro")   { return 18 }
-        if lower.contains("m2 pro")   { return 19 }
-        if lower.contains("m1 pro")   { return 16 }
+        if lower.contains("m4 max") { return 40 }
+        if lower.contains("m3 max") { return 40 }
+        if lower.contains("m2 max") { return 38 }
+        if lower.contains("m1 max") { return 32 }
+        if lower.contains("m4 pro") { return 20 }
+        if lower.contains("m3 pro") { return 18 }
+        if lower.contains("m2 pro") { return 19 }
+        if lower.contains("m1 pro") { return 16 }
         return 0
     }
 }

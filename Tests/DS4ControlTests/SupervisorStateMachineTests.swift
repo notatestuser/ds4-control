@@ -6,8 +6,10 @@ private final class FakeRunner: ProcessRunner {
     var lastArgs: [String] = []
     private var stderr: ((String) -> Void)?
     private var exit: ((Int32) -> Void)?
-    func launch(executable: URL, args: [String], cwd: URL,
-                onStderrLine: @escaping (String) -> Void, onExit: @escaping (Int32) -> Void) throws {
+    func launch(
+        executable: URL, args: [String], cwd: URL,
+        onStderrLine: @escaping (String) -> Void, onExit: @escaping (Int32) -> Void
+    ) throws {
         lastArgs = args; isRunning = true; stderr = onStderrLine; exit = onExit
     }
     func terminate(graceSeconds: Double) { isRunning = false; exit?(0) }
@@ -19,9 +21,11 @@ private final class FakeRunner: ProcessRunner {
 final class SupervisorStateMachineTests: XCTestCase {
     fileprivate func makeSupervisor(_ runner: FakeRunner) throws -> SupervisorService {
         let dir = URL(fileURLWithPath: NSTemporaryDirectory()).appendingPathComponent(UUID().uuidString)
-        try FileManager.default.createDirectory(at: dir.appendingPathComponent("gguf"), withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(
+            at: dir.appendingPathComponent("gguf"), withIntermediateDirectories: true)
         for f in ["ds4-server", "download_model.sh"] {
-            let u = dir.appendingPathComponent(f); FileManager.default.createFile(atPath: u.path, contents: Data("#!/bin/sh\n".utf8))
+            let u = dir.appendingPathComponent(f);
+            FileManager.default.createFile(atPath: u.path, contents: Data("#!/bin/sh\n".utf8))
             try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: u.path)
         }
         // The supervisor resolves the gguf via Quant.for(.flash, ramGiB: systemRamGiB());
@@ -58,7 +62,8 @@ final class SupervisorStateMachineTests: XCTestCase {
         let dir = URL(fileURLWithPath: NSTemporaryDirectory()).appendingPathComponent(UUID().uuidString)
         try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
         for f in ["ds4-server", "download_model.sh"] {
-            let u = dir.appendingPathComponent(f); FileManager.default.createFile(atPath: u.path, contents: Data("#!/bin/sh\n".utf8))
+            let u = dir.appendingPathComponent(f);
+            FileManager.default.createFile(atPath: u.path, contents: Data("#!/bin/sh\n".utf8))
             try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: u.path)
         }
         let s = SupervisorService(ds4Dir: dir, runner: FakeRunner())
