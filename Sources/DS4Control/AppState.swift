@@ -9,7 +9,6 @@ final class AppState: ObservableObject {
     @Published var port: Int { didSet { d.set(port, forKey: "port") } }
     @Published var ctxOverride: Int { didSet { d.set(ctxOverride, forKey: "ctxOverride") } }  // 0 = auto
     @Published var power: Int? { didSet { d.set(power ?? 0, forKey: "power") } }
-    @Published var hfToken: String { didSet { d.set(hfToken, forKey: "hfToken") } }
     @Published var unsupportedLowRAM: Bool { didSet { d.set(unsupportedLowRAM, forKey: "unsupportedLowRAM") } }
     @Published var selectedVariant: Variant {
         didSet { d.set(selectedVariant.rawValue, forKey: "selectedVariant") }
@@ -21,7 +20,6 @@ final class AppState: ObservableObject {
         port = d.object(forKey: "port") as? Int ?? 8000
         ctxOverride = d.integer(forKey: "ctxOverride")
         let p = d.integer(forKey: "power"); power = p > 0 ? p : nil
-        hfToken = d.string(forKey: "hfToken") ?? ""
         unsupportedLowRAM = d.bool(forKey: "unsupportedLowRAM")
         let ram = systemRamGiB()
         let stored = d.string(forKey: "selectedVariant").flatMap(Variant.init(rawValue:))

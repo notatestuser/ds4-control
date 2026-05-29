@@ -38,7 +38,7 @@ struct ModelRowView: View {
         default:
             if !downloaded {
                 Button("Download \(app.selectedVariant.displayName)") {
-                    supervisor.download(variant: app.selectedVariant, hfToken: app.hfToken)
+                    supervisor.download(variant: app.selectedVariant)
                 }
                 .frame(maxWidth: .infinity).disabled(blocked)
             } else {

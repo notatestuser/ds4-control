@@ -27,9 +27,6 @@ struct SettingsView: View {
                     value: Binding(
                         get: { app.power ?? 100 }, set: { app.power = $0 }), in: 1...100)
             }
-            Section("Hugging Face") {
-                SecureField("HF token (optional)", text: $app.hfToken)
-            }
             if ram < 96 {
                 Section("Advanced") {
                     Toggle("Enable unsupported low-RAM mode", isOn: $app.unsupportedLowRAM)

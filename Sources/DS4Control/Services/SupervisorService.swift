@@ -111,7 +111,7 @@ final class SupervisorService: ObservableObject {
     // MARK: - Download
     private let downloadRunner = RealProcessRunner()
 
-    func download(variant: Variant, hfToken: String = "") {
+    func download(variant: Variant) {
         guard state == .idle || isErrorState else { emitBadState("download"); return }
         if let e = validateDs4Dir() { state = .error(e); return }
         let q = Quant.for(variant, ramGiB: systemRamGiB())
@@ -124,8 +124,7 @@ final class SupervisorService: ObservableObject {
         // parseable progress to a non-TTY pipe, so stderr-parsing alone stays at 0%.
         startDownloadPolling(baseDir: baseDir, filename: q.ggufFilename, expected: expectedBytes)
         var buf = ""
-        var args = [q.arg]
-        if !hfToken.isEmpty { args += ["--token", hfToken] }
+        let args = [q.arg]
         do {
             try downloadRunner.launch(
                 executable: ds4Dir.appendingPathComponent("download_model.sh"),
