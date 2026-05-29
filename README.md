@@ -1,6 +1,6 @@
 # DS4 Control
 
-A macOS menu-bar control pane for **DeepSeek V4** via [`ds4`](https://github.com/deepseek-ai). It launches, supervises, and monitors a local `ds4-server`, lets you pick **V4 Pro** or **V4 Flash**, and shows mini resource-monitoring widgets right in the popup.
+A macOS menu-bar control pane for **DeepSeek V4** via [`ds4`](https://github.com/antirez/ds4). It launches, supervises, and monitors a local `ds4-server`, lets you pick **V4 Pro** or **V4 Flash**, and shows mini resource-monitoring widgets right in the popup.
 
 ## What it does
 
@@ -22,7 +22,7 @@ What it is **not**:
 ## Requirements
 
 - **macOS 14+**.
-- A built [`ds4`](https://github.com/deepseek-ai) checkout that provides the `ds4-server` binary and `download_model.sh`. You point DS4 Control at this directory in Settings.
+- A built [`ds4`](https://github.com/antirez/ds4) checkout that provides the `ds4-server` binary and `download_model.sh`. You point DS4 Control at this directory in Settings.
 - **Apple Silicon** recommended: power/ANE metrics use the Apple Silicon IOReport interface. Intel Macs run the app, but without power metrics.
 - You do **not** pre-download the model — DS4 Control downloads it for you via ds4's `download_model.sh`.
 
