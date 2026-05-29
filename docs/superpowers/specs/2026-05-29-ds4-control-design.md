@@ -132,11 +132,11 @@ Model context ceiling is **1,000,000 tokens**; KV cache is heavily compressed. P
 
 | RAM | Variants offered | Default variant | Default ctx | Think-Max? |
 |---|---|---|---|---|
-| **≥ 512 GB** | Pro + Flash | **Pro** | 393216 | yes |
+| **≥ 512 GB** | Pro + Flash | **Pro** | **1000000** (full ceiling) | yes |
 | **97–511 GB** | Flash only | Flash | 393216 | yes |
 | **≤ 96 GB** | Flash only | Flash | **250000** | no |
 
-Rationale: 393216 is the Think-Max threshold and the "best juice" default on capable machines; ≤ 96 GB drops to 250000 to stay within memory headroom (README). All values are user-overridable up to the 1M ceiling. On ≥ 512 GB the Pro resident set (~430 GB) leaves limited headroom — the Memory hero card surfaces pressure, and ctx can be lowered if Pro proves tight at 393216.
+Rationale: 393216 is the Think-Max threshold; ≤ 96 GB drops to 250000 for headroom (README). On the 512 GB-class box the user opted for the **full 1M ceiling** to maximize usable context. Memory note: KV is allocated **eagerly at start, linear in ctx** (`kv_cache_init`); estimated Pro persistent KV ≈ 15 GB @ 393216 and ≈ 39 GB @ 1M (61 layers, `n_head_dim=512` + `n_indexer_head_dim=128`, `comp_cap=ctx/4`, fp32), on top of the ~430 GB weights — leaving ~43 GB headroom on 512 GB (accepted). The Memory hero card surfaces live pressure; ctx is user-overridable (1 … 1,000,000) so it can be lowered if a given machine proves tight.
 
 ### 5.3 Variant → download arg + gguf
 | Variant | RAM | `download_model.sh` arg | gguf (approx size) |
@@ -166,7 +166,7 @@ Before download, compare free space on the gguf volume to the variant's approx s
 ## 7. Testing & QA gate
 
 ### 7.1 Swift unit tests (`swift test`)
-- **Pure parser fns:** `isReadyLine`, `parseCurlProgress`, variant → script-arg + gguf-filename mapping; **RAM-tier logic** (offered variants, default variant, default ctx: ≤96→250000/Flash, 97–511→393216/Flash, ≥512→393216/Pro), Think-Max boundary (393216).
+- **Pure parser fns:** `isReadyLine`, `parseCurlProgress`, variant → script-arg + gguf-filename mapping; **RAM-tier logic** (offered variants, default variant, default ctx: ≤96→250000/Flash, 97–511→393216/Flash, ≥512→1000000/Pro), Think-Max boundary (393216), ctx clamp to 1…1,000,000.
 - **Supervisor logic:** state-machine transitions, illegal-command no-ops, error mapping, stderr-tail capture.
 - **Collectors:** memory math, percent clamping, severity thresholds; event/snapshot decode resilience to malformed input.
 - **RAM → default-variant** logic; settings validation/persistence.
@@ -198,4 +198,4 @@ Before download, compare free space on the gguf volume to the variant's approx s
 5. `swift test` (unit + stub integration), `swift-format` lint, and a zero-warning release build all pass in CI.
 
 ## 10. Open questions
-None outstanding. (Name, metric set, **RAM-tiered ctx** — 393216/Think-Max on ≥97 GB, 250000 on ≤96 GB — **Pro gated to ≥512 GB**, external ds4-dir, and pure-Swift single-binary architecture all resolved with the user.)
+None outstanding. (Name, metric set, **RAM-tiered ctx** — 1000000 on ≥512 GB, 393216/Think-Max on 97–511 GB, 250000 on ≤96 GB — **Pro gated to ≥512 GB**, external ds4-dir, and pure-Swift single-binary architecture all resolved with the user.)
