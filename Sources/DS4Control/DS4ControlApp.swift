@@ -6,11 +6,23 @@ struct DS4ControlApp: App {
     @StateObject private var app = AppState()
     @StateObject private var metrics = MetricsManager()
     @StateObject private var supervisor: SupervisorService
+    @StateObject private var chat: ChatViewModel
 
     init() {
         let app = AppState()
         let dir = URL(fileURLWithPath: app.ds4Dir.isEmpty ? FileManager.default.currentDirectoryPath : app.ds4Dir)
-        _supervisor = StateObject(wrappedValue: SupervisorService(ds4Dir: dir, runner: RealProcessRunner()))
+        let supervisor = SupervisorService(ds4Dir: dir, runner: RealProcessRunner())
+        _supervisor = StateObject(wrappedValue: supervisor)
+        let service = ChatService()
+        _chat = StateObject(
+            wrappedValue: ChatViewModel(
+                model: app.selectedVariant.modelId,
+                port: { [weak supervisor] in supervisor?.port ?? app.port },
+                streamProvider: { port, model, messages in
+                    service.stream(port: port, model: model, messages: messages)
+                }
+            )
+        )
     }
 
     var body: some Scene {
@@ -33,6 +45,10 @@ struct DS4ControlApp: App {
             SettingsView().environmentObject(app)
         }
         .windowResizability(.contentSize)
+
+        Window("DS4 Chat", id: "chat") {
+            ChatView(viewModel: chat).environmentObject(supervisor)
+        }
     }
 
     private func iconName(for s: ServerState) -> String {
