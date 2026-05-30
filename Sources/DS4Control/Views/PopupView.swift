@@ -88,11 +88,21 @@ struct PopupView: View {
             }.buttonStyle(.plain)
             Button {
                 openWindow(id: "chat")
+                bringWindowToFront(titled: "DS4 Chat")
             } label: {
                 Image(systemName: "bubble.left")
             }.buttonStyle(.plain).disabled(supervisor.state != .ready)
             Spacer()
             Button("Quit") { NSApplication.shared.terminate(nil) }.buttonStyle(.plain).foregroundStyle(.secondary)
+        }
+    }
+
+    /// Menu-bar (.accessory) apps don't foreground on openWindow, so the new window
+    /// lands at the bottom of the stack. Activate the app and raise the window by title.
+    private func bringWindowToFront(titled title: String) {
+        NSApplication.shared.activate(ignoringOtherApps: true)
+        DispatchQueue.main.async {
+            NSApplication.shared.windows.first { $0.title == title }?.makeKeyAndOrderFront(nil)
         }
     }
 
