@@ -26,6 +26,9 @@ final class SupervisorService: ObservableObject {
     /// .incomplete file but don't own the process — see resumeInFlightDownloadIfAny).
     private var downloadAttached = false
     private var staleDownloadPolls = 0
+    /// True when attached to a ds4-server started by a previous session (we don't
+    /// own the process; Stop terminates it by port — see resumeRunningServerIfAny).
+    private var serverAttached = false
 
     init(ds4Dir: URL, runner: ProcessRunner) {
         self.ds4Dir = ds4Dir
@@ -64,7 +67,7 @@ final class SupervisorService: ObservableObject {
             state = .error(.modelMissing(filename: gguf.lastPathComponent)); return
         }
         self.port = port; self.ctx = ctx; self.activeModel = variant.modelId
-        stderrTail = []; expectingExit = false
+        stderrTail = []; expectingExit = false; serverAttached = false
         var args = ["-m", gguf.path, "--ctx", "\(ctx)", "--host", "127.0.0.1", "--port", "\(port)", "--metal"]
         if let power { args += ["--power", "\(power)"] }
         state = .starting
@@ -105,7 +108,54 @@ final class SupervisorService: ObservableObject {
         state = .stopping
         healthTimer?.invalidate(); healthTimer = nil
         startupTimer?.invalidate(); startupTimer = nil
-        runner.terminate(graceSeconds: 30)
+        if serverAttached {
+            // We don't own the process (attached on launch) — terminate the listener.
+            killProcessListening(onPort: port)
+            serverAttached = false
+            state = .idle
+        } else {
+            runner.terminate(graceSeconds: 30)
+        }
+    }
+
+    /// On launch, if a ds4-server is already serving on `port` (orphaned from a prior
+    /// session, model still loaded), attach to it as `.ready` instead of spawning a
+    /// new one — avoids a port conflict and a second multi-hundred-GB load.
+    func resumeRunningServerIfAny(port: Int) {
+        guard state == .idle else { return }
+        let url = URL(string: "http://127.0.0.1:\(port)/v1/models")!
+        var req = URLRequest(url: url)
+        req.timeoutInterval = 3
+        URLSession.shared.dataTask(with: req) { [weak self] data, resp, _ in
+            let ok = (resp as? HTTPURLResponse)?.statusCode == 200
+            Task { @MainActor in
+                guard let self, self.state == .idle, ok, let data else { return }
+                self.serverAttached = true
+                self.port = port
+                self.activeModel = loadedModelName(from: data) ?? "ds4-server"
+                self.state = .ready
+                self.startHealthPolling()
+            }
+        }.resume()
+    }
+
+    private func killProcessListening(onPort port: Int) {
+        let lsof = Process()
+        lsof.executableURL = URL(fileURLWithPath: "/usr/sbin/lsof")
+        lsof.arguments = ["-ti", "tcp:\(port)", "-sTCP:LISTEN"]
+        let pipe = Pipe()
+        lsof.standardOutput = pipe
+        lsof.standardError = Pipe()
+        do {
+            try lsof.run()
+            lsof.waitUntilExit()
+        } catch {
+            return
+        }
+        let out = String(data: pipe.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8) ?? ""
+        for line in out.split(whereSeparator: { $0 == "\n" }) {
+            if let pid = Int32(line.trimmingCharacters(in: .whitespaces)) { kill(pid, SIGTERM) }
+        }
     }
 
     // MARK: - Download
@@ -333,4 +383,13 @@ final class SupervisorService: ObservableObject {
         healthTimer?.invalidate(); healthTimer = nil; startupTimer?.invalidate(); startupTimer = nil; state = .error(e)
     }
     private func emitBadState(_ cmd: String) { recentLog.append("ignored '\(cmd)' in state \(state)") }
+}
+
+/// Parse the loaded model's display name from a `/v1/models` response body.
+/// ds4 sets each entry's `name` to the actually-loaded model, so prefer it over `id`.
+func loadedModelName(from data: Data) -> String? {
+    guard let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+        let arr = obj["data"] as? [[String: Any]], let first = arr.first
+    else { return nil }
+    return (first["name"] as? String) ?? (first["id"] as? String)
 }

@@ -19,6 +19,7 @@ struct DS4ControlApp: App {
                 .environmentObject(app).environmentObject(metrics).environmentObject(supervisor)
                 .onAppear {
                     metrics.start()
+                    supervisor.resumeRunningServerIfAny(port: app.port)
                     supervisor.resumeInFlightDownloadIfAny(variant: app.selectedVariant)
                 }
         } label: {
