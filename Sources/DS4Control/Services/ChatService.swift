@@ -53,7 +53,7 @@ struct ChatService {
             "model": model,
             "messages": messages.map { ["role": $0.role == .user ? "user" : "assistant", "content": $0.content] },
             "temperature": 0.7,
-            "max_tokens": 512,
+            "max_tokens": 32768,
             "thinking": false,
             "stream": true,
         ]

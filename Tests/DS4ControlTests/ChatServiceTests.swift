@@ -88,7 +88,7 @@ final class ChatServiceTests: XCTestCase {
         let json = try XCTUnwrap(try JSONSerialization.jsonObject(with: body) as? [String: Any])
         XCTAssertEqual(json["model"] as? String, "deepseek-v4-pro")
         XCTAssertEqual(json["temperature"] as? Double, 0.7)
-        XCTAssertEqual(json["max_tokens"] as? Int, 512)
+        XCTAssertEqual(json["max_tokens"] as? Int, 32768)
         XCTAssertEqual(json["thinking"] as? Bool, false)
         XCTAssertEqual(json["stream"] as? Bool, true)
         let messages = try XCTUnwrap(json["messages"] as? [[String: String]])
