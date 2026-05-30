@@ -26,6 +26,11 @@ struct SettingsView: View {
                     "GPU power duty: \(app.power ?? 100)",
                     value: Binding(
                         get: { app.power ?? 100 }, set: { app.power = $0 }), in: 1...100)
+                Toggle("Disk KV cache", isOn: $app.kvDiskCache)
+                Text(
+                    "Persists the KV cache to disk so repeated or large prompts skip re-prefill. Applied on next Start."
+                )
+                .font(.caption2).foregroundStyle(.secondary)
             }
             if ram < 96 {
                 Section("Advanced") {
