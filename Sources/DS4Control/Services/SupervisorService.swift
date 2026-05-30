@@ -16,6 +16,10 @@ final class SupervisorService: ObservableObject {
 
     let ds4Dir: URL
     let runner: ProcessRunner
+    /// Probes a port for a running ds4-server; returns the /v1/models body on HTTP 200,
+    /// else nil. Injectable so tests don't depend on a live socket (default hits the
+    /// real local server via URLSession).
+    let serverProbe: (Int) async -> Data?
     private var stderrTail: [String] = []
     private var expectingExit = false
     private var healthTimer: Timer?
@@ -30,9 +34,21 @@ final class SupervisorService: ObservableObject {
     /// own the process; Stop terminates it by port — see resumeRunningServerIfAny).
     private var serverAttached = false
 
-    init(ds4Dir: URL, runner: ProcessRunner) {
+    init(ds4Dir: URL, runner: ProcessRunner, serverProbe: ((Int) async -> Data?)? = nil) {
         self.ds4Dir = ds4Dir
         self.runner = runner
+        self.serverProbe = serverProbe ?? SupervisorService.defaultServerProbe
+    }
+
+    /// Default probe: GET http://127.0.0.1:<port>/v1/models, returning the body on 200.
+    static func defaultServerProbe(_ port: Int) async -> Data? {
+        let url = URL(string: "http://127.0.0.1:\(port)/v1/models")!
+        var req = URLRequest(url: url)
+        req.timeoutInterval = 3
+        guard let (data, resp) = try? await URLSession.shared.data(for: req),
+            (resp as? HTTPURLResponse)?.statusCode == 200
+        else { return nil }
+        return data
     }
 
     deinit {
@@ -123,20 +139,18 @@ final class SupervisorService: ObservableObject {
     /// new one — avoids a port conflict and a second multi-hundred-GB load.
     func resumeRunningServerIfAny(port: Int) {
         guard state == .idle else { return }
-        let url = URL(string: "http://127.0.0.1:\(port)/v1/models")!
-        var req = URLRequest(url: url)
-        req.timeoutInterval = 3
-        URLSession.shared.dataTask(with: req) { [weak self] data, resp, _ in
-            let ok = (resp as? HTTPURLResponse)?.statusCode == 200
-            Task { @MainActor in
-                guard let self, self.state == .idle, ok, let data else { return }
+        Task { [weak self] in
+            guard let probe = self?.serverProbe else { return }
+            let data = await probe(port)
+            await MainActor.run {
+                guard let self, self.state == .idle, let data else { return }
                 self.serverAttached = true
                 self.port = port
                 self.activeModel = loadedModelName(from: data) ?? "ds4-server"
                 self.state = .ready
                 self.startHealthPolling()
             }
-        }.resume()
+        }
     }
 
     private func killProcessListening(onPort port: Int) {

@@ -72,28 +72,30 @@ final class SupervisorIntegrationTests: XCTestCase {
     }
 
     func testResumeAttachesToRunningServer() throws {
-        let repoRoot = URL(fileURLWithPath: #filePath)
-            .deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
-        let fakeServer = repoRoot.appendingPathComponent("Tests/Fixtures/fake-ds4-server.sh")
-        let port = 8251
-        let server = Process()
-        server.executableURL = URL(fileURLWithPath: "/bin/sh")
-        server.arguments = [fakeServer.path, "--port", "\(port)"]
-        server.standardOutput = Pipe()
-        server.standardError = Pipe()
-        try server.run()
-        defer { server.terminate() }
-        Thread.sleep(forTimeInterval: 2)  // let the fake server bind + start serving
-
+        // Inject a deterministic probe — no live socket (nc fixtures are flaky on CI).
+        let body = Data(#"{"object":"list","data":[{"id":"deepseek-v4-pro","name":"DeepSeek V4 Pro"}]}"#.utf8)
         let dir = URL(fileURLWithPath: NSTemporaryDirectory()).appendingPathComponent(UUID().uuidString)
         try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
-        let s = SupervisorService(ds4Dir: dir, runner: RealProcessRunner())
+        let s = SupervisorService(ds4Dir: dir, runner: RealProcessRunner(), serverProbe: { _ in body })
         let ready = expectation(description: "attached ready")
         let token = s.$state.sink { if $0 == .ready { ready.fulfill() } }
-        s.resumeRunningServerIfAny(port: port)
-        wait(for: [ready], timeout: 8)
+        s.resumeRunningServerIfAny(port: 8251)
+        wait(for: [ready], timeout: 5)
         token.cancel()
-        XCTAssertNotNil(s.activeModel)
+        XCTAssertEqual(s.activeModel, "DeepSeek V4 Pro")
+        s.stop()
+    }
+
+    func testResumeNoOpWhenNoServer() throws {
+        // Probe returns nil (no server) → stays idle.
+        let dir = URL(fileURLWithPath: NSTemporaryDirectory()).appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        let s = SupervisorService(ds4Dir: dir, runner: RealProcessRunner(), serverProbe: { _ in nil })
+        s.resumeRunningServerIfAny(port: 8251)
+        let exp = expectation(description: "settled")
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) { exp.fulfill() }
+        wait(for: [exp], timeout: 2)
+        XCTAssertEqual(s.state, .idle)
     }
 
     func testReachesReadyAgainstFakeServer() throws {
