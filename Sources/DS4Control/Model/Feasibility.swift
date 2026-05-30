@@ -17,7 +17,12 @@ func systemRamGiB() -> Double {
 
 func thinkMax(ctx: Int) -> Bool { ctx >= 393_216 }
 
-private let ctxSnapSet = [32_768, 65_536, 131_072, 250_000, 393_216, 1_000_000]
+private let ctxSnapSet = [32_768, 65_536, 131_072, 250_000, 393_216, 786_432, 1_000_000]
+
+/// Cap for the budget-derived *default* context. Keeps the out-of-box ctx at 768K
+/// (faster prefill / smaller startup KV than the 1M ceiling) while still allowing a
+/// manual override up to `variant.ctxCeiling` via Settings.
+private let defaultCtxCap = 786_432
 
 private func snapDown(_ value: Double, ceiling: Int) -> Int {
     let v = min(max(Int(value), 32_768), ceiling)
@@ -29,7 +34,7 @@ func defaultCtx(ramGiB: Double, variant: Variant) -> Int {
     let reserveGiB = 8.0
     let weightsGiB = Quant.for(variant, ramGiB: ramGiB).weightsGiB
     let budgetBytes = max(0, ramGiB - weightsGiB - reserveGiB) * 1_073_741_824.0
-    let raw = budgetBytes / Double(variant.kvBytesPerToken)
+    let raw = min(budgetBytes / Double(variant.kvBytesPerToken), Double(defaultCtxCap))
     return snapDown(raw, ceiling: variant.ctxCeiling)
 }
 

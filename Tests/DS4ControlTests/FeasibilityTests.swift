@@ -3,7 +3,7 @@ import XCTest
 
 final class FeasibilityTests: XCTestCase {
     func testDefaultCtxAnchors() {
-        XCTAssertEqual(defaultCtx(ramGiB: 600, variant: .pro), 1_000_000)
+        XCTAssertEqual(defaultCtx(ramGiB: 600, variant: .pro), 786_432)  // default capped at 768K
         XCTAssertEqual(defaultCtx(ramGiB: 128, variant: .flash), 393_216)
         XCTAssertEqual(defaultCtx(ramGiB: 96, variant: .flash), 250_000)
     }
