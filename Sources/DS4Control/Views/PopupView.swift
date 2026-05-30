@@ -86,6 +86,11 @@ struct PopupView: View {
             } label: {
                 Image(systemName: "gearshape")
             }.buttonStyle(.plain)
+            Button {
+                openWindow(id: "chat")
+            } label: {
+                Image(systemName: "bubble.left")
+            }.buttonStyle(.plain).disabled(supervisor.state != .ready)
             Spacer()
             Button("Quit") { NSApplication.shared.terminate(nil) }.buttonStyle(.plain).foregroundStyle(.secondary)
         }
