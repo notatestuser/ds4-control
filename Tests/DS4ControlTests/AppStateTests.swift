@@ -20,4 +20,12 @@ final class AppStateTests: XCTestCase {
         let a2 = AppState(defaults: d2)
         XCTAssertEqual(a2.port, 9001); XCTAssertEqual(a2.ds4Dir, "/tmp/ds4")
     }
+    func testKvDiskCacheDefaultsOnAndPersists() {
+        let name = "test.\(UUID().uuidString)"
+        let a1 = AppState(defaults: UserDefaults(suiteName: name)!)
+        XCTAssertTrue(a1.kvDiskCache)  // default on
+        a1.kvDiskCache = false
+        let a2 = AppState(defaults: UserDefaults(suiteName: name)!)
+        XCTAssertFalse(a2.kvDiskCache)  // persisted
+    }
 }

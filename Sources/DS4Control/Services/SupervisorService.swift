@@ -74,7 +74,11 @@ final class SupervisorService: ObservableObject {
     }
 
     // MARK: - Start
-    func start(variant: Variant, ctx: Int, port: Int, power: Int?) {
+    /// Disk KV-cache budget (MB) when `kvDiskDir` is provided. ds4's compressed KV
+    /// is tiny, so this holds many cached prefixes; generous but trivial on modern SSDs.
+    static let kvDiskSpaceMB = 32768
+
+    func start(variant: Variant, ctx: Int, port: Int, power: Int?, kvDiskDir: URL? = nil) {
         guard state == .idle || isErrorState else { emitBadState("start"); return }
         if let e = validateDs4Dir() { state = .error(e); return }
         let ram = systemRamGiB()
@@ -86,6 +90,13 @@ final class SupervisorService: ObservableObject {
         stderrTail = []; expectingExit = false; serverAttached = false
         var args = ["-m", gguf.path, "--ctx", "\(ctx)", "--host", "127.0.0.1", "--port", "\(port)", "--metal"]
         if let power { args += ["--power", "\(power)"] }
+        if let kvDiskDir {
+            // Persist compressed KV to disk so repeated/large prefixes (coding agents)
+            // skip re-prefill across turns and restarts. README: "KV cache is a
+            // first-class disk citizen." Created here so the path always exists.
+            try? FileManager.default.createDirectory(at: kvDiskDir, withIntermediateDirectories: true)
+            args += ["--kv-disk-dir", kvDiskDir.path, "--kv-disk-space-mb", "\(Self.kvDiskSpaceMB)"]
+        }
         state = .starting
         do {
             try runner.launch(

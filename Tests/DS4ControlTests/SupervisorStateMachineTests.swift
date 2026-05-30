@@ -45,6 +45,16 @@ final class SupervisorStateMachineTests: XCTestCase {
         XCTAssertEqual(s.state, .ready)
         XCTAssertTrue(r.lastArgs.contains("--metal"))
         XCTAssertTrue(r.lastArgs.contains("250000"))
+        XCTAssertFalse(r.lastArgs.contains("--kv-disk-dir"))  // omitted when no dir passed
+    }
+    func testStartAddsKvDiskArgsWhenDirProvided() throws {
+        let r = FakeRunner(); let s = try makeSupervisor(r)
+        let kv = URL(fileURLWithPath: NSTemporaryDirectory()).appendingPathComponent(UUID().uuidString)
+        s.start(variant: .flash, ctx: 250_000, port: 8000, power: nil, kvDiskDir: kv)
+        XCTAssertTrue(r.lastArgs.contains("--kv-disk-dir"))
+        XCTAssertTrue(r.lastArgs.contains(kv.path))
+        XCTAssertTrue(r.lastArgs.contains("--kv-disk-space-mb"))
+        XCTAssertTrue(FileManager.default.fileExists(atPath: kv.path))  // created
     }
     func testCrashIsError() throws {
         let r = FakeRunner(); let s = try makeSupervisor(r)
