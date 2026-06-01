@@ -59,6 +59,8 @@ struct SettingsView: View {
             }
         }
         .padding(20).frame(width: 560)
+        .onAppear { WindowChrome.windowOpened() }
+        .onDisappear { WindowChrome.windowClosed() }
     }
 
     private func pickDir() {
