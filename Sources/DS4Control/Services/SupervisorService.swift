@@ -254,10 +254,12 @@ final class SupervisorService: ObservableObject {
         if let token = resolveHFToken(env: ProcessInfo.processInfo.environment, cacheFile: cache) {
             env["HF_TOKEN"] = token
         }
-        // Xet high-performance mode: larger reconstruction buffers + higher download
-        // concurrency caps. Safe on this hardware (ample RAM); the adaptive controller
-        // still backs off if the link/CDN is the bottleneck.
-        env["HF_XET_HIGH_PERFORMANCE"] = "1"
+        // CGNAT-friendly download: cap Xet's parallel range-GETs. Its adaptive concurrency
+        // otherwise opens 35+ connections, exhausting the carrier-grade NAT session table
+        // and tripping a ~15-min cooldown. A small reused pool stays well under CGNAT
+        // limits. Both vars cap it whether adaptive concurrency is on or pinned.
+        env["HF_XET_FIXED_DOWNLOAD_CONCURRENCY"] = "4"
+        env["HF_XET_CLIENT_AC_MAX_DOWNLOAD_CONCURRENCY"] = "4"
         do {
             try downloadRunner.launch(
                 executable: ds4Dir.appendingPathComponent("download_model.sh"),
