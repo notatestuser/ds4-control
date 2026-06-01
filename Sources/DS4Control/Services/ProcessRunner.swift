@@ -73,9 +73,44 @@ final class RealProcessRunner: ProcessRunner {
 
     func terminate(graceSeconds: Double) {
         guard let p = process, p.isRunning else { return }
-        p.terminate()  // SIGTERM
+        // download_model.sh spawns `hf` as a child; SIGTERM to the shell alone orphans
+        // hf, which keeps holding the hf download lock and blocks the next attempt.
+        // Capture descendants *before* killing (they reparent to launchd once the shell
+        // dies, so pgrep -P would then find nothing) and signal the whole tree.
+        let kids = Self.descendantPIDs(of: p.processIdentifier)
+        p.terminate()  // SIGTERM the shell
+        for k in kids { kill(k, SIGTERM) }
         queue.asyncAfter(deadline: .now() + graceSeconds) { [weak p] in
             if let p, p.isRunning { kill(p.processIdentifier, SIGKILL) }
+            for k in kids where kill(k, 0) == 0 { kill(k, SIGKILL) }
         }
+    }
+
+    /// All descendant PIDs of `pid` (children, grandchildren, …) via `pgrep -P`.
+    private static func descendantPIDs(of pid: pid_t) -> [pid_t] {
+        var found: [pid_t] = []
+        var frontier: [pid_t] = [pid]
+        while let cur = frontier.popLast() {
+            for child in childPIDs(of: cur) where !found.contains(child) {
+                found.append(child)
+                frontier.append(child)
+            }
+        }
+        return found
+    }
+
+    private static func childPIDs(of pid: pid_t) -> [pid_t] {
+        let proc = Process()
+        proc.executableURL = URL(fileURLWithPath: "/usr/bin/pgrep")
+        proc.arguments = ["-P", "\(pid)"]
+        let out = Pipe()
+        proc.standardOutput = out
+        proc.standardError = Pipe()
+        guard (try? proc.run()) != nil else { return [] }
+        let data = out.fileHandleForReading.readDataToEndOfFile()
+        proc.waitUntilExit()
+        return String(decoding: data, as: UTF8.self)
+            .split(whereSeparator: { $0 == "\n" })
+            .compactMap { pid_t($0.trimmingCharacters(in: .whitespaces)) }
     }
 }

@@ -17,6 +17,10 @@ final class SupervisorService: ObservableObject {
     @Published private(set) var health: HealthStatus?
     // Populated by download(variant:) — see Task 9.
     @Published private(set) var download: DownloadProgress?
+    /// True only while a download process is confirmed alive — our own, or (for a download
+    /// resumed from a prior session) one found via pgrep. Drives the live spinner; refreshed
+    /// every poll tick so it clears within ~1s of the process stopping or being killed.
+    @Published private(set) var downloadProcessLive = false
     @Published private(set) var recentLog: [String] = []
 
     var thinkMaxActive: Bool { thinkMax(ctx: ctx) }
@@ -50,12 +54,13 @@ final class SupervisorService: ObservableObject {
 
     init(
         ds4Dir: URL, runner: ProcessRunner, serverProbe: ((Int) async -> Data?)? = nil,
-        ggufBaseURL: URL? = nil
+        ggufBaseURL: URL? = nil, downloadRunner: ProcessRunner? = nil
     ) {
         self.ds4Dir = ds4Dir
         self.runner = runner
         self.serverProbe = serverProbe ?? SupervisorService.defaultServerProbe
         self.ggufBaseOverride = ggufBaseURL
+        self.downloadRunner = downloadRunner ?? RealProcessRunner()
     }
 
     /// Disk KV-cache directory — writable (App Support), not the read-only bundle.
@@ -229,9 +234,13 @@ final class SupervisorService: ObservableObject {
     }
 
     // MARK: - Download
-    private let downloadRunner = RealProcessRunner()
+    private let downloadRunner: ProcessRunner
+    /// Bumped on every download()/retry. Stale stderr/exit callbacks from a superseded
+    /// (e.g. terminated-on-retry) process carry an old generation and are ignored, so a
+    /// SIGTERM'd process's exit-15 can't clobber the fresh download's state.
+    private var downloadGeneration = 0
 
-    func download(variant: Variant) {
+    func download(variant: Variant, highPerformance: Bool = false) {
         guard state == .idle || isErrorState else { emitBadState("download"); return }
         if let e = validateDs4Dir() { state = .error(e); return }
         let q = Quant.for(variant, ramGiB: systemRamGiB())
@@ -240,6 +249,8 @@ final class SupervisorService: ObservableObject {
         download = DownloadProgress(pct: 0, file: q.ggufFilename, receivedBytes: 0, totalBytes: expectedBytes)
         state = .downloading
         downloadAttached = false
+        downloadGeneration += 1
+        let gen = downloadGeneration
         // Progress comes from polling the file on disk: the hf downloader emits no
         // parseable progress to a non-TTY pipe, so stderr-parsing alone stays at 0%.
         startDownloadPolling(baseDir: baseDir, filename: q.ggufFilename, expected: expectedBytes)
@@ -265,28 +276,37 @@ final class SupervisorService: ObservableObject {
             try? FileManager.default.removeItem(at: script)
             try? FileManager.default.copyItem(at: bundledScript, to: script)
         }
+        // Default: cap Xet's parallel range-GETs. Its adaptive concurrency otherwise opens
+        // 35+ connections, exhausting a carrier-grade NAT session table and tripping a
+        // ~15-min cooldown; a small reused pool stays well under CGNAT limits. High-performance
+        // mode (Settings, default off) lets it run wide for max throughput on uncapped links.
+        if highPerformance {
+            env["HF_XET_HIGH_PERFORMANCE"] = "1"
+        } else {
+            env["HF_XET_FIXED_DOWNLOAD_CONCURRENCY"] = "10"
+            env["HF_XET_CLIENT_AC_MAX_DOWNLOAD_CONCURRENCY"] = "10"
+        }
         do {
             try downloadRunner.launch(
                 executable: script,
                 args: args, cwd: workDir, env: env,
                 onStderrLine: { [weak self] line in
                     buf.text += line + "\n"
-                    // Bound the buffer: downloads run for hours and emit a progress
-                    // repaint per tick; keep only the tail (latest update lives there).
                     if buf.text.count > 4096 { buf.text = String(buf.text.suffix(2048)) }
-                    let pct = parseCurlProgress(buf.text)
+                    // parseCurlProgress now ignores hf's premature "Fetching N files: 100%"
+                    // (it requires a byte-size token); the on-disk poll is the backstop.
+                    guard let pct = parseCurlProgress(buf.text) else { return }
                     let rate = parseDownloadRate(buf.text)
                     Self.onMain {
-                        guard let self else { return }
-                        if let pct {
-                            self.download = DownloadProgress(
-                                pct: pct, file: q.ggufFilename, receivedBytes: 0, totalBytes: nil, rate: rate)
-                        }
+                        guard let self, self.downloadGeneration == gen else { return }
+                        self.download = DownloadProgress(
+                            pct: pct, file: q.ggufFilename, receivedBytes: 0, totalBytes: nil, rate: rate)
                     }
                 },
                 onExit: { [weak self] code in
                     Self.onMain {
-                        guard let self else { return }
+                        guard let self, self.downloadGeneration == gen else { return }
+                        self.downloadProcessLive = false
                         self.downloadPollTimer?.invalidate()
                         self.downloadPollTimer = nil
                         if code == 0 {
@@ -294,13 +314,16 @@ final class SupervisorService: ObservableObject {
                                 pct: 100, file: q.ggufFilename, receivedBytes: 0, totalBytes: nil)
                             self.state = .idle
                         } else {
-                            self.state = .error(.downloadFailed(detail: "exit \(code)"))
+                            let tail = String(buf.text.suffix(200)).trimmingCharacters(in: .whitespacesAndNewlines)
+                            self.state = .error(.downloadFailed(detail: tail.isEmpty ? "exit \(code)" : tail))
                         }
                     }
                 })
+            downloadProcessLive = true
         } catch {
             downloadPollTimer?.invalidate()
             downloadPollTimer = nil
+            downloadProcessLive = false
             state = .error(.downloadFailed(detail: "\(error)"))
         }
     }
@@ -308,7 +331,7 @@ final class SupervisorService: ObservableObject {
     /// Cancel whatever download is being tracked (owned process or an attached
     /// orphan) and start a fresh one — the user's escape hatch from a stuck/stalled
     /// or errored progress bar.
-    func retryDownload(variant: Variant) {
+    func retryDownload(variant: Variant, highPerformance: Bool = false) {
         downloadRunner.terminate(graceSeconds: 0)  // no-op if nothing is running
         downloadPollTimer?.invalidate()
         downloadPollTimer = nil
@@ -316,7 +339,40 @@ final class SupervisorService: ObservableObject {
         lastDownloadSample = nil
         download = nil
         state = .idle
-        download(variant: variant)
+        download(variant: variant, highPerformance: highPerformance)
+    }
+
+    /// Cancel an in-progress download and return to idle without restarting. Bumping the
+    /// generation makes the killed process's exit callback stale, so it can't flip state to
+    /// .error. An owned download is tree-killed via the runner; an attached one (resumed
+    /// from a prior session, so we hold no Process) is stopped by killing the matching ds4
+    /// download processes — the pattern hits both the shell and `hf`, so neither orphans.
+    func cancelDownload() {
+        guard state == .downloading else { return }
+        downloadGeneration += 1
+        if downloadAttached {
+            killAttachedDownloadProcesses()
+        } else {
+            downloadRunner.terminate(graceSeconds: 0)
+        }
+        downloadPollTimer?.invalidate()
+        downloadPollTimer = nil
+        downloadAttached = false
+        downloadProcessLive = false
+        lastDownloadSample = nil
+        staleDownloadPolls = 0
+        download = nil
+        state = .idle
+    }
+
+    private func killAttachedDownloadProcesses() {
+        let p = Process()
+        p.executableURL = URL(fileURLWithPath: "/usr/bin/pkill")
+        p.arguments = ["-f", "download_model|deepseek-v4-gguf"]
+        p.standardOutput = Pipe()
+        p.standardError = Pipe()
+        try? p.run()
+        p.waitUntilExit()
     }
 
     /// If a download is already in flight from a previous session (an .incomplete
@@ -336,6 +392,7 @@ final class SupervisorService: ObservableObject {
         let pct = expected > 0 ? min(100, Double(received) / Double(expected) * 100) : 0
         download = DownloadProgress(pct: pct, file: q.ggufFilename, receivedBytes: received, totalBytes: expected)
         state = .downloading
+        downloadProcessLive = isDownloadProcessRunning()
         startDownloadPolling(baseDir: base, filename: q.ggufFilename, expected: expected)
     }
 
@@ -351,10 +408,14 @@ final class SupervisorService: ObservableObject {
     /// Poll the on-disk download size to publish % and rate (TTY-independent).
     private func pollDownload(baseDir: URL, filename: String, expected: Int64) {
         guard state == .downloading else {
+            downloadProcessLive = false
             downloadPollTimer?.invalidate()
             downloadPollTimer = nil
             return
         }
+        // Liveness for the spinner: our own process, or (when attached) one pgrep finds.
+        // `isRunning` short-circuits for owned downloads, so pgrep only runs when attached.
+        downloadProcessLive = downloadRunner.isRunning || isDownloadProcessRunning()
         // Attached (externally-owned) download completed: the final file appeared.
         if downloadAttached, FileManager.default.fileExists(atPath: baseDir.appendingPathComponent(filename).path) {
             download = DownloadProgress(pct: 100, file: filename, receivedBytes: 0, totalBytes: nil)
@@ -414,6 +475,7 @@ final class SupervisorService: ObservableObject {
 
     private func endAttachedDownload() {
         downloadAttached = false
+        downloadProcessLive = false
         staleDownloadPolls = 0
         downloadPollTimer?.invalidate()
         downloadPollTimer = nil

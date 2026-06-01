@@ -25,6 +25,8 @@ struct ChatView: View {
             statusBar
         }
         .frame(minWidth: 560, minHeight: 640)
+        .onAppear { WindowChrome.windowOpened(title: "DS4 Chat") }
+        .onDisappear { WindowChrome.windowClosed() }
     }
 
     /// Bottom status bar: context window usage (used / total) with a thin bar.

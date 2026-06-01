@@ -16,7 +16,13 @@ struct PopupView: View {
             ModelRowView(supervisor: supervisor, ramGiB: ram)
             if supervisor.state == .downloading, let d = supervisor.download {
                 ProgressView(value: d.pct, total: 100) {
-                    Text(d.file).font(.caption2).lineLimit(1).truncationMode(.middle)
+                    HStack(spacing: 6) {
+                        // Live spinner: shown only while a download process is confirmed running.
+                        if supervisor.downloadProcessLive {
+                            ProgressView().progressViewStyle(.circular).controlSize(.small)
+                        }
+                        Text(d.file).font(.caption2).lineLimit(1).truncationMode(.middle)
+                    }
                 } currentValueLabel: {
                     Text(downloadStatusLabel(d)).font(.caption2)
                 }
@@ -93,14 +99,12 @@ struct PopupView: View {
             HStack {
                 Button {
                     openWindow(id: "settings")
-                    bringWindowToFront(titled: "DS4 Control Settings")
                 } label: {
                     Image(systemName: "gearshape")
                 }.buttonStyle(.plain)
                 Button {
                     if supervisor.state == .ready {
                         openWindow(id: "chat")
-                        bringWindowToFront(titled: "DS4 Chat")
                     } else {
                         showStartHint = true
                     }
@@ -126,15 +130,6 @@ struct PopupView: View {
         }
     }
 
-    /// Menu-bar (.accessory) apps don't foreground on openWindow, so the new window
-    /// lands at the bottom of the stack. Activate the app and raise the window by title.
-    private func bringWindowToFront(titled title: String) {
-        NSApplication.shared.activate(ignoringOtherApps: true)
-        DispatchQueue.main.async {
-            NSApplication.shared.windows.first { $0.title == title }?.makeKeyAndOrderFront(nil)
-        }
-    }
-
     @ViewBuilder private func errorBanner(_ e: ServerError) -> some View {
         HStack(alignment: .top, spacing: 6) {
             Image(systemName: "exclamationmark.triangle.fill").foregroundStyle(.red)
@@ -144,7 +139,7 @@ struct PopupView: View {
 
     private func errorMessage(_ e: ServerError) -> String {
         switch e {
-        case let .ds4DirInvalid(missing): return "ds4 directory invalid — missing \(missing). Set it in Settings."
+        case let .ds4DirInvalid(missing): return "ds4 files not found — missing \(missing). Reinstall the app."
         case let .modelMissing(filename): return "Model not downloaded (\(filename)). Use Download first."
         case .startupTimeout: return "ds4-server didn't become ready in time."
         case .unhealthy: return "ds4-server stopped responding."

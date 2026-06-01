@@ -15,10 +15,12 @@ final class AppStateTests: XCTestCase {
     func testPersistence() {
         let name = "test.\(UUID().uuidString)"
         let d1 = UserDefaults(suiteName: name)!
-        let a1 = AppState(defaults: d1); a1.port = 9001; a1.ctxOverride = 250_000
+        let a1 = AppState(defaults: d1)
+        a1.port = 9001; a1.ctxOverride = 250_000; a1.highPerformanceDownload = true
         let d2 = UserDefaults(suiteName: name)!
         let a2 = AppState(defaults: d2)
         XCTAssertEqual(a2.port, 9001); XCTAssertEqual(a2.ctxOverride, 250_000)
+        XCTAssertTrue(a2.highPerformanceDownload)
     }
     func testKvDiskCacheDefaultsOnAndPersists() {
         let name = "test.\(UUID().uuidString)"
