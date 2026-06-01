@@ -59,7 +59,7 @@ struct SettingsView: View {
             }
         }
         .padding(20).frame(width: 560)
-        .onAppear { WindowChrome.windowOpened() }
+        .onAppear { WindowChrome.windowOpened(title: "DS4 Control Settings") }
         .onDisappear { WindowChrome.windowClosed() }
     }
 

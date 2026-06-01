@@ -93,14 +93,12 @@ struct PopupView: View {
             HStack {
                 Button {
                     openWindow(id: "settings")
-                    bringWindowToFront(titled: "DS4 Control Settings")
                 } label: {
                     Image(systemName: "gearshape")
                 }.buttonStyle(.plain)
                 Button {
                     if supervisor.state == .ready {
                         openWindow(id: "chat")
-                        bringWindowToFront(titled: "DS4 Chat")
                     } else {
                         showStartHint = true
                     }
@@ -123,15 +121,6 @@ struct PopupView: View {
         }
         .onChange(of: supervisor.state) { _, newState in
             if newState == .ready { showStartHint = false }
-        }
-    }
-
-    /// Menu-bar (.accessory) apps don't foreground on openWindow, so the new window
-    /// lands at the bottom of the stack. Activate the app and raise the window by title.
-    private func bringWindowToFront(titled title: String) {
-        NSApplication.shared.activate(ignoringOtherApps: true)
-        DispatchQueue.main.async {
-            NSApplication.shared.windows.first { $0.title == title }?.makeKeyAndOrderFront(nil)
         }
     }
 

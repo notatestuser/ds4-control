@@ -4,3 +4,4 @@
 gguf/
 *.xcuserstate
 .DS_Store
+external/

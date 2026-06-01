@@ -25,7 +25,7 @@ struct ChatView: View {
             statusBar
         }
         .frame(minWidth: 560, minHeight: 640)
-        .onAppear { WindowChrome.windowOpened() }
+        .onAppear { WindowChrome.windowOpened(title: "DS4 Chat") }
         .onDisappear { WindowChrome.windowClosed() }
     }
 
