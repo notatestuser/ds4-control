@@ -7,11 +7,18 @@ jobs:
     runs-on: macos-26
     steps:
       - uses: actions/checkout@v4
+        with:
+          submodules: recursive   # external/ds4 (bundled into the app by build.sh)
       - name: Format lint
         run: swift format lint --strict --recursive Sources Tests
       - name: Build (release, warnings as errors)
         run: swift build -c release -Xswiftc -warnings-as-errors
       - name: Test
         run: swift test
+      - name: Build bundled ds4
+        run: make -C external/ds4 -j ds4-server
       - name: Bundle smoke
-        run: bash build.sh && test -x "DS4 Control.app/Contents/MacOS/DS4Control"
+        run: |
+          DS4_SRC=external/ds4 bash build.sh
+          test -x "DS4 Control.app/Contents/MacOS/DS4Control"
+          test -x "DS4 Control.app/Contents/Resources/ds4/ds4-server"
