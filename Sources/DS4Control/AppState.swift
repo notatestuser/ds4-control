@@ -5,7 +5,6 @@ import Combine
 final class AppState: ObservableObject {
     private let d: UserDefaults
 
-    @Published var ds4Dir: String { didSet { d.set(ds4Dir, forKey: "ds4Dir") } }
     @Published var port: Int { didSet { d.set(port, forKey: "port") } }
     @Published var ctxOverride: Int { didSet { d.set(ctxOverride, forKey: "ctxOverride") } }  // 0 = auto
     @Published var power: Int? { didSet { d.set(power ?? 0, forKey: "power") } }
@@ -17,7 +16,6 @@ final class AppState: ObservableObject {
 
     init(defaults: UserDefaults = .standard) {
         self.d = defaults
-        ds4Dir = d.string(forKey: "ds4Dir") ?? ""
         port = d.object(forKey: "port") as? Int ?? 8000
         ctxOverride = d.integer(forKey: "ctxOverride")
         let p = d.integer(forKey: "power"); power = p > 0 ? p : nil

@@ -30,6 +30,21 @@ if [ -f Resources/icon.png ]; then
   iconutil -c icns "$ICONSET" -o "$APP/Contents/Resources/AppIcon.icns"
 fi
 
+echo "→ bundle ds4 (server + metal shaders + downloader)"
+# The app resolves ds4Dir to Resources/ds4 at runtime (Paths.swift). Bundle only the
+# small artifacts — ds4-server (~1 MB), the metal/ shader sources it compiles at runtime,
+# and download_model.sh. The multi-hundred-GB model is downloaded to Application Support.
+DS4_SRC="${DS4_SRC:-../ds4}"
+DEST="$APP/Contents/Resources/ds4"
+mkdir -p "$DEST"
+for item in ds4-server download_model.sh metal; do
+  if [ ! -e "$DS4_SRC/$item" ]; then
+    echo "  ERROR: missing '$DS4_SRC/$item' — build ds4 first or set DS4_SRC=<ds4 checkout>"; exit 1
+  fi
+  rm -rf "$DEST/$item"; cp -R "$DS4_SRC/$item" "$DEST/$item"
+done
+chmod +x "$DEST/ds4-server" "$DEST/download_model.sh"
+
 echo "→ code signing"
 IDENTITY="${DS4_SIGN_IDENTITY:-}"
 if [ -z "$IDENTITY" ]; then
@@ -37,10 +52,13 @@ if [ -z "$IDENTITY" ]; then
 fi
 if [ -n "$IDENTITY" ]; then
   echo "  identity: $IDENTITY"
+  # Sign inside-out: nested ds4-server first, then the app binary, then the bundle.
+  codesign --force --options runtime --sign "$IDENTITY" "$DEST/ds4-server"
   codesign --force --options runtime --sign "$IDENTITY" "$APP/Contents/MacOS/DS4Control"
   codesign --force --options runtime --sign "$IDENTITY" "$APP"
 else
   echo "  no Apple Development identity found — ad-hoc signing"
+  codesign --force --sign - "$DEST/ds4-server"
   codesign --force --sign - "$APP/Contents/MacOS/DS4Control"
   codesign --force --sign - "$APP"
 fi

@@ -44,11 +44,22 @@ final class SupervisorService: ObservableObject {
     /// can't happen until it has fully exited (port freed). `handleExit` runs this.
     private var pendingRestart: (() -> Void)?
 
-    init(ds4Dir: URL, runner: ProcessRunner, serverProbe: ((Int) async -> Data?)? = nil) {
+    /// Where downloaded gguf models live when `DS4_GGUF_DIR` isn't set. Production passes
+    /// the writable App Support dir; tests pass nil so it falls back to `ds4Dir/gguf`.
+    private let ggufBaseOverride: URL?
+
+    init(
+        ds4Dir: URL, runner: ProcessRunner, serverProbe: ((Int) async -> Data?)? = nil,
+        ggufBaseURL: URL? = nil
+    ) {
         self.ds4Dir = ds4Dir
         self.runner = runner
         self.serverProbe = serverProbe ?? SupervisorService.defaultServerProbe
+        self.ggufBaseOverride = ggufBaseURL
     }
+
+    /// Disk KV-cache directory — writable (App Support), not the read-only bundle.
+    var kvDiskCacheURL: URL { ds4AppSupportDir().appendingPathComponent("kv", isDirectory: true) }
 
     /// Default probe: GET http://127.0.0.1:<port>/v1/models, returning the body on 200.
     static func defaultServerProbe(_ port: Int) async -> Data? {
@@ -67,8 +78,10 @@ final class SupervisorService: ObservableObject {
 
     // MARK: - Path resolution
     private func ggufBaseDir() -> URL {
-        ProcessInfo.processInfo.environment["DS4_GGUF_DIR"].map(URL.init(fileURLWithPath:))
-            ?? ds4Dir.appendingPathComponent("gguf")
+        if let env = ProcessInfo.processInfo.environment["DS4_GGUF_DIR"], !env.isEmpty {
+            return URL(fileURLWithPath: env)
+        }
+        return ggufBaseOverride ?? ds4Dir.appendingPathComponent("gguf")
     }
     private func ggufURL(for variant: Variant, ramGiB: Double) -> URL {
         ggufBaseDir().appendingPathComponent(Quant.for(variant, ramGiB: ramGiB).ggufFilename)
@@ -234,16 +247,28 @@ final class SupervisorService: ObservableObject {
         let args = [q.arg]
         // Optional auth: pass any HF_TOKEN (env or hf cache) to the child via the
         // environment so hf can authenticate — never on the command line (no ps leak).
-        var env: [String: String] = [:]
+        var env: [String: String] = ["DS4_GGUF_DIR": baseDir.path]
         let cache = FileManager.default.homeDirectoryForCurrentUser
             .appendingPathComponent(".cache/huggingface/token")
         if let token = resolveHFToken(env: ProcessInfo.processInfo.environment, cacheFile: cache) {
             env["HF_TOKEN"] = token
         }
+        // The bundled download_model.sh lives in read-only Resources/ds4 but does
+        // `ln -sfn … ds4flash.gguf` in its own dir; stage it next to the writable gguf
+        // dir so that step (and the download) can write. (In tests the gguf dir is
+        // ds4Dir/gguf, so workDir == ds4Dir and this is a no-op.)
+        let workDir = baseDir.deletingLastPathComponent()
+        let bundledScript = ds4Dir.appendingPathComponent("download_model.sh")
+        let script = workDir.appendingPathComponent("download_model.sh")
+        if script.path != bundledScript.path {
+            try? FileManager.default.createDirectory(at: workDir, withIntermediateDirectories: true)
+            try? FileManager.default.removeItem(at: script)
+            try? FileManager.default.copyItem(at: bundledScript, to: script)
+        }
         do {
             try downloadRunner.launch(
-                executable: ds4Dir.appendingPathComponent("download_model.sh"),
-                args: args, cwd: ds4Dir, env: env,
+                executable: script,
+                args: args, cwd: workDir, env: env,
                 onStderrLine: { [weak self] line in
                     buf.text += line + "\n"
                     // Bound the buffer: downloads run for hours and emit a progress

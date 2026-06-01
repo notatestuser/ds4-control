@@ -60,7 +60,7 @@ struct ModelRowView: View {
                         variant: app.selectedVariant,
                         ctx: app.effectiveCtx(ramGiB: ramGiB),
                         port: app.port, power: app.power,
-                        kvDiskDir: app.kvDiskCache ? supervisor.ds4Dir.appendingPathComponent(".ds4-kv") : nil)
+                        kvDiskDir: app.kvDiskCache ? supervisor.kvDiskCacheURL : nil)
                 }.frame(maxWidth: .infinity).disabled(blocked)
             }
         }

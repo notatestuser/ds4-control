@@ -1,5 +1,4 @@
 import SwiftUI
-import UniformTypeIdentifiers
 
 struct SettingsView: View {
     @EnvironmentObject var app: AppState
@@ -10,12 +9,6 @@ struct SettingsView: View {
 
     var body: some View {
         Form {
-            Section("ds4 directory") {
-                HStack {
-                    TextField("Path to ds4 (contains ds4-server + download_model.sh)", text: $app.ds4Dir)
-                    Button("Choose…") { pickDir() }
-                }
-            }
             Section("Server") {
                 TextField("Context size", value: $app.ctxOverride, format: .number)
                 Text(
@@ -40,7 +33,7 @@ struct SettingsView: View {
                         variant: app.selectedVariant,
                         ctx: app.effectiveCtx(ramGiB: ram),
                         port: app.port, power: app.power,
-                        kvDiskDir: app.kvDiskCache ? supervisor.ds4Dir.appendingPathComponent(".ds4-kv") : nil)
+                        kvDiskDir: app.kvDiskCache ? supervisor.kvDiskCacheURL : nil)
                 }
                 .disabled(!isRunning)
                 Text(
@@ -58,12 +51,6 @@ struct SettingsView: View {
                 }
             }
         }
-        .padding(20).frame(width: 420)
-    }
-
-    private func pickDir() {
-        let panel = NSOpenPanel()
-        panel.canChooseDirectories = true; panel.canChooseFiles = false; panel.allowsMultipleSelection = false
-        if panel.runModal() == .OK, let url = panel.url { app.ds4Dir = url.path }
+        .padding(20).frame(width: 560)
     }
 }
