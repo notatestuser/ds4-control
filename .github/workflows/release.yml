@@ -17,7 +17,13 @@ jobs:
     with:
       app-name: "DS4 Control"
       team-id: ${{ vars.APPLE_TEAM_ID }}   # set as a repo variable, keeps the id out of source
-      build-command: "bash build.sh"
+      build-command: |
+        # Provision ds4 (antirez/ds4 has no prebuilt releases) before build.sh bundles it.
+        # Pinned for reproducibility — bump this SHA to ship a newer ds4.
+        git clone -q https://github.com/antirez/ds4 ../ds4
+        git -C ../ds4 checkout -q 34cd76a
+        make -C ../ds4 -j ds4-server
+        bash build.sh
       app-path: "DS4 Control.app"
       bundle-id: "sg.embeddedtech.ds4control"
       dmg-name: "DS4-Control"
