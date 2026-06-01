@@ -6,6 +6,7 @@
 // IOKit/Mach GPU telemetry on a polling Timer, unsuitable here).
 
 import AppKit
+import Combine
 import SwiftUI
 
 struct ChatView: View {
@@ -31,6 +32,13 @@ struct ChatView: View {
         .frame(minWidth: 560, minHeight: 640)
         .onAppear { WindowChrome.windowOpened(title: "DS4 Chat") }
         .onDisappear { WindowChrome.windowClosed() }
+        // Focus the input the instant the window becomes key. WindowChrome makes it key
+        // asynchronously (after the accessory→regular switch), so the old fixed 0.3s delay
+        // was racy — this fires exactly on the key transition, every open.
+        .onReceive(NotificationCenter.default.publisher(for: NSWindow.didBecomeKeyNotification)) {
+            note in
+            if (note.object as? NSWindow)?.title == "DS4 Chat" { inputFocused = true }
+        }
     }
 
     /// Bottom status bar: context window usage (used / total) with a thin bar.
@@ -168,9 +176,6 @@ struct ChatView: View {
         .padding(.vertical, 8)
         .onChange(of: viewModel.isStreaming) { _, streaming in
             if !streaming { inputFocused = true }
-        }
-        .onAppear {
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) { inputFocused = true }
         }
     }
 
