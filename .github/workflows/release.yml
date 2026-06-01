@@ -16,6 +16,7 @@ jobs:
     uses: notatestuser/macos-release/.github/workflows/release.yml@v1
     with:
       app-name: "DS4 Control"
+      team-id: ${{ vars.APPLE_TEAM_ID }}   # set as a repo variable, keeps the id out of source
       build-command: "bash build.sh"
       app-path: "DS4 Control.app"
       bundle-id: "sg.embeddedtech.ds4control"
