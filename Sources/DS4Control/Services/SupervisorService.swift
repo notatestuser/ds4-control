@@ -261,8 +261,8 @@ final class SupervisorService: ObservableObject {
         if highPerformance {
             env["HF_XET_HIGH_PERFORMANCE"] = "1"
         } else {
-            env["HF_XET_FIXED_DOWNLOAD_CONCURRENCY"] = "8"
-            env["HF_XET_CLIENT_AC_MAX_DOWNLOAD_CONCURRENCY"] = "8"
+            env["HF_XET_FIXED_DOWNLOAD_CONCURRENCY"] = "10"
+            env["HF_XET_CLIENT_AC_MAX_DOWNLOAD_CONCURRENCY"] = "10"
         }
         do {
             try downloadRunner.launch(
