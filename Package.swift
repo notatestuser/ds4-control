@@ -1,4 +1,4 @@
-// swift-tools-version: 5.9
+// swift-tools-version: 6.3
 import PackageDescription
 
 let package = Package(
@@ -18,5 +18,6 @@ let package = Package(
             dependencies: ["DS4Control"],
             path: "Tests/DS4ControlTests"
         ),
-    ]
+    ],
+    swiftLanguageModes: [.v6]
 )

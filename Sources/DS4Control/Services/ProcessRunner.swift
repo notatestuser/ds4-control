@@ -6,10 +6,37 @@ protocol ProcessRunner: AnyObject {
     /// Delivers stderr lines and termination.
     func launch(
         executable: URL, args: [String], cwd: URL, env: [String: String],
-        onStderrLine: @escaping (String) -> Void,
-        onExit: @escaping (Int32) -> Void) throws
+        onStderrLine: @escaping @Sendable (String) -> Void,
+        onExit: @escaping @Sendable (Int32) -> Void) throws
     func terminate(graceSeconds: Double)
     var isRunning: Bool { get }
+}
+
+/// Buffers a process's stderr into newline-delimited lines. `FileHandle` invokes the
+/// readability handler serially on its own private queue, so the mutable buffer is never
+/// accessed concurrently — hence the `@unchecked Sendable` conformance (Swift 6 mode).
+private final class StderrLineReader: @unchecked Sendable {
+    private let handle: FileHandle
+    private let onLine: @Sendable (String) -> Void
+    private var buffer = Data()
+
+    init(handle: FileHandle, onLine: @escaping @Sendable (String) -> Void) {
+        self.handle = handle
+        self.onLine = onLine
+    }
+
+    func start() {
+        handle.readabilityHandler = { [self] h in
+            buffer.append(h.availableData)
+            while let nl = buffer.firstIndex(where: { $0 == 0x0A || $0 == 0x0D }) {
+                let line = String(data: buffer[..<nl], encoding: .utf8) ?? ""
+                buffer.removeSubrange(...nl)
+                onLine(line)
+            }
+        }
+    }
+
+    func stop() { handle.readabilityHandler = nil }
 }
 
 final class RealProcessRunner: ProcessRunner {
@@ -20,8 +47,8 @@ final class RealProcessRunner: ProcessRunner {
 
     func launch(
         executable: URL, args: [String], cwd: URL, env: [String: String],
-        onStderrLine: @escaping (String) -> Void,
-        onExit: @escaping (Int32) -> Void
+        onStderrLine: @escaping @Sendable (String) -> Void,
+        onExit: @escaping @Sendable (Int32) -> Void
     ) throws {
         let p = Process()
         p.executableURL = executable
@@ -34,17 +61,10 @@ final class RealProcessRunner: ProcessRunner {
         }
         let err = Pipe()
         p.standardError = err
-        var buffer = Data()
-        err.fileHandleForReading.readabilityHandler = { h in
-            buffer.append(h.availableData)
-            while let nl = buffer.firstIndex(where: { $0 == 0x0A || $0 == 0x0D }) {
-                let line = String(data: buffer[..<nl], encoding: .utf8) ?? ""
-                buffer.removeSubrange(...nl)
-                onStderrLine(line)
-            }
-        }
+        let reader = StderrLineReader(handle: err.fileHandleForReading, onLine: onStderrLine)
+        reader.start()
         p.terminationHandler = { proc in
-            err.fileHandleForReading.readabilityHandler = nil
+            reader.stop()
             onExit(proc.terminationStatus)
         }
         try p.run()

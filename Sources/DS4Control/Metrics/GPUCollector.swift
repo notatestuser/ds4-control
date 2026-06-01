@@ -70,7 +70,8 @@ final class GPUCollector {
         guard size > 0 else { return "Apple Silicon" }
         var buffer = [CChar](repeating: 0, count: size)
         sysctlbyname("machdep.cpu.brand_string", &buffer, &size, nil, 0)
-        let raw = String(cString: buffer).trimmingCharacters(in: .whitespacesAndNewlines)
+        let raw = String(decoding: buffer.prefix { $0 != 0 }.map { UInt8(bitPattern: $0) }, as: UTF8.self)
+            .trimmingCharacters(in: .whitespacesAndNewlines)
         return raw.isEmpty ? "Apple Silicon" : raw
     }
 

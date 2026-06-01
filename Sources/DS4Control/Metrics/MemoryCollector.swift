@@ -5,7 +5,7 @@ final class MemoryCollector {
 
     func collect() -> MemoryMetrics {
         let timestamp = Date()
-        let pageSize = UInt64(vm_kernel_page_size)
+        let pageSize = UInt64(getpagesize())  // function, not the non-Sendable `vm_kernel_page_size` global
 
         // Get total physical memory via sysctl
         var totalBytes: UInt64 = 0
