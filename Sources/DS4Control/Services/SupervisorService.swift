@@ -254,6 +254,10 @@ final class SupervisorService: ObservableObject {
         if let token = resolveHFToken(env: ProcessInfo.processInfo.environment, cacheFile: cache) {
             env["HF_TOKEN"] = token
         }
+        // Xet high-performance mode: larger reconstruction buffers + higher download
+        // concurrency caps. Safe on this hardware (ample RAM); the adaptive controller
+        // still backs off if the link/CDN is the bottleneck.
+        env["HF_XET_HIGH_PERFORMANCE"] = "1"
         do {
             try downloadRunner.launch(
                 executable: ds4Dir.appendingPathComponent("download_model.sh"),
