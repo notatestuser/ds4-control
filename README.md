@@ -32,8 +32,6 @@ What it is **not**:
 
 ## Requirements
 
-- **macOS 14+**.
-- A built [`ds4`](https://github.com/antirez/ds4) checkout that provides the `ds4-server` binary and `download_model.sh`. You point DS4 Control at this directory in Settings.
 - **Apple Silicon** recommended: power/ANE metrics use the Apple Silicon IOReport interface. Intel Macs run the app, but without power metrics.
 - You do **not** pre-download the model — DS4 Control downloads it for you via ds4's `download_model.sh`.
 - **HuggingFace Xet:** the model GGUFs are served from HF's Xet storage, which a plain-`curl` downloader can't fetch (HTTP 400). `download_model.sh` must use the `hf` CLI (`pip install -U huggingface_hub`); the app parses progress from either `hf`/tqdm or `curl` output.
