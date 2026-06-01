@@ -29,6 +29,15 @@ struct MarkdownText: View {
         "tool_call", "tool_response", "tool_result",
     ]
 
+    // Golden-ratio rhythm. Heading sizes form a modular scale (each level = body·φ^(n/3),
+    // so H1 = body·φ), and the space above a heading exceeds the space below it in φ
+    // proportion (8:5 — consecutive Fibonacci ≈ 1.618), so a heading binds to the text
+    // it introduces rather than floating between sections.
+    private static let phi = 1.618
+    private static let baseBlockSpace: CGFloat = 4  // gap between ordinary blocks (unchanged)
+    private static let headingSpaceBelow: CGFloat = 5  // heading → its content (tight)
+    private static let headingSpaceAbove: CGFloat = 8  // previous block → heading (≈ below·φ)
+
     private enum Block {
         case paragraph(String)
         case code(language: String?, body: String)
@@ -80,8 +89,8 @@ struct MarkdownText: View {
                 continue
             }
 
-            // Heading
-            if let hashRange = trimmed.range(of: "^#{1,3} ", options: .regularExpression) {
+            // Heading (CommonMark: 1–6 leading #'s; 7+ is a paragraph)
+            if let hashRange = trimmed.range(of: "^#{1,6} ", options: .regularExpression) {
                 flushParagraph(&paragraphBuffer)
                 let level = trimmed.distance(from: trimmed.startIndex, to: hashRange.upperBound) - 1
                 let text = String(trimmed[hashRange.upperBound...])
@@ -305,7 +314,7 @@ struct MarkdownText: View {
         let blocks = parseBlocks(source)
         for (index, block) in blocks.enumerated() {
             if index > 0 {
-                result.append(blockSpacer())
+                result.append(blockSpacer(spacing(before: block, after: blocks[index - 1])))
             }
             switch block {
             case .paragraph(let text):
@@ -327,8 +336,16 @@ struct MarkdownText: View {
         return result
     }
 
-    private static func blockSpacer() -> NSAttributedString {
-        NSAttributedString(string: "\n\n", attributes: [.font: NSFont.systemFont(ofSize: 4)])
+    /// Golden-ratio vertical gap between two adjacent blocks: generous above a heading,
+    /// tight below it (so the heading groups with its content), baseline otherwise.
+    private static func spacing(before current: Block, after previous: Block) -> CGFloat {
+        if case .heading = current { return headingSpaceAbove }
+        if case .heading = previous { return headingSpaceBelow }
+        return baseBlockSpace
+    }
+
+    private static func blockSpacer(_ size: CGFloat = baseBlockSpace) -> NSAttributedString {
+        NSAttributedString(string: "\n\n", attributes: [.font: NSFont.systemFont(ofSize: size)])
     }
 
     private static func renderInline(_ text: String) -> NSAttributedString {
@@ -381,12 +398,16 @@ struct MarkdownText: View {
     }
 
     private static func renderHeading(level: Int, text: String) -> NSAttributedString {
-        let sizes: [Int: CGFloat] = [1: 22, 2: 18, 3: 15]
-        let size = sizes[level] ?? NSFont.systemFontSize
+        // Modular scale anchored on the body size in equal golden steps (×φ^⅓ per level):
+        // H1 = body·φ, H2 = body·φ^(2/3), H3 = body·φ^(1/3), H4 = body, and H5/H6 step
+        // just below body (still bold) so the full 1–6 range stays distinct.
+        let body = Double(NSFont.systemFontSize)
+        let size = CGFloat((body * pow(phi, Double(4 - level) / 3.0)).rounded())
         let font = NSFont.systemFont(ofSize: size, weight: .bold)
+        // Block-level spacing is owned by the golden-ratio spacers (see `spacing`); the
+        // gentle line height just keeps the rare multi-line heading readable.
         let paragraph = NSMutableParagraphStyle()
-        paragraph.paragraphSpacingBefore = 4
-        paragraph.paragraphSpacing = 2
+        paragraph.lineHeightMultiple = 1.1
         // Render inline markdown inside heading, then enforce heading font.
         let inline = NSMutableAttributedString(attributedString: renderInline(text))
         let full = NSRange(location: 0, length: inline.length)
@@ -537,17 +558,31 @@ struct SelectableMarkdownNSText: NSViewRepresentable {
 }
 
 class IntrinsicTextView: NSTextView {
-    override var intrinsicContentSize: NSSize {
-        guard let layoutManager = layoutManager, let textContainer = textContainer else {
-            return super.intrinsicContentSize
-        }
+    /// Last height we published as the intrinsic size. Used to suppress redundant
+    /// invalidations in `layout()` — see the loop note there.
+    private var lastReportedHeight: CGFloat = -1
+
+    private func usedHeight() -> CGFloat? {
+        guard let layoutManager, let textContainer else { return nil }
         layoutManager.ensureLayout(for: textContainer)
-        let used = layoutManager.usedRect(for: textContainer)
-        return NSSize(width: NSView.noIntrinsicMetric, height: ceil(used.height))
+        return ceil(layoutManager.usedRect(for: textContainer).height)
+    }
+
+    override var intrinsicContentSize: NSSize {
+        guard let height = usedHeight() else { return super.intrinsicContentSize }
+        lastReportedHeight = height
+        return NSSize(width: NSView.noIntrinsicMetric, height: height)
     }
 
     override func layout() {
         super.layout()
+        // Only re-publish the intrinsic size when the laid-out height actually changed.
+        // Invalidating unconditionally makes the enclosing NSHostingView reschedule layout
+        // every pass; with two or more of these views in the transcript that becomes an
+        // unbounded AppKit↔SwiftUI layout feedback loop (100% CPU, UI frozen). Caching the
+        // height lets layout() settle to a no-op once the size is stable.
+        guard let height = usedHeight(), height != lastReportedHeight else { return }
+        lastReportedHeight = height
         invalidateIntrinsicContentSize()
     }
 }
