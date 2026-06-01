@@ -19,10 +19,10 @@ func thinkMax(ctx: Int) -> Bool { ctx >= 393_216 }
 
 private let ctxSnapSet = [32_768, 65_536, 131_072, 250_000, 393_216, 786_432, 1_000_000]
 
-/// Cap for the budget-derived *default* context. Keeps the out-of-box ctx at 768K
-/// (faster prefill / smaller startup KV than the 1M ceiling) while still allowing a
-/// manual override up to `variant.ctxCeiling` via Settings.
-private let defaultCtxCap = 786_432
+/// Cap for the budget-derived *default* context. Set to the 1M ceiling so a Pro
+/// machine with the memory budget defaults to the full context window; Flash and
+/// smaller machines stay bounded by their memory budget and `variant.ctxCeiling`.
+private let defaultCtxCap = 1_000_000
 
 private func snapDown(_ value: Double, ceiling: Int) -> Int {
     let v = min(max(Int(value), 32_768), ceiling)
