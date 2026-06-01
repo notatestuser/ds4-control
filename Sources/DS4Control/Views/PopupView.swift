@@ -49,7 +49,8 @@ struct PopupView: View {
                 subtitle: gb(s.memory.usedBytes) + " / " + gb(s.memory.totalBytes),
                 severity: .from(percent: s.memory.usagePercent, warningAt: 85, criticalAt: 95),
                 sparklineData: metrics.history.memory(), accentColor: .blue,
-                sparklineFixedRange: (0, 100), emphasized: true, gaugeFraction: s.memory.usagePercent / 100)
+                sparklineFixedRange: (0, 100), emphasized: true, gaugeFraction: s.memory.usagePercent / 100,
+                severityColorOverride: s.memory.usagePercent >= 95 ? .yellow : nil)
             HStack(spacing: 10) {
                 MetricCardView(
                     title: "GPU", icon: "cpu",

@@ -18,6 +18,9 @@ struct MetricCardView: View {
     /// 0.0–1.0 fill for the inline gauge that replaces the header icon. When
     /// nil the plain SF Symbol icon is shown instead.
     var gaugeFraction: Double? = nil
+    /// Overrides the severity-derived tint for this card (gauge, dot, sparkline,
+    /// border). Lets the memory card read as yellow — not danger-red — at peak.
+    var severityColorOverride: Color? = nil
 
     private var valueFontSize: CGFloat { emphasized ? 30 : 22 }
     private var sparklineHeight: CGFloat {
@@ -29,6 +32,7 @@ struct MetricCardView: View {
     private var borderOpacity: Double { emphasized ? 0.45 : 0.15 }
     private var borderWidth: CGFloat { emphasized ? 1.5 : 1 }
     private var showDetails: Bool { !compact && !details.isEmpty }
+    private var tint: Color { severityColorOverride ?? severity.color }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 4) {
@@ -45,7 +49,7 @@ struct MetricCardView: View {
                 Spacer()
 
                 Circle()
-                    .fill(severity.color)
+                    .fill(tint)
                     .frame(width: 6, height: 6)
             }
 
@@ -57,7 +61,7 @@ struct MetricCardView: View {
                         fraction: fraction,
                         text: value,
                         textFontSize: valueFontSize,
-                        trackColor: severity.color,
+                        trackColor: tint,
                         diameter: emphasized ? 78 : 60
                     )
                 } else {
@@ -78,7 +82,7 @@ struct MetricCardView: View {
 
             // Sparkline
             SparklineView(
-                dataPoints: sparklineData, lineColor: severity.color, fixedRange: sparklineFixedRange,
+                dataPoints: sparklineData, lineColor: tint, fixedRange: sparklineFixedRange,
                 timeRangeSeconds: sparklineTimeRangeSeconds, valueFormatter: sparklineValueFormatter
             )
             .frame(height: sparklineHeight)
@@ -105,7 +109,7 @@ struct MetricCardView: View {
                 .overlay(
                     RoundedRectangle(cornerRadius: 10, style: .continuous)
                         .strokeBorder(
-                            emphasized ? accentColor.opacity(borderOpacity) : severity.color.opacity(borderOpacity),
+                            emphasized ? accentColor.opacity(borderOpacity) : tint.opacity(borderOpacity),
                             lineWidth: borderWidth
                         )
                 )
