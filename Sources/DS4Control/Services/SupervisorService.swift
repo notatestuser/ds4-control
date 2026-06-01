@@ -1,6 +1,13 @@
 import Foundation
 import Combine
 
+/// Reference box so the `@Sendable` stderr callback can accumulate downloader output
+/// across invocations. The process reader calls the callback serially, so the single
+/// mutable field is never touched concurrently — hence `@unchecked Sendable`.
+private final class DownloadStderrBuffer: @unchecked Sendable {
+    var text = ""
+}
+
 @MainActor
 final class SupervisorService: ObservableObject {
     @Published private(set) var state: ServerState = .idle
@@ -33,6 +40,9 @@ final class SupervisorService: ObservableObject {
     /// True when attached to a ds4-server started by a previous session (we don't
     /// own the process; Stop terminates it by port — see resumeRunningServerIfAny).
     private var serverAttached = false
+    /// Deferred start used by `restart`: when stopping an owned process, the relaunch
+    /// can't happen until it has fully exited (port freed). `handleExit` runs this.
+    private var pendingRestart: (() -> Void)?
 
     init(ds4Dir: URL, runner: ProcessRunner, serverProbe: ((Int) async -> Data?)? = nil) {
         self.ds4Dir = ds4Dir
@@ -51,11 +61,9 @@ final class SupervisorService: ObservableObject {
         return data
     }
 
-    deinit {
-        healthTimer?.invalidate()
-        startupTimer?.invalidate()
-        downloadPollTimer?.invalidate()
-    }
+    // Timers are invalidated in stop()/finish()/fail() and on handleExit; the supervisor
+    // itself is an app-lifetime @StateObject, so no deinit cleanup is needed (and a
+    // nonisolated deinit can't touch these MainActor-isolated, non-Sendable Timers).
 
     // MARK: - Path resolution
     private func ggufBaseDir() -> URL {
@@ -124,7 +132,12 @@ final class SupervisorService: ObservableObject {
 
     private func handleExit(_ code: Int32) {
         healthTimer?.invalidate(); healthTimer = nil; startupTimer?.invalidate(); startupTimer = nil
-        if expectingExit { state = .idle; return }
+        if expectingExit {
+            state = .idle
+            if let relaunch = pendingRestart { pendingRestart = nil; relaunch() }
+            return
+        }
+        pendingRestart = nil
         state = .error(.crashed(tail: stderrTail.suffix(10).joined(separator: "\n")))
     }
 
@@ -142,6 +155,25 @@ final class SupervisorService: ObservableObject {
             state = .idle
         } else {
             runner.terminate(graceSeconds: 30)
+        }
+    }
+
+    /// Apply changed settings to a running server: stop it, then relaunch with the
+    /// supplied parameters once it has fully exited (so the port is free). When the
+    /// running server was owned by us, `stop()` drains asynchronously and the relaunch
+    /// is deferred to `handleExit`; an attached orphan stops synchronously and relaunches
+    /// at once. No-op unless a server is running.
+    func restart(variant: Variant, ctx: Int, port: Int, power: Int?, kvDiskDir: URL? = nil) {
+        guard state == .ready || state == .starting else { emitBadState("restart"); return }
+        let relaunch: () -> Void = { [weak self] in
+            guard let self else { return }
+            self.start(variant: variant, ctx: ctx, port: port, power: power, kvDiskDir: kvDiskDir)
+        }
+        stop()
+        if state == .idle {
+            relaunch()  // stopped synchronously (attached, or the runner exited inline)
+        } else {
+            pendingRestart = relaunch  // owned process draining its grace period
         }
     }
 
@@ -198,7 +230,7 @@ final class SupervisorService: ObservableObject {
         // Progress comes from polling the file on disk: the hf downloader emits no
         // parseable progress to a non-TTY pipe, so stderr-parsing alone stays at 0%.
         startDownloadPolling(baseDir: baseDir, filename: q.ggufFilename, expected: expectedBytes)
-        var buf = ""
+        let buf = DownloadStderrBuffer()
         let args = [q.arg]
         // Optional auth: pass any HF_TOKEN (env or hf cache) to the child via the
         // environment so hf can authenticate — never on the command line (no ps leak).
@@ -213,12 +245,12 @@ final class SupervisorService: ObservableObject {
                 executable: ds4Dir.appendingPathComponent("download_model.sh"),
                 args: args, cwd: ds4Dir, env: env,
                 onStderrLine: { [weak self] line in
-                    buf += line + "\n"
+                    buf.text += line + "\n"
                     // Bound the buffer: downloads run for hours and emit a progress
                     // repaint per tick; keep only the tail (latest update lives there).
-                    if buf.count > 4096 { buf = String(buf.suffix(2048)) }
-                    let pct = parseCurlProgress(buf)
-                    let rate = parseDownloadRate(buf)
+                    if buf.text.count > 4096 { buf.text = String(buf.text.suffix(2048)) }
+                    let pct = parseCurlProgress(buf.text)
+                    let rate = parseDownloadRate(buf.text)
                     Self.onMain {
                         guard let self else { return }
                         if let pct {
@@ -396,7 +428,7 @@ final class SupervisorService: ObservableObject {
     /// background queue → hop via Task; synchronous callers already on the main thread
     /// (e.g. the test FakeRunner) run immediately so state transitions are observable
     /// in the same turn.
-    private static func onMain(_ body: @escaping @MainActor () -> Void) {
+    private nonisolated static func onMain(_ body: @escaping @MainActor () -> Void) {
         if Thread.isMainThread {
             MainActor.assumeIsolated { body() }
         } else {

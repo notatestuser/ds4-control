@@ -3,7 +3,10 @@ import UniformTypeIdentifiers
 
 struct SettingsView: View {
     @EnvironmentObject var app: AppState
+    @EnvironmentObject var supervisor: SupervisorService
     private let ram = systemRamGiB()
+
+    private var isRunning: Bool { supervisor.state == .ready || supervisor.state == .starting }
 
     var body: some View {
         Form {
@@ -29,6 +32,21 @@ struct SettingsView: View {
                 Toggle("Disk KV cache", isOn: $app.kvDiskCache)
                 Text(
                     "Persists the KV cache to disk so repeated or large prompts skip re-prefill. Applied on next Start."
+                )
+                .font(.caption2).foregroundStyle(.secondary)
+
+                Button("Apply & Restart Server") {
+                    supervisor.restart(
+                        variant: app.selectedVariant,
+                        ctx: app.effectiveCtx(ramGiB: ram),
+                        port: app.port, power: app.power,
+                        kvDiskDir: app.kvDiskCache ? supervisor.ds4Dir.appendingPathComponent(".ds4-kv") : nil)
+                }
+                .disabled(!isRunning)
+                Text(
+                    isRunning
+                        ? "Stops and relaunches ds4-server now with these settings."
+                        : "Server not running — these settings apply when you next Start it."
                 )
                 .font(.caption2).foregroundStyle(.secondary)
             }

@@ -5,11 +5,11 @@ private final class FakeRunner: ProcessRunner {
     var isRunning = false
     var lastArgs: [String] = []
     var lastEnv: [String: String] = [:]
-    private var stderr: ((String) -> Void)?
-    private var exit: ((Int32) -> Void)?
+    private var stderr: (@Sendable (String) -> Void)?
+    private var exit: (@Sendable (Int32) -> Void)?
     func launch(
         executable: URL, args: [String], cwd: URL, env: [String: String],
-        onStderrLine: @escaping (String) -> Void, onExit: @escaping (Int32) -> Void
+        onStderrLine: @escaping @Sendable (String) -> Void, onExit: @escaping @Sendable (Int32) -> Void
     ) throws {
         lastArgs = args; lastEnv = env; isRunning = true; stderr = onStderrLine; exit = onExit
     }
@@ -68,6 +68,26 @@ final class SupervisorStateMachineTests: XCTestCase {
         r.emit("ds4-server: listening on http://127.0.0.1:8000")
         s.stop()
         XCTAssertEqual(s.state, .idle)
+    }
+    func testRestartRelaunchesWithNewSettings() throws {
+        let r = FakeRunner(); let s = try makeSupervisor(r)
+        s.start(variant: .flash, ctx: 250_000, port: 8000, power: nil)
+        r.emit("ds4-server: listening on http://127.0.0.1:8000")
+        XCTAssertEqual(s.state, .ready)
+
+        s.restart(variant: .flash, ctx: 393_216, port: 8000, power: nil)
+        // FakeRunner.terminate fires exit(0) inline, so the relaunch happens immediately.
+        XCTAssertEqual(s.state, .starting)
+        XCTAssertTrue(r.lastArgs.contains("393216"))  // new ctx applied to the relaunch
+        XCTAssertEqual(s.ctx, 393_216)
+
+        r.emit("ds4-server: listening on http://127.0.0.1:8000")
+        XCTAssertEqual(s.state, .ready)
+    }
+    func testRestartIgnoredWhenNotRunning() throws {
+        let r = FakeRunner(); let s = try makeSupervisor(r)
+        s.restart(variant: .flash, ctx: 393_216, port: 8000, power: nil)
+        XCTAssertEqual(s.state, .idle)  // no-op; nothing to restart
     }
     func testMissingModel() throws {
         let dir = URL(fileURLWithPath: NSTemporaryDirectory()).appendingPathComponent(UUID().uuidString)

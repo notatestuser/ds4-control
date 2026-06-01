@@ -42,7 +42,7 @@ struct DS4ControlApp: App {
         .menuBarExtraStyle(.window)
 
         Window("DS4 Control Settings", id: "settings") {
-            SettingsView().environmentObject(app)
+            SettingsView().environmentObject(app).environmentObject(supervisor)
         }
         .windowResizability(.contentSize)
 
