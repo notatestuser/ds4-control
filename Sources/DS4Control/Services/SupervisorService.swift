@@ -17,6 +17,10 @@ final class SupervisorService: ObservableObject {
     @Published private(set) var health: HealthStatus?
     // Populated by download(variant:) — see Task 9.
     @Published private(set) var download: DownloadProgress?
+    /// True only while a download process is confirmed alive — our own, or (for a download
+    /// resumed from a prior session) one found via pgrep. Drives the live spinner; refreshed
+    /// every poll tick so it clears within ~1s of the process stopping or being killed.
+    @Published private(set) var downloadProcessLive = false
     @Published private(set) var recentLog: [String] = []
 
     var thinkMaxActive: Bool { thinkMax(ctx: ctx) }
@@ -270,6 +274,7 @@ final class SupervisorService: ObservableObject {
                 onExit: { [weak self] code in
                     Self.onMain {
                         guard let self, self.downloadGeneration == gen else { return }
+                        self.downloadProcessLive = false
                         self.downloadPollTimer?.invalidate()
                         self.downloadPollTimer = nil
                         if code == 0 {
@@ -282,9 +287,11 @@ final class SupervisorService: ObservableObject {
                         }
                     }
                 })
+            downloadProcessLive = true
         } catch {
             downloadPollTimer?.invalidate()
             downloadPollTimer = nil
+            downloadProcessLive = false
             state = .error(.downloadFailed(detail: "\(error)"))
         }
     }
@@ -301,6 +308,39 @@ final class SupervisorService: ObservableObject {
         download = nil
         state = .idle
         download(variant: variant)
+    }
+
+    /// Cancel an in-progress download and return to idle without restarting. Bumping the
+    /// generation makes the killed process's exit callback stale, so it can't flip state to
+    /// .error. An owned download is tree-killed via the runner; an attached one (resumed
+    /// from a prior session, so we hold no Process) is stopped by killing the matching ds4
+    /// download processes — the pattern hits both the shell and `hf`, so neither orphans.
+    func cancelDownload() {
+        guard state == .downloading else { return }
+        downloadGeneration += 1
+        if downloadAttached {
+            killAttachedDownloadProcesses()
+        } else {
+            downloadRunner.terminate(graceSeconds: 0)
+        }
+        downloadPollTimer?.invalidate()
+        downloadPollTimer = nil
+        downloadAttached = false
+        downloadProcessLive = false
+        lastDownloadSample = nil
+        staleDownloadPolls = 0
+        download = nil
+        state = .idle
+    }
+
+    private func killAttachedDownloadProcesses() {
+        let p = Process()
+        p.executableURL = URL(fileURLWithPath: "/usr/bin/pkill")
+        p.arguments = ["-f", "download_model|deepseek-v4-gguf"]
+        p.standardOutput = Pipe()
+        p.standardError = Pipe()
+        try? p.run()
+        p.waitUntilExit()
     }
 
     /// If a download is already in flight from a previous session (an .incomplete
@@ -320,6 +360,7 @@ final class SupervisorService: ObservableObject {
         let pct = expected > 0 ? min(100, Double(received) / Double(expected) * 100) : 0
         download = DownloadProgress(pct: pct, file: q.ggufFilename, receivedBytes: received, totalBytes: expected)
         state = .downloading
+        downloadProcessLive = isDownloadProcessRunning()
         startDownloadPolling(baseDir: base, filename: q.ggufFilename, expected: expected)
     }
 
@@ -335,10 +376,14 @@ final class SupervisorService: ObservableObject {
     /// Poll the on-disk download size to publish % and rate (TTY-independent).
     private func pollDownload(baseDir: URL, filename: String, expected: Int64) {
         guard state == .downloading else {
+            downloadProcessLive = false
             downloadPollTimer?.invalidate()
             downloadPollTimer = nil
             return
         }
+        // Liveness for the spinner: our own process, or (when attached) one pgrep finds.
+        // `isRunning` short-circuits for owned downloads, so pgrep only runs when attached.
+        downloadProcessLive = downloadRunner.isRunning || isDownloadProcessRunning()
         // Attached (externally-owned) download completed: the final file appeared.
         if downloadAttached, FileManager.default.fileExists(atPath: baseDir.appendingPathComponent(filename).path) {
             download = DownloadProgress(pct: 100, file: filename, receivedBytes: 0, totalBytes: nil)
@@ -398,6 +443,7 @@ final class SupervisorService: ObservableObject {
 
     private func endAttachedDownload() {
         downloadAttached = false
+        downloadProcessLive = false
         staleDownloadPolls = 0
         downloadPollTimer?.invalidate()
         downloadPollTimer = nil

@@ -55,4 +55,33 @@ final class DownloadRaceTests: XCTestCase {
         dl.exits[1](0)  // the live (gen-2) download finishes
         XCTAssertEqual(s.state, .idle)
     }
+
+    /// downloadProcessLive (drives the spinner) is true while the owned process runs and
+    /// clears the moment it exits.
+    func testProcessLiveTracksOwnedProcess() throws {
+        let dl = CapturingRunner()
+        let s = SupervisorService(ds4Dir: try makeDir(), runner: CapturingRunner(), downloadRunner: dl)
+
+        s.download(variant: .flash)
+        XCTAssertTrue(s.downloadProcessLive, "spinner should show once the process launched")
+
+        dl.exits[0](0)  // process exits
+        XCTAssertFalse(s.downloadProcessLive, "spinner must clear when the process exits")
+    }
+
+    /// Abort kills the download and returns to idle; the killed process's stale exit must
+    /// not resurrect an error state.
+    func testCancelDownloadReturnsToIdle() throws {
+        let dl = CapturingRunner()
+        let s = SupervisorService(ds4Dir: try makeDir(), runner: CapturingRunner(), downloadRunner: dl)
+
+        s.download(variant: .flash)
+        s.cancelDownload()
+        XCTAssertEqual(s.state, .idle)
+        XCTAssertFalse(s.downloadProcessLive)
+        XCTAssertNil(s.download)
+
+        dl.exits[0](15)  // stale exit from the aborted process
+        XCTAssertEqual(s.state, .idle, "aborted download's stale exit must not flip back to .error")
+    }
 }

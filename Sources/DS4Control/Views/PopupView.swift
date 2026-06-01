@@ -16,7 +16,13 @@ struct PopupView: View {
             ModelRowView(supervisor: supervisor, ramGiB: ram)
             if supervisor.state == .downloading, let d = supervisor.download {
                 ProgressView(value: d.pct, total: 100) {
-                    Text(d.file).font(.caption2).lineLimit(1).truncationMode(.middle)
+                    HStack(spacing: 6) {
+                        // Live spinner: shown only while a download process is confirmed running.
+                        if supervisor.downloadProcessLive {
+                            ProgressView().progressViewStyle(.circular).controlSize(.small)
+                        }
+                        Text(d.file).font(.caption2).lineLimit(1).truncationMode(.middle)
+                    }
                 } currentValueLabel: {
                     Text(downloadStatusLabel(d)).font(.caption2)
                 }
