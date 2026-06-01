@@ -58,7 +58,7 @@ struct SettingsView: View {
                 }
             }
         }
-        .padding(20).frame(width: 420)
+        .padding(20).frame(width: 560)
     }
 
     private func pickDir() {
