@@ -13,6 +13,10 @@ struct ChatView: View {
     @ObservedObject var viewModel: ChatViewModel
 
     @FocusState private var inputFocused: Bool
+    /// Whether the transcript is pinned to the bottom. Driven by the bottom anchor's
+    /// visibility: true while the latest message is on-screen, false once the user scrolls
+    /// up — so auto-scroll follows new content only when they haven't scrolled away.
+    @State private var atBottom = true
 
     var body: some View {
         VStack(spacing: 0) {
@@ -85,17 +89,23 @@ struct ChatView: View {
                     Color.clear
                         .frame(height: 1)
                         .id("bottom")
+                        // Bottom-anchor visibility drives `atBottom`: visible ⇒ pinned to the
+                        // latest message; once it scrolls off, the user has scrolled up.
+                        .onAppear { atBottom = true }
+                        .onDisappear { atBottom = false }
                 }
                 .padding(16)
             }
-            // Pin to the latest message as it grows. The previous PreferenceKey-based
-            // near-bottom detection wrote measured content height into @State on every
-            // layout pass; with two or more NSViewRepresentable bubbles the height never
-            // settled to a fixed point, so the update transaction spun the main thread at
-            // 100% CPU on the second message. (`isNearBottom` was only ever set true, so
-            // that machinery never gated anything — autoscroll behaviour is unchanged.)
-            .onChange(of: viewModel.messages.count) { _, _ in scrollToBottom(proxy) }
-            .onChange(of: viewModel.messages.last?.content) { _, _ in scrollToBottom(proxy) }
+            // Auto-scroll to the latest message, but only while pinned to the bottom — if the
+            // user scrolled up to read history, leave them there. A new generation re-pins so
+            // the reply is followed.
+            .onChange(of: viewModel.messages.count) { _, _ in if atBottom { scrollToBottom(proxy) } }
+            .onChange(of: viewModel.messages.last?.content) { _, _ in
+                if atBottom { scrollToBottom(proxy, animated: false) }
+            }
+            .onChange(of: viewModel.isStreaming) { _, streaming in
+                if streaming { atBottom = true; scrollToBottom(proxy) }
+            }
         }
     }
 
@@ -164,8 +174,12 @@ struct ChatView: View {
         }
     }
 
-    private func scrollToBottom(_ proxy: ScrollViewProxy) {
-        withAnimation(.easeOut(duration: 0.15)) {
+    private func scrollToBottom(_ proxy: ScrollViewProxy, animated: Bool = true) {
+        // Instant during streaming (token-by-token) to avoid stacking animations; animated
+        // for discrete new messages.
+        if animated {
+            withAnimation(.easeOut(duration: 0.15)) { proxy.scrollTo("bottom", anchor: .bottom) }
+        } else {
             proxy.scrollTo("bottom", anchor: .bottom)
         }
     }

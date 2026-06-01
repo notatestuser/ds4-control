@@ -543,8 +543,6 @@ struct SelectableMarkdownNSText: NSViewRepresentable {
         textView.textContainer?.widthTracksTextView = true
         textView.isVerticallyResizable = false
         textView.isHorizontallyResizable = false
-        textView.setContentHuggingPriority(.defaultHigh, for: .vertical)
-        textView.setContentCompressionResistancePriority(.required, for: .vertical)
         textView.textStorage?.setAttributedString(attributed)
         return textView
     }
@@ -552,37 +550,34 @@ struct SelectableMarkdownNSText: NSViewRepresentable {
     func updateNSView(_ nsView: IntrinsicTextView, context: Context) {
         if nsView.textStorage?.isEqual(to: attributed) == false {
             nsView.textStorage?.setAttributedString(attributed)
-            nsView.invalidateIntrinsicContentSize()
         }
+    }
+
+    /// Report height as a PURE FUNCTION of the proposed width. SwiftUI sizes the view to
+    /// exactly this, so AppKit↔SwiftUI layout reaches a fixed point in one pass. The prior
+    /// `intrinsicContentSize` + `layout()`-invalidate path measured against an oscillating
+    /// container width, so the reported height alternated between two values and spun the
+    /// main thread at 100% CPU once a second bubble existed.
+    func sizeThatFits(
+        _ proposal: ProposedViewSize, nsView: IntrinsicTextView, context: Context
+    ) -> CGSize? {
+        guard let width = proposal.width, width > 0, width.isFinite else { return nil }
+        return CGSize(width: width, height: nsView.height(forWidth: width))
     }
 }
 
 class IntrinsicTextView: NSTextView {
-    /// Last height we published as the intrinsic size. Used to suppress redundant
-    /// invalidations in `layout()` — see the loop note there.
-    private var lastReportedHeight: CGFloat = -1
-
-    private func usedHeight() -> CGFloat? {
-        guard let layoutManager, let textContainer else { return nil }
+    /// Deterministic laid-out height for an exact width. Disables width-tracking during the
+    /// measurement so the result depends only on `width` (not the current frame); SwiftUI
+    /// then assigns that same width, so on-screen wrapping matches.
+    func height(forWidth width: CGFloat) -> CGFloat {
+        guard let layoutManager, let textContainer else { return 0 }
+        let tracks = textContainer.widthTracksTextView
+        textContainer.widthTracksTextView = false
+        textContainer.size = NSSize(width: width, height: .greatestFiniteMagnitude)
         layoutManager.ensureLayout(for: textContainer)
-        return ceil(layoutManager.usedRect(for: textContainer).height)
-    }
-
-    override var intrinsicContentSize: NSSize {
-        guard let height = usedHeight() else { return super.intrinsicContentSize }
-        lastReportedHeight = height
-        return NSSize(width: NSView.noIntrinsicMetric, height: height)
-    }
-
-    override func layout() {
-        super.layout()
-        // Only re-publish the intrinsic size when the laid-out height actually changed.
-        // Invalidating unconditionally makes the enclosing NSHostingView reschedule layout
-        // every pass; with two or more of these views in the transcript that becomes an
-        // unbounded AppKit↔SwiftUI layout feedback loop (100% CPU, UI frozen). Caching the
-        // height lets layout() settle to a no-op once the size is stable.
-        guard let height = usedHeight(), height != lastReportedHeight else { return }
-        lastReportedHeight = height
-        invalidateIntrinsicContentSize()
+        let h = ceil(layoutManager.usedRect(for: textContainer).height)
+        textContainer.widthTracksTextView = tracks
+        return h
     }
 }
