@@ -15,6 +15,15 @@ func systemRamGiB() -> Double {
     return Double(bytes) / 1_073_741_824.0
 }
 
+/// Current `iogpu.wired_limit_mb` (MB). 0 = OS default (the user hasn't raised it).
+/// Used to hide the wired-limit advisory once it's been set high enough.
+func currentWiredLimitMB() -> Int {
+    var value = 0  // zero-initialized: a 4-byte sysctl lands in the low bytes on arm64
+    var size = MemoryLayout<Int>.size
+    guard sysctlbyname("iogpu.wired_limit_mb", &value, &size, nil, 0) == 0 else { return 0 }
+    return value
+}
+
 func thinkMax(ctx: Int) -> Bool { ctx >= 393_216 }
 
 private let ctxSnapSet = [32_768, 65_536, 131_072, 250_000, 393_216, 786_432, 1_000_000]

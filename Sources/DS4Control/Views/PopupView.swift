@@ -93,6 +93,7 @@ struct PopupView: View {
             HStack {
                 Button {
                     openWindow(id: "settings")
+                    bringWindowToFront(titled: "DS4 Control Settings")
                 } label: {
                     Image(systemName: "gearshape")
                 }.buttonStyle(.plain)

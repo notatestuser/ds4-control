@@ -40,4 +40,5 @@ final class FeasibilityTests: XCTestCase {
         XCTAssertFalse(thinkMax(ctx: 392_000))
     }
     func testSystemRam() { XCTAssertGreaterThan(systemRamGiB(), 0) }
+    func testWiredLimitReadable() { XCTAssertGreaterThanOrEqual(currentWiredLimitMB(), 0) }
 }
