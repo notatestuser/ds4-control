@@ -6,7 +6,7 @@ jobs:
   build-test:
     runs-on: macos-26
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
         with:
           submodules: recursive   # external/ds4 (bundled into the app by build.sh)
       - name: Format lint
