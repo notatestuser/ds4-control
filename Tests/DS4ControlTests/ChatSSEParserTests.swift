@@ -42,6 +42,21 @@ final class ChatSSEParserTests: XCTestCase {
         XCTAssertEqual(ChatSSEParser.parse(line: #"data: {"choices":[]}"#), .ignored)
     }
 
+    func testParsesUsageChunk() {
+        let line =
+            #"data: {"choices":[],"usage":{"prompt_tokens":10,"completion_tokens":5,"total_tokens":15,"prompt_tokens_details":{"cached_tokens":0}}}"#
+        XCTAssertEqual(
+            ChatSSEParser.parse(line: line),
+            .usage(completionTokens: 5, promptTokens: 10, totalTokens: 15))
+    }
+
+    func testUsageChunkTotalDefaultsToSum() {
+        let line = #"data: {"choices":[],"usage":{"prompt_tokens":10,"completion_tokens":5}}"#
+        XCTAssertEqual(
+            ChatSSEParser.parse(line: line),
+            .usage(completionTokens: 5, promptTokens: 10, totalTokens: 15))
+    }
+
     func testMultilineContentPreserved() {
         let line = #"data: {"choices":[{"delta":{"content":"line1\nline2"}}]}"#
         XCTAssertEqual(ChatSSEParser.parse(line: line), .delta("line1\nline2"))

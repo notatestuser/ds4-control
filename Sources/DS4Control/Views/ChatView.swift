@@ -1,35 +1,18 @@
 // Chat UI ported from mlx-serve (MIT, Copyright 2026 David):
-// app/Sources/MLXServe/Views/ChatView.swift. The transcript layout, near-bottom
-// auto-scroll (PreferenceKey-based), MessageBubble and the iMessage-style input bar
-// are adapted from that source, stripped of mlx-serve's agent/tools/MCP/multi-session
-// machinery for DS4's single conversation. GeneratingIndicator is fresh DS4 code (the
-// original drove IOKit/Mach GPU telemetry on a polling Timer, unsuitable here).
+// app/Sources/MLXServe/Views/ChatView.swift. The transcript layout, auto-scroll to
+// the latest message, MessageBubble and the iMessage-style input bar are adapted from
+// that source, stripped of mlx-serve's agent/tools/MCP/multi-session machinery for
+// DS4's single conversation. GeneratingIndicator is fresh DS4 code (the original drove
+// IOKit/Mach GPU telemetry on a polling Timer, unsuitable here).
 
 import AppKit
 import SwiftUI
-
-private struct ContentBottomKey: PreferenceKey {
-    static let defaultValue: CGFloat = 0
-    static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) {
-        value = nextValue()
-    }
-}
-
-private struct ScrollViewHeightKey: PreferenceKey {
-    static let defaultValue: CGFloat = 0
-    static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) {
-        value = nextValue()
-    }
-}
 
 struct ChatView: View {
     @EnvironmentObject var supervisor: SupervisorService
     @ObservedObject var viewModel: ChatViewModel
 
     @FocusState private var inputFocused: Bool
-    @State private var isNearBottom = true
-    @State private var contentBottom: CGFloat = 0
-    @State private var scrollViewHeight: CGFloat = 0
 
     var body: some View {
         VStack(spacing: 0) {
@@ -38,8 +21,32 @@ struct ChatView: View {
             transcript
             Divider()
             inputBar
+            Divider()
+            statusBar
         }
         .frame(minWidth: 560, minHeight: 640)
+    }
+
+    /// Bottom status bar: context window usage (used / total) with a thin bar.
+    private var statusBar: some View {
+        HStack(spacing: 8) {
+            Text("Context")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+            ProgressView(
+                value: Double(min(viewModel.contextUsedTokens, supervisor.ctx)),
+                total: Double(max(supervisor.ctx, 1))
+            )
+            .progressViewStyle(.linear)
+            .frame(width: 120)
+            Text("\(viewModel.contextUsedTokens.formatted()) / \(supervisor.ctx.formatted())")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .monospacedDigit()
+            Spacer()
+        }
+        .padding(.horizontal, 16)
+        .padding(.vertical, 6)
     }
 
     private var header: some View {
@@ -76,36 +83,17 @@ struct ChatView: View {
                     Color.clear
                         .frame(height: 1)
                         .id("bottom")
-                        .background(
-                            GeometryReader { geo in
-                                Color.clear.preference(
-                                    key: ContentBottomKey.self,
-                                    value: geo.frame(in: .named("chatScroll")).maxY
-                                )
-                            }
-                        )
                 }
                 .padding(16)
             }
-            .coordinateSpace(name: "chatScroll")
-            .background(
-                GeometryReader { geo in
-                    Color.clear.preference(key: ScrollViewHeightKey.self, value: geo.size.height)
-                }
-            )
-            .onPreferenceChange(ContentBottomKey.self) { bottom in
-                contentBottom = bottom
-                if bottom - scrollViewHeight < 60 { isNearBottom = true }
-            }
-            .onPreferenceChange(ScrollViewHeightKey.self) { height in
-                scrollViewHeight = height
-            }
-            .onChange(of: viewModel.messages.count) { _, _ in
-                if isNearBottom { scrollToBottom(proxy) }
-            }
-            .onChange(of: viewModel.messages.last?.content) { _, _ in
-                if isNearBottom { scrollToBottom(proxy) }
-            }
+            // Pin to the latest message as it grows. The previous PreferenceKey-based
+            // near-bottom detection wrote measured content height into @State on every
+            // layout pass; with two or more NSViewRepresentable bubbles the height never
+            // settled to a fixed point, so the update transaction spun the main thread at
+            // 100% CPU on the second message. (`isNearBottom` was only ever set true, so
+            // that machinery never gated anything — autoscroll behaviour is unchanged.)
+            .onChange(of: viewModel.messages.count) { _, _ in scrollToBottom(proxy) }
+            .onChange(of: viewModel.messages.last?.content) { _, _ in scrollToBottom(proxy) }
         }
     }
 
@@ -210,6 +198,12 @@ struct MessageBubble: View {
                     .foregroundStyle(message.role == .user ? .white : .primary)
                     .clipShape(RoundedRectangle(cornerRadius: 14))
                 }
+                if message.role == .assistant, let stats = message.stats {
+                    Text(Self.statsLine(stats))
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                        .padding(.leading, 4)
+                }
             }
 
             if message.role == .assistant {
@@ -222,6 +216,21 @@ struct MessageBubble: View {
                 NSPasteboard.general.setString(message.content, forType: .string)
             }
         }
+    }
+
+    /// e.g. "TTFT 640 ms · gen 1.8s · 47 tok/s" — nil parts are omitted.
+    static func statsLine(_ stats: GenerationStats) -> String {
+        var parts: [String] = []
+        if let ttft = stats.ttftSeconds { parts.append("TTFT \(formatDuration(ttft))") }
+        if let decode = stats.decodeSeconds { parts.append("gen \(formatDuration(decode))") }
+        if let tps = stats.tokensPerSecond { parts.append("\(Int(tps.rounded())) tok/s") }
+        return parts.joined(separator: " · ")
+    }
+
+    /// Sub-second durations render in ms, longer ones in seconds.
+    static func formatDuration(_ seconds: Double) -> String {
+        if seconds < 1 { return "\(Int((seconds * 1000).rounded())) ms" }
+        return String(format: "%.1fs", seconds)
     }
 }
 

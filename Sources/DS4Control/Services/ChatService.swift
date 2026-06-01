@@ -17,8 +17,8 @@ struct ChatService {
         self.lineSource = lineSource
     }
 
-    /// Streams assistant content deltas for the given conversation.
-    func stream(port: Int, model: String, messages: [ChatMessage]) -> AsyncThrowingStream<String, Error> {
+    /// Streams assistant content deltas (and a trailing usage event) for the conversation.
+    func stream(port: Int, model: String, messages: [ChatMessage]) -> AsyncThrowingStream<ChatStreamEvent, Error> {
         let request = Self.makeRequest(port: port, model: model, messages: messages)
         let lines = lineSource(request)
         return AsyncThrowingStream { continuation in
@@ -27,7 +27,10 @@ struct ChatService {
                     for try await line in lines {
                         switch ChatSSEParser.parse(line: line) {
                         case .delta(let text):
-                            continuation.yield(text)
+                            continuation.yield(.text(text))
+                        case .usage(let completion, let prompt, let total):
+                            continuation.yield(
+                                .usage(completionTokens: completion, promptTokens: prompt, totalTokens: total))
                         case .done:
                             continuation.finish()
                             return
@@ -56,6 +59,7 @@ struct ChatService {
             "max_tokens": 32768,
             "thinking": false,
             "stream": true,
+            "stream_options": ["include_usage": true],
         ]
         request.httpBody = try? JSONSerialization.data(withJSONObject: body)
         return request

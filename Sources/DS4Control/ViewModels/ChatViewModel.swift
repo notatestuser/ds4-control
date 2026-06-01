@@ -11,17 +11,25 @@ final class ChatViewModel: ObservableObject {
     @Published var input: String = ""
     @Published private(set) var isStreaming = false
     @Published private(set) var hasReceivedFirstToken = false
+    @Published private(set) var contextUsedTokens = 0
     @Published var errorText: String?
 
     let model: String
     private let port: () -> Int
-    private let streamProvider: (Int, String, [ChatMessage]) -> AsyncThrowingStream<String, Error>
+    private let streamProvider: (Int, String, [ChatMessage]) -> AsyncThrowingStream<ChatStreamEvent, Error>
     private var streamTask: Task<Void, Never>?
+
+    // In-flight timing/usage for the current reply (MainActor-isolated state, not
+    // captured locals — mutating captured vars inside the Task closure won't compile).
+    private var genStart: Date?
+    private var genFirstToken: Date?
+    private var genCompletionTokens: Int?
+    private var genTotalTokens: Int?
 
     init(
         model: String,
         port: @escaping () -> Int,
-        streamProvider: @escaping (Int, String, [ChatMessage]) -> AsyncThrowingStream<String, Error>
+        streamProvider: @escaping (Int, String, [ChatMessage]) -> AsyncThrowingStream<ChatStreamEvent, Error>
     ) {
         self.model = model
         self.port = port
@@ -42,6 +50,11 @@ final class ChatViewModel: ObservableObject {
         isStreaming = true
         hasReceivedFirstToken = false
 
+        genStart = Date()
+        genFirstToken = nil
+        genCompletionTokens = nil
+        genTotalTokens = nil
+
         let assistant = ChatMessage(role: .assistant, content: "", isStreaming: true)
         messages.append(assistant)
         let assistantID = assistant.id
@@ -49,10 +62,17 @@ final class ChatViewModel: ObservableObject {
         let stream = streamProvider(port(), model, messages.dropLast().map { $0 })
         streamTask = Task { [weak self] in
             do {
-                for try await delta in stream {
+                for try await event in stream {
                     guard let self else { return }
-                    if !self.hasReceivedFirstToken { self.hasReceivedFirstToken = true }
-                    self.appendDelta(delta, to: assistantID)
+                    switch event {
+                    case .text(let delta):
+                        if self.genFirstToken == nil { self.genFirstToken = Date() }
+                        if !self.hasReceivedFirstToken { self.hasReceivedFirstToken = true }
+                        self.appendDelta(delta, to: assistantID)
+                    case .usage(let completion, _, let total):
+                        self.genCompletionTokens = completion
+                        self.genTotalTokens = total
+                    }
                 }
             } catch {
                 self?.errorText = error.localizedDescription
@@ -74,6 +94,7 @@ final class ChatViewModel: ObservableObject {
         stop()
         messages.removeAll()
         errorText = nil
+        contextUsedTokens = 0
     }
 
     private func appendDelta(_ delta: String, to id: UUID) {
@@ -84,7 +105,15 @@ final class ChatViewModel: ObservableObject {
     private func finish(_ id: UUID) {
         if let index = messages.firstIndex(where: { $0.id == id }) {
             messages[index].isStreaming = false
+            if let start = genStart, let first = genFirstToken {
+                messages[index].stats = GenerationStats(
+                    ttftSeconds: first.timeIntervalSince(start),
+                    decodeSeconds: Date().timeIntervalSince(first),
+                    completionTokens: genCompletionTokens
+                )
+            }
         }
+        if let total = genTotalTokens { contextUsedTokens = total }
         isStreaming = false
         streamTask = nil
     }

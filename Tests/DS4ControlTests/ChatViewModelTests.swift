@@ -7,14 +7,25 @@ import XCTest
 final class ChatViewModelTests: XCTestCase {
     private var cancellables: Set<AnyCancellable> = []
 
-    /// Builds a VM whose stream yields the given deltas then finishes.
-    private func makeViewModel(deltas: [String], error: Error? = nil) -> ChatViewModel {
+    /// Builds a VM whose stream yields the given text deltas (and an optional
+    /// trailing usage event) then finishes.
+    private func makeViewModel(
+        deltas: [String],
+        usage: (completion: Int, prompt: Int, total: Int)? = nil,
+        error: Error? = nil
+    ) -> ChatViewModel {
         ChatViewModel(
             model: "deepseek-v4-pro",
             port: { 8000 },
             streamProvider: { _, _, _ in
                 AsyncThrowingStream { continuation in
-                    for delta in deltas { continuation.yield(delta) }
+                    for delta in deltas { continuation.yield(.text(delta)) }
+                    if let usage {
+                        continuation.yield(
+                            .usage(
+                                completionTokens: usage.completion, promptTokens: usage.prompt, totalTokens: usage.total
+                            ))
+                    }
                     if let error { continuation.finish(throwing: error) } else { continuation.finish() }
                 }
             }
@@ -101,5 +112,37 @@ final class ChatViewModelTests: XCTestCase {
         viewModel.send()
         await awaitStreamCompletion(viewModel)
         XCTAssertEqual(viewModel.messages.last?.content, "abc")
+    }
+
+    func testUsagePopulatesStatsAndContextUsage() async {
+        let viewModel = makeViewModel(deltas: ["Hello"], usage: (completion: 90, prompt: 100, total: 190))
+        viewModel.input = "go"
+        viewModel.send()
+        await awaitStreamCompletion(viewModel)
+        let stats = viewModel.messages.last?.stats
+        XCTAssertEqual(stats?.completionTokens, 90)
+        XCTAssertNotNil(stats?.ttftSeconds)
+        XCTAssertNotNil(stats?.decodeSeconds)
+        XCTAssertEqual(viewModel.contextUsedTokens, 190)
+    }
+
+    func testStatsWithoutUsageHasTimingButNoTokenCount() async {
+        let viewModel = makeViewModel(deltas: ["a", "b"])
+        viewModel.input = "go"
+        viewModel.send()
+        await awaitStreamCompletion(viewModel)
+        XCTAssertNotNil(viewModel.messages.last?.stats)
+        XCTAssertNil(viewModel.messages.last?.stats?.completionTokens)
+        XCTAssertEqual(viewModel.contextUsedTokens, 0)
+    }
+
+    func testClearResetsContextUsage() async {
+        let viewModel = makeViewModel(deltas: ["x"], usage: (completion: 5, prompt: 10, total: 15))
+        viewModel.input = "go"
+        viewModel.send()
+        await awaitStreamCompletion(viewModel)
+        XCTAssertEqual(viewModel.contextUsedTokens, 15)
+        viewModel.clear()
+        XCTAssertEqual(viewModel.contextUsedTokens, 0)
     }
 }

@@ -12,6 +12,15 @@ final class ChatServiceTests: XCTestCase {
         }
     }
 
+    /// Collects the text payloads from a `ChatStreamEvent` stream.
+    private func collectText(_ stream: AsyncThrowingStream<ChatStreamEvent, Error>) async throws -> [String] {
+        var collected: [String] = []
+        for try await event in stream {
+            if case .text(let t) = event { collected.append(t) }
+        }
+        return collected
+    }
+
     func testStreamsDeltasUntilDone() async throws {
         let service = ChatService(
             lineSource: fixedLines([
@@ -21,10 +30,7 @@ final class ChatServiceTests: XCTestCase {
                 #"data: {"choices":[{"delta":{"content":"ignored"}}]}"#,
             ])
         )
-        var collected: [String] = []
-        for try await delta in service.stream(port: 8000, model: "deepseek-v4-pro", messages: []) {
-            collected.append(delta)
-        }
+        let collected = try await collectText(service.stream(port: 8000, model: "deepseek-v4-pro", messages: []))
         XCTAssertEqual(collected, ["Hel", "lo"])
     }
 
@@ -37,10 +43,7 @@ final class ChatServiceTests: XCTestCase {
                 "data: [DONE]",
             ])
         )
-        var collected: [String] = []
-        for try await delta in service.stream(port: 8000, model: "m", messages: []) {
-            collected.append(delta)
-        }
+        let collected = try await collectText(service.stream(port: 8000, model: "m", messages: []))
         XCTAssertEqual(collected, ["x"])
     }
 
@@ -50,11 +53,23 @@ final class ChatServiceTests: XCTestCase {
                 #"data: {"choices":[{"delta":{"content":"a"}}]}"#
             ])
         )
-        var collected: [String] = []
-        for try await delta in service.stream(port: 8000, model: "m", messages: []) {
-            collected.append(delta)
-        }
+        let collected = try await collectText(service.stream(port: 8000, model: "m", messages: []))
         XCTAssertEqual(collected, ["a"])
+    }
+
+    func testSurfacesUsageEvent() async throws {
+        let service = ChatService(
+            lineSource: fixedLines([
+                #"data: {"choices":[{"delta":{"content":"hi"}}]}"#,
+                #"data: {"choices":[],"usage":{"prompt_tokens":10,"completion_tokens":2,"total_tokens":12}}"#,
+                "data: [DONE]",
+            ])
+        )
+        var events: [ChatStreamEvent] = []
+        for try await event in service.stream(port: 8000, model: "m", messages: []) {
+            events.append(event)
+        }
+        XCTAssertEqual(events, [.text("hi"), .usage(completionTokens: 2, promptTokens: 10, totalTokens: 12)])
     }
 
     func testPropagatesError() async {
@@ -67,8 +82,8 @@ final class ChatServiceTests: XCTestCase {
         })
         var collected: [String] = []
         do {
-            for try await delta in service.stream(port: 8000, model: "m", messages: []) {
-                collected.append(delta)
+            for try await event in service.stream(port: 8000, model: "m", messages: []) {
+                if case .text(let t) = event { collected.append(t) }
             }
             XCTFail("expected error")
         } catch {
@@ -91,6 +106,8 @@ final class ChatServiceTests: XCTestCase {
         XCTAssertEqual(json["max_tokens"] as? Int, 32768)
         XCTAssertEqual(json["thinking"] as? Bool, false)
         XCTAssertEqual(json["stream"] as? Bool, true)
+        let streamOptions = try XCTUnwrap(json["stream_options"] as? [String: Any])
+        XCTAssertEqual(streamOptions["include_usage"] as? Bool, true)
         let messages = try XCTUnwrap(json["messages"] as? [[String: String]])
         XCTAssertEqual(messages.first?["role"], "user")
         XCTAssertEqual(messages.first?["content"], "hi")

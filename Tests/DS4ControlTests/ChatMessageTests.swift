@@ -27,4 +27,14 @@ final class ChatMessageTests: XCTestCase {
         let b = ChatMessage(id: id, role: .user, content: "x")
         XCTAssertEqual(a, b)
     }
+
+    func testTokensPerSecond() {
+        let stats = GenerationStats(ttftSeconds: 0.5, decodeSeconds: 2.0, completionTokens: 90)
+        XCTAssertEqual(stats.tokensPerSecond, 45)
+    }
+
+    func testTokensPerSecondNilWhenIncomplete() {
+        XCTAssertNil(GenerationStats(decodeSeconds: 2.0, completionTokens: nil).tokensPerSecond)
+        XCTAssertNil(GenerationStats(decodeSeconds: 0, completionTokens: 90).tokensPerSecond)
+    }
 }
