@@ -44,10 +44,14 @@ final class SupervisorService: ObservableObject {
     /// can't happen until it has fully exited (port freed). `handleExit` runs this.
     private var pendingRestart: (() -> Void)?
 
-    init(ds4Dir: URL, runner: ProcessRunner, serverProbe: ((Int) async -> Data?)? = nil) {
+    init(
+        ds4Dir: URL, runner: ProcessRunner, serverProbe: ((Int) async -> Data?)? = nil,
+        downloadRunner: ProcessRunner? = nil
+    ) {
         self.ds4Dir = ds4Dir
         self.runner = runner
         self.serverProbe = serverProbe ?? SupervisorService.defaultServerProbe
+        self.downloadRunner = downloadRunner ?? RealProcessRunner()
     }
 
     /// Default probe: GET http://127.0.0.1:<port>/v1/models, returning the body on 200.
@@ -216,7 +220,11 @@ final class SupervisorService: ObservableObject {
     }
 
     // MARK: - Download
-    private let downloadRunner = RealProcessRunner()
+    private let downloadRunner: ProcessRunner
+    /// Bumped on every download()/retry. Stale stderr/exit callbacks from a superseded
+    /// (e.g. terminated-on-retry) process carry an old generation and are ignored, so a
+    /// SIGTERM'd process's exit-15 can't clobber the fresh download's state.
+    private var downloadGeneration = 0
 
     func download(variant: Variant) {
         guard state == .idle || isErrorState else { emitBadState("download"); return }
@@ -227,6 +235,8 @@ final class SupervisorService: ObservableObject {
         download = DownloadProgress(pct: 0, file: q.ggufFilename, receivedBytes: 0, totalBytes: expectedBytes)
         state = .downloading
         downloadAttached = false
+        downloadGeneration += 1
+        let gen = downloadGeneration
         // Progress comes from polling the file on disk: the hf downloader emits no
         // parseable progress to a non-TTY pipe, so stderr-parsing alone stays at 0%.
         startDownloadPolling(baseDir: baseDir, filename: q.ggufFilename, expected: expectedBytes)
@@ -252,13 +262,14 @@ final class SupervisorService: ObservableObject {
                     guard let pct = parseCurlProgress(buf.text) else { return }
                     let rate = parseDownloadRate(buf.text)
                     Self.onMain {
-                        self?.download = DownloadProgress(
+                        guard let self, self.downloadGeneration == gen else { return }
+                        self.download = DownloadProgress(
                             pct: pct, file: q.ggufFilename, receivedBytes: 0, totalBytes: nil, rate: rate)
                     }
                 },
                 onExit: { [weak self] code in
                     Self.onMain {
-                        guard let self else { return }
+                        guard let self, self.downloadGeneration == gen else { return }
                         self.downloadPollTimer?.invalidate()
                         self.downloadPollTimer = nil
                         if code == 0 {
