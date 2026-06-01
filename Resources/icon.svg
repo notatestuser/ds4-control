@@ -1,0 +1,42 @@
+<svg width="1024" height="1024" viewBox="0 0 1024 1024" xmlns="http://www.w3.org/2000/svg">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#EAF2FF"/>
+      <stop offset="1" stop-color="#C7DCFF"/>
+    </linearGradient>
+    <linearGradient id="bolt" x1="0.15" y1="0" x2="0.85" y2="1">
+      <stop offset="0" stop-color="#60A5FA"/>
+      <stop offset="0.5" stop-color="#3B82F6"/>
+      <stop offset="1" stop-color="#1D4ED8"/>
+    </linearGradient>
+    <linearGradient id="ink" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#1E40AF"/>
+      <stop offset="1" stop-color="#172E73"/>
+    </linearGradient>
+    <filter id="boltShadow" x="-30%" y="-30%" width="160%" height="160%">
+      <feDropShadow dx="0" dy="10" stdDeviation="16" flood-color="#16307A" flood-opacity="0.30"/>
+    </filter>
+    <clipPath id="body"><rect x="96" y="96" width="832" height="832" rx="186"/></clipPath>
+    <linearGradient id="sheen" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#ffffff" stop-opacity="0.38"/>
+      <stop offset="0.55" stop-color="#ffffff" stop-opacity="0"/>
+    </linearGradient>
+  </defs>
+
+  <!-- icon body + soft top sheen (smooth fade, no hard edge) -->
+  <g clip-path="url(#body)">
+    <rect x="96" y="96" width="832" height="832" fill="url(#bg)"/>
+    <rect x="96" y="96" width="832" height="832" fill="url(#sheen)"/>
+  </g>
+
+  <!-- lightning bolt (energy = inference speed) -->
+  <path d="M533,190 L323,442 L512,442 L491,610 L701,358 L512,358 Z"
+        fill="url(#bolt)" filter="url(#boltShadow)"
+        stroke="#ffffff" stroke-width="10" stroke-linejoin="round"/>
+
+  <!-- DS wordmark -->
+  <text x="512" y="806" text-anchor="middle"
+        font-family="Helvetica Neue, Helvetica, Arial, sans-serif"
+        font-weight="800" font-size="250" letter-spacing="8"
+        fill="url(#ink)">DS</text>
+</svg>
