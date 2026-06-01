@@ -61,6 +61,17 @@ DS4 Control shows the advisory value for your machine when this applies.
 
 **Default context** scales with RAM: `1,000,000` on ≥ 512 GiB (Pro's full model context), up to `393216` ("Think-Max") on Flash with ≥ 128 GiB, and stepped down through a snap set (`393216 → 250000 → 131072 → 65536 → 32768`) for lower-RAM machines based on a weights-plus-KV memory budget. You can override the context in Settings.
 
+## Performance
+
+Measured single-stream generation throughput on a **Mac Studio M3 Ultra** (512 GiB):
+
+| Model | Throughput |
+|---|---|
+| V4 Pro | **~14 tok/s** |
+| V4 Flash | **~35 tok/s** |
+
+Varies with context length, prompt, and the Metal wired limit.
+
 ## Build & Run
 
 For development:
