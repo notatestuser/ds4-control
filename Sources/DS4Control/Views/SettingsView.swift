@@ -7,60 +7,102 @@ struct SettingsView: View {
 
     private var isRunning: Bool { supervisor.state == .ready || supervisor.state == .starting }
 
+    private var ctxHint: String {
+        if app.ctxOverride > 0 {
+            return thinkMax(ctx: app.ctxOverride)
+                ? "Think-Max active (context ≥ 393,216)." : "Below Think-Max."
+        }
+        return "Auto: \(defaultCtx(ramGiB: ram, variant: app.selectedVariant).formatted()) tokens for \(Int(ram)) GiB."
+    }
+
+    private var restartHint: String {
+        isRunning
+            ? "Stops and relaunches ds4-server now with these settings."
+            : "Server not running — these settings apply when you next Start it."
+    }
+
+    private var powerBinding: Binding<Double> {
+        Binding(get: { Double(app.power ?? 100) }, set: { app.power = Int($0.rounded()) })
+    }
+
     var body: some View {
         Form {
-            Section("Server") {
-                TextField("Context size", value: $app.ctxOverride, format: .number)
-                Text(
-                    app.ctxOverride > 0
-                        ? (thinkMax(ctx: app.ctxOverride) ? "Think-Max active (≥393216)" : "Below Think-Max")
-                        : "Auto: \(defaultCtx(ramGiB: ram, variant: app.selectedVariant)) for \(Int(ram)) GiB"
-                )
-                .font(.caption).foregroundStyle(.secondary)
-                TextField("Port", value: $app.port, format: .number)
-                Stepper(
-                    "GPU power duty: \(app.power ?? 100)",
-                    value: Binding(
-                        get: { app.power ?? 100 }, set: { app.power = $0 }), in: 1...100)
-                Toggle("Disk KV cache", isOn: $app.kvDiskCache)
-                Text(
-                    "Persists the KV cache to disk so repeated or large prompts skip re-prefill. Applied on next Start."
-                )
-                .font(.caption2).foregroundStyle(.secondary)
-
-                Button("Apply & Restart Server") {
-                    supervisor.restart(
-                        variant: app.selectedVariant,
-                        ctx: app.effectiveCtx(ramGiB: ram),
-                        port: app.port, power: app.power,
-                        kvDiskDir: app.kvDiskCache ? supervisor.ds4Dir.appendingPathComponent(".ds4-kv") : nil)
+            Section {
+                LabeledContent {
+                    TextField("", value: $app.ctxOverride, format: .number)
+                        .labelsHidden().multilineTextAlignment(.trailing).frame(width: 130)
+                } label: {
+                    Text("Context size")
                 }
-                .disabled(!isRunning)
-                Text(
-                    isRunning
-                        ? "Stops and relaunches ds4-server now with these settings."
-                        : "Server not running — these settings apply when you next Start it."
-                )
-                .font(.caption2).foregroundStyle(.secondary)
+                LabeledContent {
+                    TextField("", value: $app.port, format: .number)
+                        .labelsHidden().multilineTextAlignment(.trailing).frame(width: 130)
+                } label: {
+                    Text("Port")
+                }
+                LabeledContent {
+                    HStack(spacing: 10) {
+                        Slider(value: powerBinding, in: 1...100)
+                        Text("\(app.power ?? 100)")
+                            .monospacedDigit().foregroundStyle(.secondary)
+                            .frame(width: 30, alignment: .trailing)
+                    }
+                    .frame(width: 230)
+                } label: {
+                    Text("GPU power duty")
+                }
+                Toggle("Disk KV cache", isOn: $app.kvDiskCache)
+            } header: {
+                Text("Server")
+            } footer: {
+                VStack(alignment: .leading, spacing: 4) {
+                    Text(ctxHint)
+                    Text(
+                        "Disk KV cache persists the cache so repeated or large prompts skip re-prefill "
+                            + "— applied on next Start.")
+                }
             }
-            Section("Downloads") {
+
+            Section {
+                Button("Apply & Restart Server", action: restart)
+                    .disabled(!isRunning)
+            } footer: {
+                Text(restartHint)
+            }
+
+            Section {
                 Toggle("High performance mode", isOn: $app.highPerformanceDownload)
+            } header: {
+                Text("Downloads")
+            } footer: {
                 Text(
                     "Maximises speed with wide parallel connections. Leave off behind CGNAT or strict NAT — "
                         + "the connection storm can exhaust the session table and knock you offline."
                 )
-                .font(.caption2).foregroundStyle(.secondary)
             }
+
             if ram < 96 {
-                Section("Advanced") {
+                Section {
                     Toggle("Enable unsupported low-RAM mode", isOn: $app.unsupportedLowRAM)
+                } header: {
+                    Text("Advanced")
+                } footer: {
                     Text("Below 96 GiB is not a supported configuration; ds4 may swap or crash.")
-                        .font(.caption2).foregroundStyle(.red)
+                        .foregroundStyle(.red)
                 }
             }
         }
-        .padding(20).frame(width: 560)
+        .formStyle(.grouped)
+        .frame(width: 480, height: 520)
         .onAppear { WindowChrome.windowOpened(title: "DS4 Control Settings") }
         .onDisappear { WindowChrome.windowClosed() }
+    }
+
+    private func restart() {
+        supervisor.restart(
+            variant: app.selectedVariant,
+            ctx: app.effectiveCtx(ramGiB: ram),
+            port: app.port, power: app.power,
+            kvDiskDir: app.kvDiskCache ? supervisor.ds4Dir.appendingPathComponent(".ds4-kv") : nil)
     }
 }
