@@ -4,6 +4,8 @@
 
 A macOS menu-bar control pane for **DeepSeek V4** via [`ds4`](https://github.com/antirez/ds4). It launches, supervises, and monitors a local `ds4-server`, lets you pick **V4 Pro** or **V4 Flash**, and shows mini resource-monitoring widgets right in the popup — so you can run a frontier local model without ever touching a terminal.
 
+<br>
+
 ![DS4 Control: the menu-bar popup (Pro/Flash selector with unified-memory, GPU, CPU and power widgets) next to the chat window showing per-message timing/throughput and a context-usage bar](screenshot.png)
 
 ## What it does
@@ -19,8 +21,6 @@ What it is **not**:
 - No embedded inference — all inference is delegated to `ds4-server`. This app only supervises the process and surfaces system metrics.
 
 ## Screenshot
-
-<!-- TODO: add screenshot of the popup -->
 
 ## Quick start
 
