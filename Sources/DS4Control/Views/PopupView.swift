@@ -7,6 +7,7 @@ struct PopupView: View {
     @Environment(\.openWindow) private var openWindow
 
     private let ram = systemRamGiB()
+    @State private var showStartHint = false
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
@@ -81,20 +82,46 @@ struct PopupView: View {
     }
 
     private var footer: some View {
-        HStack {
-            Button {
-                openWindow(id: "settings")
-            } label: {
-                Image(systemName: "gearshape")
-            }.buttonStyle(.plain)
-            Button {
-                openWindow(id: "chat")
-                bringWindowToFront(titled: "DS4 Chat")
-            } label: {
-                Image(systemName: "bubble.left")
-            }.buttonStyle(.plain).disabled(supervisor.state != .ready)
-            Spacer()
-            Button("Quit") { NSApplication.shared.terminate(nil) }.buttonStyle(.plain).foregroundStyle(.secondary)
+        // Inline hint rather than a modal: a `.window` MenuBarExtra dismisses when it
+        // resigns key, so an .alert/sheet would collapse the whole popover.
+        VStack(alignment: .leading, spacing: 6) {
+            if showStartHint && supervisor.state != .ready {
+                Text("Start the model first to use chat and the pi agent.")
+                    .font(.caption2)
+                    .foregroundStyle(.orange)
+            }
+            HStack {
+                Button {
+                    openWindow(id: "settings")
+                } label: {
+                    Image(systemName: "gearshape")
+                }.buttonStyle(.plain)
+                Button {
+                    if supervisor.state == .ready {
+                        openWindow(id: "chat")
+                        bringWindowToFront(titled: "DS4 Chat")
+                    } else {
+                        showStartHint = true
+                    }
+                } label: {
+                    Image(systemName: "bubble.left")
+                }.buttonStyle(.plain)
+                Button {
+                    if supervisor.state == .ready {
+                        PiLauncher.launch(
+                            modelSpec: PiLauncher.modelSpec(for: supervisor.activeModel, fallback: app.selectedVariant))
+                    } else {
+                        showStartHint = true
+                    }
+                } label: {
+                    Image(systemName: "terminal")
+                }.buttonStyle(.plain)
+                Spacer()
+                Button("Quit") { NSApplication.shared.terminate(nil) }.buttonStyle(.plain).foregroundStyle(.secondary)
+            }
+        }
+        .onChange(of: supervisor.state) { _, newState in
+            if newState == .ready { showStartHint = false }
         }
     }
 
