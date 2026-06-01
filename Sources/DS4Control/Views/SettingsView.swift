@@ -1,5 +1,4 @@
 import SwiftUI
-import UniformTypeIdentifiers
 
 struct SettingsView: View {
     @EnvironmentObject var app: AppState
@@ -10,12 +9,6 @@ struct SettingsView: View {
 
     var body: some View {
         Form {
-            Section("ds4 directory") {
-                HStack {
-                    TextField("Path to ds4 (contains ds4-server + download_model.sh)", text: $app.ds4Dir)
-                    Button("Choose…") { pickDir() }
-                }
-            }
             Section("Server") {
                 TextField("Context size", value: $app.ctxOverride, format: .number)
                 Text(
@@ -50,6 +43,14 @@ struct SettingsView: View {
                 )
                 .font(.caption2).foregroundStyle(.secondary)
             }
+            Section("Downloads") {
+                Toggle("High performance mode", isOn: $app.highPerformanceDownload)
+                Text(
+                    "Maximises speed with wide parallel connections. Leave off behind CGNAT or strict NAT — "
+                        + "the connection storm can exhaust the session table and knock you offline."
+                )
+                .font(.caption2).foregroundStyle(.secondary)
+            }
             if ram < 96 {
                 Section("Advanced") {
                     Toggle("Enable unsupported low-RAM mode", isOn: $app.unsupportedLowRAM)
@@ -61,11 +62,5 @@ struct SettingsView: View {
         .padding(20).frame(width: 560)
         .onAppear { WindowChrome.windowOpened(title: "DS4 Control Settings") }
         .onDisappear { WindowChrome.windowClosed() }
-    }
-
-    private func pickDir() {
-        let panel = NSOpenPanel()
-        panel.canChooseDirectories = true; panel.canChooseFiles = false; panel.allowsMultipleSelection = false
-        if panel.runModal() == .OK, let url = panel.url { app.ds4Dir = url.path }
     }
 }

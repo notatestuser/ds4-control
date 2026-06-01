@@ -139,7 +139,7 @@ struct PopupView: View {
 
     private func errorMessage(_ e: ServerError) -> String {
         switch e {
-        case let .ds4DirInvalid(missing): return "ds4 directory invalid — missing \(missing). Set it in Settings."
+        case let .ds4DirInvalid(missing): return "ds4 files not found — missing \(missing). Reinstall the app."
         case let .modelMissing(filename): return "Model not downloaded (\(filename)). Use Download first."
         case .startupTimeout: return "ds4-server didn't become ready in time."
         case .unhealthy: return "ds4-server stopped responding."

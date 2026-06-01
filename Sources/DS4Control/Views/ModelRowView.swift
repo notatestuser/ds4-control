@@ -36,8 +36,11 @@ struct ModelRowView: View {
         case .downloading:
             // Retry restarts the download (escape hatch from a stalled bar); Cancel stops it.
             HStack {
-                Button("Retry download") { supervisor.retryDownload(variant: app.selectedVariant) }
-                    .tint(.orange).frame(maxWidth: .infinity).disabled(blocked)
+                Button("Retry download") {
+                    supervisor.retryDownload(
+                        variant: app.selectedVariant, highPerformance: app.highPerformanceDownload)
+                }
+                .tint(.orange).frame(maxWidth: .infinity).disabled(blocked)
                 Button("Cancel", role: .destructive) { supervisor.cancelDownload() }
                     .frame(maxWidth: .infinity)
             }
@@ -48,14 +51,16 @@ struct ModelRowView: View {
                         variant: app.selectedVariant, ctx: app.effectiveCtx(ramGiB: ramGiB),
                         port: app.port, power: app.power)
                 } else {
-                    supervisor.retryDownload(variant: app.selectedVariant)
+                    supervisor.retryDownload(
+                        variant: app.selectedVariant, highPerformance: app.highPerformanceDownload)
                 }
             }
             .tint(.orange).frame(maxWidth: .infinity).disabled(blocked)
         default:
             if !downloaded {
                 Button("Download \(app.selectedVariant.displayName)") {
-                    supervisor.download(variant: app.selectedVariant)
+                    supervisor.download(
+                        variant: app.selectedVariant, highPerformance: app.highPerformanceDownload)
                 }
                 .frame(maxWidth: .infinity).disabled(blocked)
             } else {

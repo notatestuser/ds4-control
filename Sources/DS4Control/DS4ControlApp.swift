@@ -10,8 +10,7 @@ struct DS4ControlApp: App {
 
     init() {
         let app = AppState()
-        let dir = URL(fileURLWithPath: app.ds4Dir.isEmpty ? FileManager.default.currentDirectoryPath : app.ds4Dir)
-        let supervisor = SupervisorService(ds4Dir: dir, runner: RealProcessRunner())
+        let supervisor = SupervisorService(ds4Dir: Paths.ds4Dir(), runner: RealProcessRunner())
         _supervisor = StateObject(wrappedValue: supervisor)
         let service = ChatService()
         _chat = StateObject(

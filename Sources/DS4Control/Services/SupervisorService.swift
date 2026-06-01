@@ -230,7 +230,7 @@ final class SupervisorService: ObservableObject {
     /// SIGTERM'd process's exit-15 can't clobber the fresh download's state.
     private var downloadGeneration = 0
 
-    func download(variant: Variant) {
+    func download(variant: Variant, highPerformance: Bool = false) {
         guard state == .idle || isErrorState else { emitBadState("download"); return }
         if let e = validateDs4Dir() { state = .error(e); return }
         let q = Quant.for(variant, ramGiB: systemRamGiB())
@@ -254,12 +254,16 @@ final class SupervisorService: ObservableObject {
         if let token = resolveHFToken(env: ProcessInfo.processInfo.environment, cacheFile: cache) {
             env["HF_TOKEN"] = token
         }
-        // CGNAT-friendly download: cap Xet's parallel range-GETs. Its adaptive concurrency
-        // otherwise opens 35+ connections, exhausting the carrier-grade NAT session table
-        // and tripping a ~15-min cooldown. A small reused pool stays well under CGNAT
-        // limits. Both vars cap it whether adaptive concurrency is on or pinned.
-        env["HF_XET_FIXED_DOWNLOAD_CONCURRENCY"] = "8"
-        env["HF_XET_CLIENT_AC_MAX_DOWNLOAD_CONCURRENCY"] = "8"
+        // Default: cap Xet's parallel range-GETs. Its adaptive concurrency otherwise opens
+        // 35+ connections, exhausting a carrier-grade NAT session table and tripping a
+        // ~15-min cooldown; a small reused pool stays well under CGNAT limits. High-performance
+        // mode (Settings, default off) lets it run wide for max throughput on uncapped links.
+        if highPerformance {
+            env["HF_XET_HIGH_PERFORMANCE"] = "1"
+        } else {
+            env["HF_XET_FIXED_DOWNLOAD_CONCURRENCY"] = "8"
+            env["HF_XET_CLIENT_AC_MAX_DOWNLOAD_CONCURRENCY"] = "8"
+        }
         do {
             try downloadRunner.launch(
                 executable: ds4Dir.appendingPathComponent("download_model.sh"),
@@ -305,7 +309,7 @@ final class SupervisorService: ObservableObject {
     /// Cancel whatever download is being tracked (owned process or an attached
     /// orphan) and start a fresh one — the user's escape hatch from a stuck/stalled
     /// or errored progress bar.
-    func retryDownload(variant: Variant) {
+    func retryDownload(variant: Variant, highPerformance: Bool = false) {
         downloadRunner.terminate(graceSeconds: 0)  // no-op if nothing is running
         downloadPollTimer?.invalidate()
         downloadPollTimer = nil
@@ -313,7 +317,7 @@ final class SupervisorService: ObservableObject {
         lastDownloadSample = nil
         download = nil
         state = .idle
-        download(variant: variant)
+        download(variant: variant, highPerformance: highPerformance)
     }
 
     /// Cancel an in-progress download and return to idle without restarting. Bumping the
