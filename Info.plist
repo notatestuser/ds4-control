@@ -5,7 +5,7 @@
     <key>CFBundleDisplayName</key><string>DS4 Control</string>
     <key>CFBundleExecutable</key><string>DS4Control</string>
     <key>CFBundleIconFile</key><string>AppIcon</string>
-    <key>CFBundleIdentifier</key><string>com.ds4control.app</string>
+    <key>CFBundleIdentifier</key><string>sg.embeddedtech.ds4control</string>
     <key>CFBundleName</key><string>DS4 Control</string>
     <key>CFBundlePackageType</key><string>APPL</string>
     <key>CFBundleShortVersionString</key><string>0.0.0</string>

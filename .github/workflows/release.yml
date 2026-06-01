@@ -1,0 +1,23 @@
+name: Release
+
+# Push a semver tag to cut a release:
+#   git tag -a v1.0.0 -m "v1.0.0" && git push origin v1.0.0
+# Builds, signs (Developer ID), notarizes, packages a Gatekeeper-clean .dmg,
+# and publishes it to GitHub Releases via the shared pipeline.
+on:
+  push:
+    tags: ['v*.*.*']
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    uses: notatestuser/macos-release/.github/workflows/release.yml@v1
+    with:
+      app-name: "DS4 Control"
+      build-command: "bash build.sh"
+      app-path: "DS4 Control.app"
+      bundle-id: "sg.embeddedtech.ds4control"
+      dmg-name: "DS4-Control"
+    secrets: inherit

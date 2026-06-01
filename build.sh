@@ -3,7 +3,10 @@ set -euo pipefail
 cd "$(dirname "$0")"
 APP_NAME="DS4 Control"
 APP="$APP_NAME.app"
-VERSION="${DS4_CONTROL_VERSION:-$(date +%y.%-m.0)}"
+# Release pipeline exports APP_VERSION (semver from the git tag) + APP_BUILD
+# (monotonic int). Falls back to DS4_CONTROL_VERSION or a date for local builds.
+VERSION="${APP_VERSION:-${DS4_CONTROL_VERSION:-$(date +%y.%-m.0)}}"
+BUILD="${APP_BUILD:-$VERSION}"
 
 echo "→ swift build (release)"
 swift build -c release 2>&1 | tail -3
@@ -14,7 +17,7 @@ rm -rf "$APP"
 mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
 cp "$BIN" "$APP/Contents/MacOS/DS4Control"
 cp Info.plist "$APP/Contents/Info.plist"
-/usr/libexec/PlistBuddy -c "Set :CFBundleVersion $VERSION" "$APP/Contents/Info.plist"
+/usr/libexec/PlistBuddy -c "Set :CFBundleVersion $BUILD" "$APP/Contents/Info.plist"
 /usr/libexec/PlistBuddy -c "Set :CFBundleShortVersionString $VERSION" "$APP/Contents/Info.plist"
 
 # Icon: generate from Resources/icon.png if present, else skip.

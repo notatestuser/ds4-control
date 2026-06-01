@@ -71,9 +71,14 @@ struct ModelRowView: View {
         case .standard: EmptyView()
         case let .warnWiredLimit(mb):
             Text(
-                "96–127 GiB: reduced context, ~25–27 tok/s. Raise the Metal wired limit:\nsudo sysctl iogpu.wired_limit_mb=\(mb)"
+                (app.selectedVariant == .pro
+                    ? "V4 Pro needs the Metal wired limit raised for its weights + context:"
+                    : "96–127 GiB: reduced context, ~25–27 tok/s. Raise the Metal wired limit:")
+                    + "\nsudo sysctl iogpu.wired_limit_mb=\(mb)"
             )
             .font(.caption2).foregroundStyle(.orange)
+            .fixedSize(horizontal: false, vertical: true)
+            .frame(maxWidth: .infinity, alignment: .leading)
         case let .blocked(reason):
             Text(reason).font(.caption2).foregroundStyle(.red)
         case let .unsupported(reason):
