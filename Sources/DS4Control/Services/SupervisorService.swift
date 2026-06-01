@@ -246,17 +246,14 @@ final class SupervisorService: ObservableObject {
                 args: args, cwd: ds4Dir, env: env,
                 onStderrLine: { [weak self] line in
                     buf.text += line + "\n"
-                    // Bound the buffer: downloads run for hours and emit a progress
-                    // repaint per tick; keep only the tail (latest update lives there).
                     if buf.text.count > 4096 { buf.text = String(buf.text.suffix(2048)) }
-                    let pct = parseCurlProgress(buf.text)
+                    // parseCurlProgress now ignores hf's premature "Fetching N files: 100%"
+                    // (it requires a byte-size token); the on-disk poll is the backstop.
+                    guard let pct = parseCurlProgress(buf.text) else { return }
                     let rate = parseDownloadRate(buf.text)
                     Self.onMain {
-                        guard let self else { return }
-                        if let pct {
-                            self.download = DownloadProgress(
-                                pct: pct, file: q.ggufFilename, receivedBytes: 0, totalBytes: nil, rate: rate)
-                        }
+                        self?.download = DownloadProgress(
+                            pct: pct, file: q.ggufFilename, receivedBytes: 0, totalBytes: nil, rate: rate)
                     }
                 },
                 onExit: { [weak self] code in
@@ -269,7 +266,8 @@ final class SupervisorService: ObservableObject {
                                 pct: 100, file: q.ggufFilename, receivedBytes: 0, totalBytes: nil)
                             self.state = .idle
                         } else {
-                            self.state = .error(.downloadFailed(detail: "exit \(code)"))
+                            let tail = String(buf.text.suffix(200)).trimmingCharacters(in: .whitespacesAndNewlines)
+                            self.state = .error(.downloadFailed(detail: tail.isEmpty ? "exit \(code)" : tail))
                         }
                     }
                 })

@@ -11,8 +11,10 @@ func parseCurlProgress(_ chunk: String) -> Double? {
     var latest: Double?
     let lines = chunk.split(whereSeparator: { $0 == "\r" || $0 == "\n" })
     for line in lines {
-        // hf / tqdm style: a "NN%" token anywhere in the line.
-        if let pct = lastPercentToken(in: line) {
+        // hf / tqdm style: a "NN%" token, but only when the line also shows a byte-size
+        // transfer (e.g. "159G/430G"). This rejects hf's "Fetching N files: 100%" / resolve
+        // summaries (file counts, no byte size) that otherwise jump the bar to 100% instantly.
+        if let pct = lastPercentToken(in: line), lineHasByteSize(line) {
             latest = pct
             continue
         }
@@ -29,6 +31,18 @@ func parseCurlProgress(_ chunk: String) -> Double? {
         latest = pct
     }
     return latest
+}
+
+/// True if the line shows a byte-size token — a digit immediately followed by a size unit
+/// (e.g. "430G", "1.2M", "85.2M"). Distinguishes a real transfer line from hf's file-count
+/// summary ("1/1 files"), so a spurious "100%" on the latter is ignored.
+private func lineHasByteSize(_ line: Substring) -> Bool {
+    let chars = Array(line)
+    guard chars.count > 1 else { return false }
+    for i in 1..<chars.count where "kKMGTP".contains(chars[i]) && chars[i - 1].isNumber {
+        return true
+    }
+    return false
 }
 
 /// Extract the most recent transfer-rate token from downloader output, e.g.

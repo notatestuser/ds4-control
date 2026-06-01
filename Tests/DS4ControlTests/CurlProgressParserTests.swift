@@ -31,6 +31,12 @@ final class CurlProgressParserTests: XCTestCase {
         let line = "file.gguf:   5%|▌ | 21G/430G [01:00<19:00, 336MB/s]"
         XCTAssertEqual(parseCurlProgress(line) ?? .nan, 5, accuracy: 0.001)
     }
+    func testFetchingSummaryIgnored() {
+        // hf prints a file-count summary that hits 100% before the blob download begins;
+        // it has no byte-size token, so it must not jump the bar to 100%.
+        XCTAssertNil(parseCurlProgress("Fetching 1 files:   0%|          | 0/1"))
+        XCTAssertNil(parseCurlProgress("Fetching 1 files: 100%|██████████| 1/1 [00:00<00:00]"))
+    }
 
     // Transfer-rate extraction for the popup.
     func testRateFromTqdmLine() {
