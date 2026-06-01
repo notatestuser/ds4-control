@@ -258,8 +258,8 @@ final class SupervisorService: ObservableObject {
         // otherwise opens 35+ connections, exhausting the carrier-grade NAT session table
         // and tripping a ~15-min cooldown. A small reused pool stays well under CGNAT
         // limits. Both vars cap it whether adaptive concurrency is on or pinned.
-        env["HF_XET_FIXED_DOWNLOAD_CONCURRENCY"] = "4"
-        env["HF_XET_CLIENT_AC_MAX_DOWNLOAD_CONCURRENCY"] = "4"
+        env["HF_XET_FIXED_DOWNLOAD_CONCURRENCY"] = "5"
+        env["HF_XET_CLIENT_AC_MAX_DOWNLOAD_CONCURRENCY"] = "5"
         do {
             try downloadRunner.launch(
                 executable: ds4Dir.appendingPathComponent("download_model.sh"),
