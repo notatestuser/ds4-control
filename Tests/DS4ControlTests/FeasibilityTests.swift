@@ -2,15 +2,18 @@ import XCTest
 @testable import DS4Control
 
 final class FeasibilityTests: XCTestCase {
-    func testDefaultCtxAnchors() {
-        XCTAssertEqual(defaultCtx(ramGiB: 600, variant: .pro, flashQuant: .q2q4), 1_000_000)  // default at 1M ceiling
-        XCTAssertEqual(defaultCtx(ramGiB: 128, variant: .flash, flashQuant: .q2), 393_216)
-        XCTAssertEqual(defaultCtx(ramGiB: 96, variant: .flash, flashQuant: .q2), 250_000)
+    func testDefaultCtxIsUniversal1M() {
+        // 1M wherever the weights fit (live KV is small; mmap'd weights page lazily). Grounded
+        // in scripts/flash-mem-harness.sh.
+        XCTAssertEqual(defaultCtx(ramGiB: 600, variant: .pro, flashQuant: .q2q4), 1_000_000)
+        XCTAssertEqual(defaultCtx(ramGiB: 512, variant: .pro, flashQuant: .q2q4), 1_000_000)
+        XCTAssertEqual(defaultCtx(ramGiB: 128, variant: .flash, flashQuant: .q2q4), 1_000_000)
+        XCTAssertEqual(defaultCtx(ramGiB: 96, variant: .flash, flashQuant: .q2), 1_000_000)
     }
-    func testDefaultCtxProgressiveStepDown() {
-        XCTAssertEqual(defaultCtx(ramGiB: 93, variant: .flash, flashQuant: .q2), 131_072)
-        XCTAssertEqual(defaultCtx(ramGiB: 92, variant: .flash, flashQuant: .q2), 65_536)
-        XCTAssertEqual(defaultCtx(ramGiB: 90, variant: .flash, flashQuant: .q2), 32_768)  // floor
+    func testDefaultCtxFallsBackWhenWeightsDontFit() {
+        // Degenerate: weights + OS reserve exceed RAM → floor to 32768.
+        XCTAssertEqual(defaultCtx(ramGiB: 85, variant: .flash, flashQuant: .q2), 32_768)
+        XCTAssertEqual(defaultCtx(ramGiB: 96, variant: .flash, flashQuant: .q4), 32_768)
     }
     func testFeasibilityGate() {
         if case .warnWiredLimit = feasibility(ramGiB: 520, variant: .pro) {

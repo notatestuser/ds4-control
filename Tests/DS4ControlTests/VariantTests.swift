@@ -3,12 +3,12 @@ import XCTest
 
 final class VariantTests: XCTestCase {
     func testKVBytesPerToken() {
-        XCTAssertEqual(Variant.pro.kvBytesPerToken, 39_040)  // 61 layers × 640
-        XCTAssertEqual(Variant.flash.kvBytesPerToken, 27_520)  // 43 layers × 640
+        XCTAssertEqual(Variant.pro.kvBytesPerToken, 23_851)  // 61 layers × 391
+        XCTAssertEqual(Variant.flash.kvBytesPerToken, 16_813)  // 43 layers × 391 (measured)
     }
     func testCtxCeiling() {
         XCTAssertEqual(Variant.pro.ctxCeiling, 1_000_000)
-        XCTAssertEqual(Variant.flash.ctxCeiling, 393_216)
+        XCTAssertEqual(Variant.flash.ctxCeiling, 1_000_000)  // Flash also supports 1M
     }
     func testQuantSelection() {
         XCTAssertEqual(Quant.for(.pro, flashQuant: .q2q4).arg, "pro-imatrix")  // Pro ignores flashQuant

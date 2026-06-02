@@ -47,9 +47,14 @@ private func snapDown(_ value: Double, ceiling: Int) -> Int {
     return ctxSnapSet.filter { $0 <= v && $0 <= ceiling }.last ?? 32_768
 }
 
-/// Budget-derived default context (spec §5.2).
+/// Default context. 1M is the universal default: the model supports it, the live KV is small
+/// (~16.8 KB/token, measured via scripts/flash-mem-harness.sh) and the mmap'd weights page
+/// lazily, so the full window runs on every supported machine (tight ones page cold experts —
+/// a perf, not a fit, tradeoff). Falls back to the memory-budget step-down only in the
+/// degenerate case where the weights themselves don't fit RAM.
 func defaultCtx(ramGiB: Double, variant: Variant, flashQuant: FlashQuant) -> Int {
     let weightsGiB = Quant.for(variant, flashQuant: flashQuant).weightsGiB
+    guard weightsGiB + osReserveGiB > ramGiB else { return variant.ctxCeiling }
     let budgetBytes = max(0, ramGiB - weightsGiB - osReserveGiB) * 1_073_741_824.0
     let raw = min(budgetBytes / Double(variant.kvBytesPerToken), Double(defaultCtxCap))
     return snapDown(raw, ceiling: variant.ctxCeiling)
@@ -66,10 +71,6 @@ func flashQuantFits(_ q: FlashQuant, ramGiB: Double) -> Bool {
 func defaultFlashQuant(ramGiB: Double) -> FlashQuant {
     flashQuantFits(.q2q4, ramGiB: ramGiB) ? .q2q4 : .q2
 }
-
-/// Client-side context window for the agent CLIs (claude/pi): the full 1M window on machines
-/// that can hold it, else the Flash Think-Max threshold. Separate from the server's `--ctx`.
-func agentContextWindow(ramGiB: Double) -> Int { ramGiB >= 128 ? 1_000_000 : 393_216 }
 
 /// Feasibility gate (spec §5.2). ds4 itself enforces no floor, so the app does.
 func feasibility(ramGiB: Double, variant: Variant) -> Feasibility {

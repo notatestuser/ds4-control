@@ -136,16 +136,15 @@ enum AgentLauncher {
 
     /// Regenerate the pi provider config + the wrapper (so port/context track the running
     /// server), then open Terminal running the wrapper via `osascript`.
-    static func launch(port: Int, modelId: String, ramGiB: Double) {
-        let cw = agentContextWindow(ramGiB: ramGiB)
+    static func launch(port: Int, modelId: String, contextWindow: Int) {
         let support = ds4AppSupportDir()
         let piDir = support.appendingPathComponent("pi-agent", isDirectory: true)
         try? FileManager.default.createDirectory(at: piDir, withIntermediateDirectories: true)
-        try? piModelsJSON(port: port, contextWindow: cw)
+        try? piModelsJSON(port: port, contextWindow: contextWindow)
             .write(to: piDir.appendingPathComponent("models.json"), atomically: true, encoding: .utf8)
         let url = support.appendingPathComponent("agent-launch.sh")
         do {
-            try wrapperScript(port: port, modelId: modelId, contextWindow: cw, piConfigDir: piDir.path)
+            try wrapperScript(port: port, modelId: modelId, contextWindow: contextWindow, piConfigDir: piDir.path)
                 .write(to: url, atomically: true, encoding: .utf8)
             try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: url.path)
         } catch {

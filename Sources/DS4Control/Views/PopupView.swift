@@ -127,7 +127,7 @@ struct PopupView: View {
                             port: supervisor.port,
                             modelId: AgentLauncher.modelId(
                                 for: supervisor.activeModel, fallback: app.selectedVariant),
-                            ramGiB: ram)
+                            contextWindow: supervisor.ctx)
                     } else {
                         showStartHint = true
                     }

@@ -14,12 +14,6 @@ final class AgentLauncherTests: XCTestCase {
         XCTAssertEqual(AgentLauncher.modelId(for: "ds4-server", fallback: .flash), "deepseek-v4-flash")
     }
 
-    func testContextWindowPolicy() {
-        XCTAssertEqual(agentContextWindow(ramGiB: 512), 1_000_000)
-        XCTAssertEqual(agentContextWindow(ramGiB: 128), 1_000_000)  // >=128 → full 1M
-        XCTAssertEqual(agentContextWindow(ramGiB: 96), 393_216)  // below → Think-Max
-    }
-
     func testPiModelsJSONValidAndPointsAtLocalServer() throws {
         let s = AgentLauncher.piModelsJSON(port: 8137, contextWindow: 1_000_000)
         XCTAssertNotNil(try JSONSerialization.jsonObject(with: Data(s.utf8)))  // valid JSON
