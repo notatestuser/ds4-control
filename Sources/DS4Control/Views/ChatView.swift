@@ -111,7 +111,9 @@ struct ChatView: View {
                         } label: {
                             HStack(spacing: 6) {
                                 Image(systemName: "arrow.up.circle")
-                                Text("Show \(min(hiddenAbove, Self.transcriptWindowSize)) earlier message\(hiddenAbove == 1 ? "" : "s")")
+                                Text(
+                                    "Show \(min(hiddenAbove, Self.transcriptWindowSize)) earlier message\(hiddenAbove == 1 ? "" : "s")"
+                                )
                             }
                             .font(.callout)
                             .foregroundStyle(.secondary)
@@ -257,7 +259,11 @@ struct MessageBubble: View {
                 if !message.content.isEmpty || (message.isStreaming && message.thinking.isEmpty) {
                     VStack(alignment: .leading, spacing: 4) {
                         if message.role == .assistant {
-                            MarkdownText(message.content.isEmpty && message.isStreaming ? " " : message.content)
+                            if message.isStreaming {
+                                StreamingMarkdownText(message.content)
+                            } else {
+                                MarkdownText(message.content)
+                            }
                         } else {
                             Text(message.content)
                         }
@@ -311,20 +317,14 @@ struct MessageBubble: View {
     }
 }
 
-/// Think-Max reasoning, hidden by default in a collapsed disclosure. Expanding reveals the
-/// monologue inline (the outer transcript scrolls if it's long). State is per-message (the bubble
-/// carries `.id(message.id)`), so expansion sticks per reply.
+/// Think-Max reasoning, hidden by default in a collapsed disclosure. The reasoning is built
+/// only when expanded, so collapsed reasoning costs nothing to render (the deltas just
+/// accumulate in the model). State is per-message (the bubble carries `.id(message.id)`), so
+/// expansion sticks per reply.
 ///
-/// Deliberately NO inner ScrollView AND NO `.frame(maxWidth: .infinity)`: a greedy-width child
-/// inside the content-sized bubble made the offered width oscillate against the sibling
-/// IntrinsicTextView's pure sizeThatFits, spinning the SwiftUI layout engine at 100% CPU
-/// (the chat-freeze bug). Plain Text with no width-frame sizes deterministically.
-///
-/// `.fixedSize(horizontal: false, vertical: true)` on the disclosure (and on the inner Text)
-/// matches dashwiz's pattern: take the parent's offered width, but let the view's height
-/// follow its content exactly. Without it, the disclosure's animated expand/collapse can
-/// re-measure its parent during the animation, and the content-sized bubble column
-/// (MessageBubble's outer VStack) re-lays out on every content change inside the disclosure.
+/// Rendered via `MarkdownText` (pure-SwiftUI Textual). The old `.fixedSize`/no-greedy-width
+/// guards existed only to stop the NSTextView width↔height layout loop (the chat-freeze bug);
+/// with no NSView in the tree that loop is structurally gone, so they're removed.
 struct ThinkingDisclosure: View {
     let text: String
     let streaming: Bool
@@ -332,26 +332,22 @@ struct ThinkingDisclosure: View {
 
     var body: some View {
         DisclosureGroup(isExpanded: $expanded) {
-            Text(text)
-                .font(.callout)
-                .foregroundStyle(.secondary)
-                .fixedSize(horizontal: false, vertical: true)
-                .padding(.top, 4)
+            if expanded {
+                MarkdownText(text)
+                    .opacity(0.9)
+                    .padding(.top, 4)
+            }
         } label: {
             Label(streaming ? "Thinking…" : "Thinking", systemImage: "brain")
                 .font(.caption)
                 .foregroundStyle(.secondary)
         }
-        .fixedSize(horizontal: false, vertical: true)
         .padding(.horizontal, 12)
         .padding(.vertical, 8)
         .background(Color(.controlBackgroundColor).opacity(0.6))
         .clipShape(RoundedRectangle(cornerRadius: 12))
-        // Collapse the disclosure's view tree (DisclosureGroup + label Text +
-        // padding + background) into one accessibility node. Mirrors the
-        // bubble-level `.combine` on MessageBubble and dashwiz's combine on
-        // PhaseBoxView; same reasoning — the focus-responder walker otherwise
-        // recurses into every child on every layout pass.
+        // Collapse the disclosure's view tree into one accessibility node so the
+        // focus-responder walker doesn't recurse into every child on each layout pass.
         .accessibilityElement(children: .combine)
     }
 }
