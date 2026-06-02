@@ -101,6 +101,13 @@ struct SettingsView: View {
             }
 
             Section {
+                Button("Apply & Restart Server", action: restart)
+                    .disabled(!isRunning)
+            } footer: {
+                Text(restartHint)
+            }
+
+            Section {
                 Toggle("Enable Think Max in chat", isOn: $app.thinkMaxChat)
             } header: {
                 Text("Chat")
@@ -109,13 +116,6 @@ struct SettingsView: View {
                     "Sends reasoning_effort=max so the built-in chat runs DeepSeek's Think Max. "
                         + "Off uses the fast non-thinking path. Coding-agent CLIs set their own "
                         + "thinking level, so this affects only the chat.")
-            }
-
-            Section {
-                Button("Apply & Restart Server", action: restart)
-                    .disabled(!isRunning)
-            } footer: {
-                Text(restartHint)
             }
 
             Section {

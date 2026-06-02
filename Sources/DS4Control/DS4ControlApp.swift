@@ -50,7 +50,7 @@ struct DS4ControlApp: App {
         .windowResizability(.contentSize)
 
         Window("DS4 Chat", id: "chat") {
-            ChatView(viewModel: chat).environmentObject(supervisor)
+            ChatView(viewModel: chat).environmentObject(app).environmentObject(supervisor)
         }
     }
 

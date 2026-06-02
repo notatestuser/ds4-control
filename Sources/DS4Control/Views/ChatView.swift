@@ -10,6 +10,7 @@ import Combine
 import SwiftUI
 
 struct ChatView: View {
+    @EnvironmentObject var app: AppState
     @EnvironmentObject var supervisor: SupervisorService
     @ObservedObject var viewModel: ChatViewModel
 
@@ -58,6 +59,9 @@ struct ChatView: View {
                 .foregroundStyle(.secondary)
                 .monospacedDigit()
             Spacer()
+            Toggle("Max Think", isOn: $app.thinkMaxChat)
+                .toggleStyle(.checkbox)
+                .font(.caption)
         }
         .padding(.horizontal, 16)
         .padding(.vertical, 6)
