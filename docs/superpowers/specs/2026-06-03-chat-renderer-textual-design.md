@@ -12,14 +12,14 @@ Replace the custom NSTextView-based markdown renderer in `Sources/DS4Control/Vie
 SwiftUI text-rendering package, behind a one-file seam. Finished message bubbles render as a single
 `StructuredText`; the in-flight streaming bubble renders **block-split** — completed markdown blocks
 frozen with stable identity, only the trailing block re-parsing per streaming tick. The rest of the
-chat stack (ViewModel, ChatService, SSE parser, 33 ms throttle, thinking disclosure, stats, windowing,
-wiring) is unchanged.
+chat stack (ChatService, SSE parser, thinking disclosure, stats, windowing, wiring) is unchanged;
+`ChatViewModel`'s flush loop is extended for update scheduling (below) but its public surface is not.
 
 Two outcomes:
 1. The documented freeze mechanism — an `NSView` whose height is a pure function of width feeding back
    into a greedy-width SwiftUI container — is removed by construction (pure SwiftUI, no NSView bridge).
 2. Per-token cost on long replies is bounded to **O(trailing block)** by the incremental split, not
-   O(message).
+   O(message), with a single-in-flight guard providing adaptive backpressure.
 
 ## Background
 
@@ -53,7 +53,8 @@ block-streaming layer we own.
 - Native text selection, themable (`.gitHub` / custom `StructuredText.Style`), tables/code/lists/math.
 - Pre-1.0 reality: API may churn, and Textual has shown SwiftUI update-cascade hangs on long documents
   (a fork profiled ~1.8M SwiftUI updates / 543 ms hang on a long chat). Both are neutralized by (a) the
-  one-file seam and (b) the block-split design — finished blocks are static, only the tail updates.
+  one-file seam and (b) the block-split + single-in-flight design — finished blocks are static, only the
+  tail updates, and never more than one update is outstanding.
 
 **Rejected alternatives:** ConversationKit (iOS-first, no thinking section, replaces the whole UI);
 MarkdownUI (maintenance mode, full reparse, weaker selection); lakr233 MarkdownView (reintroduces a
@@ -63,18 +64,18 @@ quality).
 
 ### Cost: macOS deployment-floor bump
 Textual requires macOS 15; the app currently targets macOS 14 (`Package.swift:6`). Bump
-`.macOS(.v14)` → `.macOS(.v15)` (the minimum Textual needs). The user has approved raising the floor
-(up to macOS 26 is acceptable); default to **15** for the widest compatibility unless a higher floor is
-wanted for other reasons. Dropping macOS 14 (Sonoma) users from new releases is accepted.
+`.macOS(.v14)` → `.macOS(.v15)`. **Confirmed: macOS 15** (user is fine going as high as 26, but 15 is the
+choice for widest compatibility). Dropping macOS 14 (Sonoma) users from new releases is accepted.
 
 ## Non-goals (YAGNI)
-- No change to `ChatView` structure, the composer, `ChatViewModel`, `ChatService`, `ChatSSEParser`, the
-  33 ms throttle, stats, windowing, Max-Think, or app wiring.
+- No change to `ChatView` structure, the composer, `ChatService`, `ChatSSEParser`, stats, windowing,
+  Max-Think, or app wiring. (`ChatViewModel`'s flush loop *is* extended — see Streaming update scheduling
+  — for the thinking cadence + single-in-flight guard; its public surface is unchanged.)
 - Not adopting ConversationKit or any full chat-UI framework.
 - Not rendering LaTeX math yet — keep the `deLaTeXed` stripping. (Future option: enable Textual `.math`
   and drop the stripper.)
-- No visual redesign; match the current feel with a light theme, not a pixel rebuild of the golden-ratio
-  heading scale.
+- No visual redesign; match the current feel with a light theme that tracks system appearance, not a
+  pixel rebuild of the golden-ratio heading scale.
 
 ## Design
 
@@ -83,7 +84,8 @@ wanted for other reasons. Dropping macOS 14 (Sonoma) users from new releases is 
 |---|---|---|---|
 | Block splitter | `Sources/DS4Control/Views/MarkdownBlocks.swift` (new) | Pure `splitBlocks(_:) -> (completed: [String], tail: String)`, fence-aware boundary detection. Dependency-free, unit-tested. | No |
 | Renderer seam | `Sources/DS4Control/Views/MarkdownText.swift` (rewritten) | `MarkdownText(_:)` single-view render; `StreamingMarkdownText(_:)` block-split render; `preprocess(_:)` (LaTeX + tag strip); `Theme.ds4`. The **only** file importing `Textual`. | Yes (only here) |
-| Bubble | `Sources/DS4Control/Views/ChatView.swift` (light edits) | `MessageBubble` / `ThinkingDisclosure` choose single vs streaming render by `message.isStreaming`; remove the now-unneeded `.fixedSize` / greedy-width workarounds. | No |
+| Bubble | `Sources/DS4Control/Views/ChatView.swift` (light edits) | `MessageBubble` / `ThinkingDisclosure` choose single vs streaming render by `message.isStreaming`; thinking renders only when expanded; remove the now-unneeded `.fixedSize` / greedy-width workarounds. | No |
+| Update scheduling | `Sources/DS4Control/ViewModels/ChatViewModel.swift` (flush-loop edits) | ~250 ms thinking cadence + MainActor single-in-flight guard; public surface unchanged. | No |
 
 ### Rendering granularity
 The whole chat is **not** one Textual view. Granularity is per-message, and finer for the one streaming
@@ -97,7 +99,7 @@ ScrollView
    └─ MessageBubble (STREAMING) → VStack:
         ├─ StructuredText(block 1)   ← frozen, stable .id
         ├─ StructuredText(block 2)   ← frozen, stable .id
-        └─ StructuredText(tail)      ← only this re-parses each 33 ms tick
+        └─ StructuredText(tail)      ← only this re-parses each tick
 ```
 
 - **Finished message** (`isStreaming == false`): one `StructuredText(markdown: preprocess(content))` →
@@ -105,12 +107,31 @@ ScrollView
   messages stream.
 - **Streaming message** (`isStreaming == true`): `StreamingMarkdownText` renders
   `splitBlocks(preprocess(content))` as a `VStack` — each completed block a static `StructuredText`
-  keyed by stable index `.id`; the trailing block a `StructuredText` that re-parses each 33 ms tick.
+  keyed by stable index `.id`; the trailing block a `StructuredText` that re-parses each tick.
   Per-tick cost = O(tail).
 - **On finalize**: the bubble flips to `isStreaming == false` → collapses to the single-view form (one
   extra parse, once) for clean spacing + selection.
-- **Thinking**: same renderer, single-view by default (typically short, collapsed). Apply the streaming
-  split only if profiling shows it is needed.
+- **Thinking** (decision A): single-view, **rendered only when the disclosure is expanded** — collapsed
+  (the default) costs nothing; the string just accumulates in the model. Reuses `StreamingMarkdownText`,
+  so upgrading thinking to block-split later (if you watch long reasoning live often) is a one-line swap.
+
+### Streaming update scheduling (throttle + single-in-flight guard)
+Lives in `ChatViewModel`'s flush loop (extends the existing 33 ms throttle). Three layers keep the
+streaming bubble cheap and loop-proof:
+
+- **Cadence:** content deltas flush every ~33 ms; thinking deltas every ~250 ms (one timer; thinking
+  flushed on a sub-cadence — live-ness is not critical for reasoning).
+- **Single-in-flight guard:** a MainActor `updateInFlight` flag. A flush tick that finds it set **skips**
+  (deltas keep buffering); otherwise it sets the flag, applies the `@Published` mutation, and clears it
+  on the next main-actor turn (post-mutation). This serializes updates with adaptive backpressure — if a
+  parse/layout takes longer than the interval, ticks are skipped instead of piling a second heavy update
+  onto an unsettled one. Applies to **both** content and thinking.
+- **Trailing guarantee:** deltas are never lost — they accumulate while skipped, and `finish()` /
+  `stop()` force a final synchronous flush.
+- *SwiftUI caveat:* there is no literal "render finished" callback, so the flag clears on the next
+  main-actor runloop turn — a safe serialization boundary, not a precise completion signal. (Textual
+  exposes no pre-parsed/`AttributedString` entry point in current docs, so an off-main parse-task signal
+  is not available; not required for correctness.)
 
 ### `splitBlocks` contract
 - Input: a markdown string (post-`preprocess`). Output `(completed: [String], tail: String)` with the
@@ -126,6 +147,10 @@ ScrollView
 ### Theme & selection
 - Base on Textual's `.gitHub` preset; small `Theme.ds4` (`StructuredText.Style`) override for bubble fit
   (body font/size, code-block background matching app surfaces, link color, block spacing).
+- **System appearance (light/dark) tracked automatically.** `Theme.ds4` derives all colors from system
+  semantic colors (SwiftUI `.primary`/`.secondary`, `NSColor.textColor`/`.secondaryLabelColor`/
+  `.textBackgroundColor`/`.controlBackgroundColor`), never fixed RGB, so Textual adapts via SwiftUI's
+  `colorScheme`. No manual toggle. Verify rendering in both light and dark.
 - Tune block spacing so the streaming split view and the finished single view render **identically**
   (no finalize "settle").
 - `.textual.textSelection(.enabled)` on bubbles → native selection + copy.
@@ -148,16 +173,17 @@ ScrollView
 | Risk | Mitigation |
 |---|---|
 | Textual pre-1.0 API churn | One-file seam (`MarkdownText.swift`); swapping renderer later = one file + `Package.swift` |
-| Textual update-cascade on long docs | Block-split: finished blocks static with stable `.id`; only the tail re-evaluates. Validated by the stress test. |
+| Textual update-cascade on long docs | Block-split (finished blocks static, stable `.id`) + single-in-flight guard; only the tail re-evaluates. Validated by the stress test. |
+| Render slower than the flush interval piling up (death loop) | Single-in-flight guard skips ticks while an update is outstanding (adaptive backpressure) |
 | Long *open* code block re-parses each tick (large tail) | Render the open fence as plain monospaced tail; full syntax highlight on close. Accept O(open-block) until closed. |
 | Finalize spacing "settle" between split and single view | Tune `Theme.ds4` spacing so split and single render identically |
 | Selection across blocks while streaming | Acceptable (streaming is transient); the finished message is a single view → full selection |
-| Dropping macOS 14 users | Accepted by user; default floor 15 |
+| Dropping macOS 14 users | Accepted by user; floor 15 |
 | Freeze cause not fully proven | Step 0 (below) confirms it empirically *before* relying on the fix |
 
 ## Verification plan
 1. **Step 0 — confirm the cause + baseline (before coding).** Reproduce the freeze on the current build
-   with a long reply (real server, or inject a long assistant transcript), capture
+   with a long reply (real ds4-server, or inject a long assistant transcript), capture
    `/usr/bin/sample <pid> 3 -file /tmp/freeze-before.txt`, and confirm the spinning stack is SwiftUI
    layout ↔ `IntrinsicTextView` sizing. Record as the before-baseline. This converts "suspected cause"
    into "known cause" and proves the NSView bridge is what we are removing.
@@ -165,18 +191,21 @@ ScrollView
    often stale).
 3. **Acceptance — long-reply stress (manual, measured).** Stream an 8–10k-token reply mixing prose,
    multiple code blocks, a table, and lists. Pass = main thread responsive, smooth scroll, no runaway CPU
-   in `sample`/Instruments, no freeze. Compare against the Step 0 baseline.
-4. **Smoke.** Thinking disclosure expand/collapse during and after stream; code/table/list rendering;
-   a LaTeX-bearing reply renders cleanly (stripped); select + copy from a finished bubble; transcript
-   windowing + "Show earlier".
+   in `sample`/Instruments, no freeze. Compare against the Step 0 baseline. Confirm a render slower than
+   the flush interval **skips** ticks rather than piling up (guard holds).
+4. **Smoke.** Thinking disclosure expand/collapse during and after stream (collapsed = no render cost);
+   code/table/list rendering; a LaTeX-bearing reply renders cleanly (stripped); select + copy from a
+   finished bubble; transcript windowing + "Show earlier"; render correctly in **both light and dark**.
 
 ## Testing strategy
 - **Keep:** `deLaTeXed` / preprocess tests; all `ChatViewModelTests`, `ChatServiceTests`,
-  `ChatSSEParserTests` (VM / stream untouched), including the uncommitted
-  `testFinishFlushesBufferSynchronously`.
-- **Add:** `MarkdownBlocksTests` — `splitBlocks` boundaries (blank line at depth 0, open/closed fences,
-  open-fence-stays-in-tail, the `completed.joined() + tail == input` invariant); `preprocess` tests
-  (LaTeX mapping, `<tool_call>` strip).
+  `ChatSSEParserTests` (stream untouched), including the uncommitted `testFinishFlushesBufferSynchronously`.
+- **Add (renderer):** `MarkdownBlocksTests` — `splitBlocks` boundaries (blank line at depth 0,
+  open/closed fences, open-fence-stays-in-tail, the `completed.joined() + tail == input` invariant);
+  `preprocess` tests (LaTeX mapping, `<tool_call>` strip).
+- **Add (ViewModel):** flush-guard tests — a tick while `updateInFlight` skips (no extra mutation);
+  buffered deltas still land via the trailing flush (no loss); thinking flushes on the coarser ~250 ms
+  cadence while content flushes at ~33 ms.
 - **Remove (internals deleted):** `MarkdownTextTests` cases for `attributedString(for:)` extraction, the
   heading golden-ratio scale, and the append-only / placeholder guard
   (`testPlaceholderToContentPreservesFirstCharacter`, `testStreamingAppendPreservesDelta`).
@@ -185,23 +214,26 @@ ScrollView
 
 ## Working-tree changes (handle first)
 - `ChatViewModel.swift` (+82, the 33 ms throttle) and `ChatViewModelTests.swift` (+15): **keep** —
-  renderer-independent; land as a standalone commit before the swap.
+  renderer-independent; land as a standalone commit before the swap. The scheduling work (thinking
+  cadence + guard) extends this.
 - `MarkdownText.swift` (+10, placeholder guard) and `MarkdownTextTests.swift` (+32): **superseded** —
   deleted by the rewrite.
 
 ## Rollback
 Revert `MarkdownText.swift`, delete `MarkdownBlocks.swift`, drop the Textual dependency + macOS-floor
-bump in `Package.swift`, and revert the `MessageBubble` / `ThinkingDisclosure` edits. The seam keeps this
-to ~3 files.
+bump in `Package.swift`, and revert the `MessageBubble` / `ThinkingDisclosure` + `ChatViewModel`
+scheduling edits. The seam keeps this to ~4 files.
 
 ## Implementation outline (detail deferred to writing-plans)
 1. Commit the pending VM throttle work (isolate it from the swap).
 2. Step 0: freeze repro + `sample` baseline.
 3. Add the Textual dependency + bump the macOS floor; `swift build`.
 4. `MarkdownBlocks.swift` + `MarkdownBlocksTests` (`splitBlocks`).
-5. Rewrite `MarkdownText.swift`: `preprocess`, `MarkdownText` (single), `StreamingMarkdownText` (split),
-   `Theme.ds4`; remove the NSTextView stack.
-6. Wire `MessageBubble` / `ThinkingDisclosure` to pick mode by `isStreaming`; remove the `.fixedSize` /
-   greedy-width workarounds.
-7. Prune the obsolete `MarkdownTextTests`; add `preprocess` tests.
-8. `swift build && swift test`; run the app; stress + smoke verification against the Step 0 baseline.
+5. Extend `ChatViewModel` flush loop: ~250 ms thinking cadence + MainActor single-in-flight guard + tests.
+6. Rewrite `MarkdownText.swift`: `preprocess`, `MarkdownText` (single), `StreamingMarkdownText` (split),
+   `Theme.ds4` (system-appearance colors); remove the NSTextView stack.
+7. Wire `MessageBubble` / `ThinkingDisclosure` to pick mode by `isStreaming` and render thinking only
+   when expanded; remove the `.fixedSize` / greedy-width workarounds.
+8. Prune the obsolete `MarkdownTextTests`; add `preprocess` tests.
+9. `swift build && swift test`; run the app; stress + smoke (incl. light/dark) verification against the
+   Step 0 baseline.
