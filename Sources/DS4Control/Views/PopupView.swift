@@ -110,7 +110,7 @@ struct PopupView: View {
                         openWindow(id: "settings")
                     }
                 } label: {
-                    Image(systemName: "gearshape")
+                    Image(systemName: "gearshape").font(.system(size: 28))
                 }.buttonStyle(.plain).help("Settings")
                 Button {
                     if supervisor.state == .ready {
@@ -119,7 +119,7 @@ struct PopupView: View {
                         showStartHint = true
                     }
                 } label: {
-                    Image(systemName: "bubble.left")
+                    Image(systemName: "bubble.left").font(.system(size: 28))
                 }.buttonStyle(.plain).help("Open chat")
                 Button {
                     if supervisor.state == .ready {
@@ -132,7 +132,7 @@ struct PopupView: View {
                         showStartHint = true
                     }
                 } label: {
-                    Image(systemName: "terminal")
+                    Image(systemName: "terminal").font(.system(size: 28))
                 }.buttonStyle(.plain).help("Open a coding agent in Terminal")
                 Spacer()
                 Button("Quit") { NSApplication.shared.terminate(nil) }.buttonStyle(.plain).foregroundStyle(.secondary)
