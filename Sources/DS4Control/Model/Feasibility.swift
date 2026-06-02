@@ -3,8 +3,7 @@ import Foundation
 enum Feasibility: Equatable {
     case standard
     case warnWiredLimit(advisoryMB: Int)  // 96–127 GiB Flash
-    case unsupported(reason: String)  // < 96 GiB Flash: allowed only via opt-in toggle
-    case blocked(reason: String)  // variant cannot run on this machine
+    case blocked(reason: String)  // cannot run on this machine
 }
 
 /// Physical unified memory in GiB.
@@ -26,13 +25,6 @@ func currentWiredLimitMB() -> Int {
 
 func thinkMax(ctx: Int) -> Bool { ctx >= 393_216 }
 
-private let ctxSnapSet = [32_768, 65_536, 131_072, 250_000, 393_216, 786_432, 1_000_000]
-
-/// Cap for the budget-derived *default* context. Set to the 1M ceiling so a Pro
-/// machine with the memory budget defaults to the full context window; Flash and
-/// smaller machines stay bounded by their memory budget and `variant.ctxCeiling`.
-private let defaultCtxCap = 1_000_000
-
 /// Headroom left for macOS and other processes — also the buffer the Metal
 /// wired-limit advisory leaves below total RAM.
 private let osReserveGiB = 8.0
@@ -42,22 +34,13 @@ private let osReserveGiB = 8.0
 /// models (e.g. 0.9·512 GiB ≈ 460 GiB < Pro's ~471 GiB working set).
 private func wiredLimitAdvisoryMB(ramGiB: Double) -> Int { Int((ramGiB - osReserveGiB) * 1024) }
 
-private func snapDown(_ value: Double, ceiling: Int) -> Int {
-    let v = min(max(Int(value), 32_768), ceiling)
-    return ctxSnapSet.filter { $0 <= v && $0 <= ceiling }.last ?? 32_768
-}
-
-/// Default context. 1M is the universal default: the model supports it, the live KV is small
-/// (~16.8 KB/token, measured via scripts/flash-mem-harness.sh) and the mmap'd weights page
-/// lazily, so the full window runs on every supported machine (tight ones page cold experts —
-/// a perf, not a fit, tradeoff). Falls back to the memory-budget step-down only in the
-/// degenerate case where the weights themselves don't fit RAM.
+/// Default context, tiered by machine memory (measured via scripts/flash-mem-harness.sh,
+/// where q2 @1M ≈ 96 GiB resident): V4 Pro and ≥128 GiB Flash (q2-q4 quant) run the full 1M
+/// window all-resident; 96–127 GiB Flash (q2) is capped at 393K ("Think-Max") so weights + KV
+/// stay resident without paging. `flashQuant` is accepted for API symmetry; the tier keys on RAM.
 func defaultCtx(ramGiB: Double, variant: Variant, flashQuant: FlashQuant) -> Int {
-    let weightsGiB = Quant.for(variant, flashQuant: flashQuant).weightsGiB
-    guard weightsGiB + osReserveGiB > ramGiB else { return variant.ctxCeiling }
-    let budgetBytes = max(0, ramGiB - weightsGiB - osReserveGiB) * 1_073_741_824.0
-    let raw = min(budgetBytes / Double(variant.kvBytesPerToken), Double(defaultCtxCap))
-    return snapDown(raw, ceiling: variant.ctxCeiling)
+    if variant == .pro { return variant.ctxCeiling }  // Pro: full 1M
+    return ramGiB >= 128 ? variant.ctxCeiling : 393_216  // Flash: 1M on ≥128 GiB, else 393K
 }
 
 /// Whether a Flash quant's resident weights fit this machine (weights + OS reserve ≤ RAM).
@@ -66,10 +49,10 @@ func flashQuantFits(_ q: FlashQuant, ramGiB: Double) -> Bool {
     q.quant.weightsGiB + osReserveGiB <= ramGiB
 }
 
-/// Default Flash quant for a machine: the requested `q2-q4-imatrix`, or the smaller `q2`
-/// when q2-q4 doesn't fit. Only used when nothing is persisted yet.
+/// Default Flash quant: q2-q4 on ≥128 GiB (room for the 1M window all-resident), else q2
+/// (96–127 GiB). Only used when nothing is persisted yet.
 func defaultFlashQuant(ramGiB: Double) -> FlashQuant {
-    flashQuantFits(.q2q4, ramGiB: ramGiB) ? .q2q4 : .q2
+    ramGiB >= 128 ? .q2q4 : .q2
 }
 
 /// Feasibility gate (spec §5.2). ds4 itself enforces no floor, so the app does.
@@ -81,13 +64,12 @@ func feasibility(ramGiB: Double, variant: Variant) -> Feasibility {
         // 512 GiB machine, so always advise raising it.
         return .warnWiredLimit(advisoryMB: wiredLimitAdvisoryMB(ramGiB: ramGiB))
     case .flash:
-        if ramGiB >= 128 { return .standard }  // Flash standard ≥128 GiB (q4 ≥256, q2 128–255)
-        if ramGiB >= 96 {
+        if ramGiB >= 128 { return .standard }  // ≥128 GiB: q2-q4 quant, 1M context
+        if ramGiB >= 96 {  // 96–127 GiB: q2 quant, 393K context
             return .warnWiredLimit(advisoryMB: wiredLimitAdvisoryMB(ramGiB: ramGiB))
         }
-        return .unsupported(
+        return .blocked(
             reason:
-                "V4 Flash needs ≥ 96 GiB. ds4 will begin mmap-loading the ~81 GiB model, but the GPU-wired working set plus KV exceed RAM → swap and instability, not usable generation."
-        )
+                "V4 Flash needs ≥ 96 GiB unified memory. Below that, the ~81 GiB model plus its KV cache exceed RAM, so it can't run.")
     }
 }

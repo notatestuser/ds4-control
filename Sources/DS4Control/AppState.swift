@@ -8,7 +8,6 @@ final class AppState: ObservableObject {
     @Published var port: Int { didSet { d.set(port, forKey: "port") } }
     @Published var ctxOverride: Int { didSet { d.set(ctxOverride, forKey: "ctxOverride") } }  // 0 = auto
     @Published var power: Int? { didSet { d.set(power ?? 0, forKey: "power") } }
-    @Published var unsupportedLowRAM: Bool { didSet { d.set(unsupportedLowRAM, forKey: "unsupportedLowRAM") } }
     @Published var kvDiskCache: Bool { didSet { d.set(kvDiskCache, forKey: "kvDiskCache") } }
     /// Xet high-performance downloads (wide adaptive concurrency). Off by default: capped
     /// concurrency keeps the connection count CGNAT-safe. See SupervisorService.download.
@@ -29,7 +28,6 @@ final class AppState: ObservableObject {
         port = d.object(forKey: "port") as? Int ?? 8000
         ctxOverride = d.integer(forKey: "ctxOverride")
         let p = d.integer(forKey: "power"); power = p > 0 ? p : nil
-        unsupportedLowRAM = d.bool(forKey: "unsupportedLowRAM")
         kvDiskCache = d.object(forKey: "kvDiskCache") as? Bool ?? true  // default on
         highPerformanceDownload = d.bool(forKey: "highPerformanceDownload")  // default off
         let ram = systemRamGiB()

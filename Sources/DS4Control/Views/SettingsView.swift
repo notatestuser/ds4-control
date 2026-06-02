@@ -144,16 +144,6 @@ struct SettingsView: View {
                 )
             }
 
-            if ram < 96 {
-                Section {
-                    Toggle("Enable unsupported low-RAM mode", isOn: $app.unsupportedLowRAM)
-                } header: {
-                    Text("Advanced")
-                } footer: {
-                    Text("Below 96 GiB is not a supported configuration; ds4 may swap or crash.")
-                        .foregroundStyle(.red)
-                }
-            }
         }
         .formStyle(.grouped)
         .frame(width: 480, height: 520)

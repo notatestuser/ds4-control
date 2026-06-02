@@ -25,11 +25,8 @@ struct ModelRowView: View {
     @ViewBuilder private func actionButton(_ feas: Feasibility) -> some View {
         let downloaded = supervisor.isDownloaded(app.selectedVariant, flashQuant: app.selectedFlashQuant)
         let blocked: Bool = {
-            switch feas {
-            case .blocked: return true
-            case .unsupported: return !app.unsupportedLowRAM
-            default: return false
-            }
+            if case .blocked = feas { return true }
+            return false
         }()
         switch supervisor.state {
         case .ready, .starting:
@@ -101,12 +98,6 @@ struct ModelRowView: View {
             }
         case let .blocked(reason):
             Text(reason).font(.caption2).foregroundStyle(.red)
-        case let .unsupported(reason):
-            VStack(alignment: .leading, spacing: 2) {
-                Text("UNSUPPORTED — may swap or crash").font(.caption2.bold()).foregroundStyle(.red)
-                Text(reason).font(.caption2).foregroundStyle(.secondary)
-                Toggle("Enable unsupported low-RAM mode", isOn: $app.unsupportedLowRAM).font(.caption2)
-            }
         }
     }
 }
