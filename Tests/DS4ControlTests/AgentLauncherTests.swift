@@ -23,19 +23,20 @@ final class AgentLauncherTests: XCTestCase {
         XCTAssertTrue(s.contains("deepseek-v4-pro"))
         XCTAssertTrue(s.contains("deepseek-v4-flash"))
         XCTAssertTrue(s.contains("thinkingLevelMap"))
+        XCTAssertTrue(s.contains("\"xhigh\": \"max\""))  // Max mode (pi xhigh) → ds4 reasoning_effort "max"
     }
 
     func testWrapperScriptBranchesForBothAgents() {
         let s = AgentLauncher.wrapperScript(
             port: 8137, modelId: "deepseek-v4-flash", contextWindow: 1_000_000,
             piConfigDir: "/tmp/x/pi-agent")
-        // Prompts + defaults + normalized effort gate.
+        // Prompts + defaults + Max Think gate.
         XCTAssertTrue(s.contains("echo \"Launcher script: $0\""))  // shows path, not full contents
         XCTAssertFalse(s.contains("cat \"$0\""))
         XCTAssertTrue(s.contains("Agent [pi/claude] (pi): "))
         XCTAssertTrue(s.contains("agent=pi"))
-        XCTAssertTrue(s.contains("Effort [low/medium/high/xhigh] (low): "))
-        XCTAssertTrue(s.contains("low|medium|high|xhigh"))
+        XCTAssertTrue(s.contains("Enable Max Think? [y/N]: "))
+        XCTAssertTrue(s.contains("[Yy]*) maxthink=1"))
         // Hidden "testoption" choice + install check that gracefully fails when the chosen
         // agent's executable isn't on PATH (testoption never resolves, so it exercises this).
         XCTAssertTrue(s.contains("pi|claude|testoption"))  // accepted, but absent from the [pi/claude] prompt
@@ -44,7 +45,12 @@ final class AgentLauncherTests: XCTestCase {
         XCTAssertTrue(s.contains("is not installed"))  // graceful message before exit 1
         // claude branch (no DISABLE_COMPACT — user observes compaction behavior).
         XCTAssertTrue(s.contains("export ANTHROPIC_BASE_URL=\"http://127.0.0.1:8137\""))
-        XCTAssertTrue(s.contains("export CLAUDE_CODE_EFFORT_LEVEL=\"$effort\""))
+        // Effort high by default (claude's own default for this model is xhigh), max on Max Think.
+        XCTAssertTrue(s.contains("export ANTHROPIC_MODEL=\"deepseek-v4-flash\""))
+        XCTAssertTrue(s.contains("export CLAUDE_CODE_EFFORT_LEVEL=high"))  // non-max baseline
+        XCTAssertTrue(s.contains("export CLAUDE_CODE_EFFORT_LEVEL=max"))   // Max Think overrides
+        XCTAssertFalse(s.contains("deepseek-chat"))  // dropped — it did not actually disable thinking
+        XCTAssertFalse(s.contains("CLAUDE_CODE_DISABLE_THINKING"))
         XCTAssertTrue(s.contains("export CLAUDE_CODE_MAX_CONTEXT_TOKENS=1000000"))
         XCTAssertTrue(s.contains("export DISABLE_COMPACT=1"))  // required for MAX_CONTEXT_TOKENS to apply
         XCTAssertTrue(s.contains("unset ANTHROPIC_API_KEY"))  // neither mode prompts about a "custom API key"
@@ -55,7 +61,9 @@ final class AgentLauncherTests: XCTestCase {
         XCTAssertTrue(s.contains("exec claude --exclude-dynamic-system-prompt-sections"))  // non-bare path: normal login
         // pi branch.
         XCTAssertTrue(s.contains("export PI_CODING_AGENT_DIR=\"/tmp/x/pi-agent\""))
-        XCTAssertTrue(s.contains("exec pi --model ds4/deepseek-v4-flash --thinking \"$effort\""))
+        // Max Think → pi xhigh (maps to reasoning_effort "max"); otherwise no --thinking (pi default).
+        XCTAssertTrue(s.contains("exec pi --model ds4/deepseek-v4-flash --thinking xhigh "))
+        XCTAssertTrue(s.contains("exec pi --model ds4/deepseek-v4-flash \"say hi"))
     }
 
     func testAppleScriptRunsWrapperAndActivatesTerminal() {
