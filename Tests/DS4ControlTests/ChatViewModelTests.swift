@@ -160,4 +160,56 @@ final class ChatViewModelTests: XCTestCase {
         XCTAssertEqual(viewModel.messages.count, 2)
         XCTAssertEqual(viewModel.messages[1].content, "abcde")
     }
+
+    func testThinkingDeltasDeliveredAfterStream() async {
+        let viewModel = ChatViewModel(
+            model: "deepseek-v4-pro", port: { 8000 },
+            streamProvider: { _, _, _ in
+                AsyncThrowingStream { c in
+                    c.yield(.reasoning("step one. "))
+                    c.yield(.reasoning("step two."))
+                    c.yield(.text("Answer."))
+                    c.finish()
+                }
+            })
+        viewModel.input = "go"
+        viewModel.send()
+        await awaitStreamCompletion(viewModel)
+        XCTAssertEqual(viewModel.messages.last?.thinking, "step one. step two.")
+        XCTAssertEqual(viewModel.messages.last?.content, "Answer.")
+    }
+
+    func testInFlightGuardSkipsThenForceDrains() {
+        let viewModel = makeViewModel(deltas: [])
+        let id = UUID()
+        viewModel.messages = [ChatMessage(id: id, role: .assistant, content: "", isStreaming: true)]
+        viewModel.streamingMessageID = id
+
+        viewModel.bufferContentDelta("X")
+        viewModel.applyPendingDeltas(includeThinking: true, force: false)
+        XCTAssertEqual(viewModel.messages[0].content, "X")
+        XCTAssertTrue(viewModel.updateInFlight)
+
+        viewModel.bufferContentDelta("Y")
+        viewModel.applyPendingDeltas(includeThinking: true, force: false)
+        XCTAssertEqual(viewModel.messages[0].content, "X")
+
+        viewModel.applyPendingDeltas(includeThinking: true, force: true)
+        XCTAssertEqual(viewModel.messages[0].content, "XY")
+    }
+
+    func testTickFlushCooldownSkipsNextTick() {
+        let viewModel = makeViewModel(deltas: [])
+        let id = UUID()
+        viewModel.messages = [ChatMessage(id: id, role: .assistant, content: "", isStreaming: true)]
+        viewModel.streamingMessageID = id
+        viewModel.bufferContentDelta("A")
+        viewModel.tickFlush()  // applies → in-flight
+        XCTAssertEqual(viewModel.messages[0].content, "A")
+        viewModel.bufferContentDelta("B")
+        viewModel.tickFlush()  // cooldown → skipped
+        XCTAssertEqual(viewModel.messages[0].content, "A")
+        viewModel.tickFlush()  // resumes → applies "B"
+        XCTAssertEqual(viewModel.messages[0].content, "AB")
+    }
 }

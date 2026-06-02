@@ -42,14 +42,25 @@ final class ChatViewModel: ObservableObject {
     private static let streamingFlushIntervalNanos: UInt64 = 33_000_000  // 33ms
     private var pendingContentDelta: String = ""
     private var pendingThinkingDelta: String = ""
-    private var hasPendingDelta: Bool {
-        !pendingContentDelta.isEmpty || !pendingThinkingDelta.isEmpty
-    }
     private var flushTask: Task<Void, Never>?
 
-    // ID of the message currently being streamed — captured at `send()` time
-    // so the flush loop knows which row to mutate. Nil when no stream is active.
-    private var streamingMessageID: UUID?
+    // Thinking flushes on a coarser cadence than content: reasoning live-ness matters less
+    // and Max-Think reasoning can be long. Content flushes every tick (~33ms); thinking
+    // every Nth tick (~264ms).
+    private var flushTickCount = 0
+    private static let thinkingFlushEveryNTicks = 8  // 33ms × 8 ≈ 264ms
+
+    // Single-in-flight guard (adaptive backpressure): a flush tick landing right after a
+    // mutation treats the prior render as still settling and skips, clearing the flag so the
+    // next tick resumes. SwiftUI has no literal "render finished" callback — this cooldown is
+    // the serialization boundary. finish()/stop() bypass it with `force: true` so the final
+    // tokens always land. Internal (with the cadence members) for deterministic testing.
+    private(set) var updateInFlight = false
+
+    // ID of the message currently being streamed — captured at `send()` time so the flush
+    // loop knows which row to mutate. Nil when no stream is active. Internal so the guard /
+    // cadence tests can drive a deterministic streaming row.
+    var streamingMessageID: UUID?
 
     init(
         model: String,
@@ -93,7 +104,7 @@ final class ChatViewModel: ObservableObject {
             while !Task.isCancelled {
                 try? await Task.sleep(nanoseconds: Self.streamingFlushIntervalNanos)
                 if Task.isCancelled { return }
-                await self?.flushPendingDeltas()
+                self?.tickFlush()
             }
         }
 
@@ -128,12 +139,14 @@ final class ChatViewModel: ObservableObject {
         // Flush any pending content the user would otherwise lose on cancel —
         // a 33ms buffer at most, but the user pressed Stop and expects to
         // see what was generated.
-        flushPendingDeltas()
+        applyPendingDeltas(includeThinking: true, force: true)
         streamTask?.cancel()
         streamTask = nil
         flushTask?.cancel()
         flushTask = nil
         streamingMessageID = nil
+        flushTickCount = 0
+        updateInFlight = false
         pendingContentDelta = ""
         pendingThinkingDelta = ""
         if let last = messages.indices.last, messages[last].isStreaming {
@@ -151,42 +164,64 @@ final class ChatViewModel: ObservableObject {
 
     /// Append an incoming content delta to the pending buffer. Does NOT
     /// mutate `messages` — the flush loop applies the buffer every 33ms.
-    private func bufferContentDelta(_ delta: String) {
+    func bufferContentDelta(_ delta: String) {
         pendingContentDelta += delta
     }
 
     /// Append an incoming reasoning delta to the pending buffer. Same
     /// throttle contract as `bufferContentDelta(_:)`.
-    private func bufferThinkingDelta(_ delta: String) {
+    func bufferThinkingDelta(_ delta: String) {
         pendingThinkingDelta += delta
     }
 
-    /// Drain the pending buffers into the streaming message's row. Called
-    /// from the flush loop on the main actor. No-op if there's nothing
-    /// pending (the common case between deltas).
+    /// Timer entry point. Content flushes every tick; thinking every Nth tick. Hosts the
+    /// single-in-flight cooldown: a tick landing right after a mutation is skipped, clearing
+    /// the flag so the next tick resumes.
     @MainActor
-    private func flushPendingDeltas() {
-        guard hasPendingDelta, let id = streamingMessageID,
+    func tickFlush() {
+        if updateInFlight {
+            updateInFlight = false
+            return
+        }
+        flushTickCount &+= 1
+        let includeThinking = flushTickCount % Self.thinkingFlushEveryNTicks == 0
+        applyPendingDeltas(includeThinking: includeThinking, force: false)
+    }
+
+    /// Drain the pending buffers into the streaming message's row. Skips while an update is
+    /// in flight unless `force` (finish()/stop() use `force: true` to drain synchronously).
+    /// A real mutation marks in-flight; the next `tickFlush` clears it (cooldown).
+    @MainActor
+    func applyPendingDeltas(includeThinking: Bool, force: Bool) {
+        if !force && updateInFlight { return }
+        guard let id = streamingMessageID,
             let index = messages.firstIndex(where: { $0.id == id })
         else { return }
+        var mutated = false
         if !pendingContentDelta.isEmpty {
             messages[index].content += pendingContentDelta
             pendingContentDelta = ""
+            mutated = true
         }
-        if !pendingThinkingDelta.isEmpty {
+        if includeThinking && !pendingThinkingDelta.isEmpty {
             messages[index].thinking += pendingThinkingDelta
             pendingThinkingDelta = ""
+            mutated = true
         }
+        guard mutated else { return }
+        if !force { updateInFlight = true }  // cleared by the next tickFlush (cooldown)
     }
 
     private func finish(_ id: UUID) {
         // Force-flush any pending deltas before mutating the message one
         // last time, so no token is lost when the stream ends between flush
         // ticks. Also cancel the flush loop — it has no work left.
-        flushPendingDeltas()
+        applyPendingDeltas(includeThinking: true, force: true)
         flushTask?.cancel()
         flushTask = nil
         streamingMessageID = nil
+        flushTickCount = 0
+        updateInFlight = false
 
         if let index = messages.firstIndex(where: { $0.id == id }) {
             messages[index].isStreaming = false
