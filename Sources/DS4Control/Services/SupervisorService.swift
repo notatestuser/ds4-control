@@ -22,6 +22,9 @@ final class SupervisorService: ObservableObject {
     /// every poll tick so it clears within ~1s of the process stopping or being killed.
     @Published private(set) var downloadProcessLive = false
     @Published private(set) var recentLog: [String] = []
+    /// Bumped whenever the on-disk gguf set changes via cleanup, so SwiftUI views that read
+    /// `isFlashQuantDownloaded` (the Settings picker) re-render.
+    @Published private(set) var ggufStoreVersion = 0
 
     var thinkMaxActive: Bool { thinkMax(ctx: ctx) }
 
@@ -40,6 +43,11 @@ final class SupervisorService: ObservableObject {
     /// True when tracking a download started by a previous session (we poll its
     /// .incomplete file but don't own the process — see resumeInFlightDownloadIfAny).
     private var downloadAttached = false
+    /// Set once the on-disk poll sees real bytes (curl's `.part` or hf's `.incomplete`).
+    /// While true the byte-accurate poll owns `download.pct`; the stderr parser stops
+    /// publishing, so curl's session-relative `% Total` during a `-C -` resume can't
+    /// flicker the bar down toward the resume offset.
+    private var downloadHasDiskBytes = false
     private var staleDownloadPolls = 0
     /// True when attached to a ds4-server started by a previous session (we don't
     /// own the process; Stop terminates it by port — see resumeRunningServerIfAny).
@@ -88,8 +96,8 @@ final class SupervisorService: ObservableObject {
         }
         return ggufBaseOverride ?? ds4Dir.appendingPathComponent("gguf")
     }
-    private func ggufURL(for variant: Variant, ramGiB: Double) -> URL {
-        ggufBaseDir().appendingPathComponent(Quant.for(variant, ramGiB: ramGiB).ggufFilename)
+    private func ggufURL(for variant: Variant, flashQuant: FlashQuant) -> URL {
+        ggufBaseDir().appendingPathComponent(Quant.for(variant, flashQuant: flashQuant).ggufFilename)
     }
     private func validateDs4Dir() -> ServerError? {
         for f in ["ds4-server", "download_model.sh"] {
@@ -104,11 +112,10 @@ final class SupervisorService: ObservableObject {
     /// is tiny, so this holds many cached prefixes; generous but trivial on modern SSDs.
     static let kvDiskSpaceMB = 32768
 
-    func start(variant: Variant, ctx: Int, port: Int, power: Int?, kvDiskDir: URL? = nil) {
+    func start(variant: Variant, flashQuant: FlashQuant, ctx: Int, port: Int, power: Int?, kvDiskDir: URL? = nil) {
         guard state == .idle || isErrorState else { emitBadState("start"); return }
         if let e = validateDs4Dir() { state = .error(e); return }
-        let ram = systemRamGiB()
-        let gguf = ggufURL(for: variant, ramGiB: ram)
+        let gguf = ggufURL(for: variant, flashQuant: flashQuant)
         guard FileManager.default.fileExists(atPath: gguf.path) else {
             state = .error(.modelMissing(filename: gguf.lastPathComponent)); return
         }
@@ -181,11 +188,13 @@ final class SupervisorService: ObservableObject {
     /// running server was owned by us, `stop()` drains asynchronously and the relaunch
     /// is deferred to `handleExit`; an attached orphan stops synchronously and relaunches
     /// at once. No-op unless a server is running.
-    func restart(variant: Variant, ctx: Int, port: Int, power: Int?, kvDiskDir: URL? = nil) {
+    func restart(variant: Variant, flashQuant: FlashQuant, ctx: Int, port: Int, power: Int?, kvDiskDir: URL? = nil) {
         guard state == .ready || state == .starting else { emitBadState("restart"); return }
         let relaunch: () -> Void = { [weak self] in
             guard let self else { return }
-            self.start(variant: variant, ctx: ctx, port: port, power: power, kvDiskDir: kvDiskDir)
+            self.start(
+                variant: variant, flashQuant: flashQuant, ctx: ctx, port: port, power: power,
+                kvDiskDir: kvDiskDir)
         }
         stop()
         if state == .idle {
@@ -240,15 +249,16 @@ final class SupervisorService: ObservableObject {
     /// SIGTERM'd process's exit-15 can't clobber the fresh download's state.
     private var downloadGeneration = 0
 
-    func download(variant: Variant, highPerformance: Bool = false) {
+    func download(variant: Variant, flashQuant: FlashQuant, highPerformance: Bool = false) {
         guard state == .idle || isErrorState else { emitBadState("download"); return }
         if let e = validateDs4Dir() { state = .error(e); return }
-        let q = Quant.for(variant, ramGiB: systemRamGiB())
+        let q = Quant.for(variant, flashQuant: flashQuant)
         let baseDir = ggufBaseDir()
         let expectedBytes = Int64(q.weightsGiB * 1_073_741_824)
         download = DownloadProgress(pct: 0, file: q.ggufFilename, receivedBytes: 0, totalBytes: expectedBytes)
         state = .downloading
         downloadAttached = false
+        downloadHasDiskBytes = false
         downloadGeneration += 1
         let gen = downloadGeneration
         // Progress comes from polling the file on disk: the hf downloader emits no
@@ -299,6 +309,9 @@ final class SupervisorService: ObservableObject {
                     let rate = parseDownloadRate(buf.text)
                     Self.onMain {
                         guard let self, self.downloadGeneration == gen else { return }
+                        // Once the poll has real on-disk bytes it owns the bar; ignore curl's
+                        // session-relative stderr % (during a -C - resume) to avoid flicker.
+                        guard !self.downloadHasDiskBytes else { return }
                         self.download = DownloadProgress(
                             pct: pct, file: q.ggufFilename, receivedBytes: 0, totalBytes: nil, rate: rate)
                     }
@@ -331,7 +344,7 @@ final class SupervisorService: ObservableObject {
     /// Cancel whatever download is being tracked (owned process or an attached
     /// orphan) and start a fresh one — the user's escape hatch from a stuck/stalled
     /// or errored progress bar.
-    func retryDownload(variant: Variant, highPerformance: Bool = false) {
+    func retryDownload(variant: Variant, flashQuant: FlashQuant, highPerformance: Bool = false) {
         downloadRunner.terminate(graceSeconds: 0)  // no-op if nothing is running
         downloadPollTimer?.invalidate()
         downloadPollTimer = nil
@@ -339,7 +352,7 @@ final class SupervisorService: ObservableObject {
         lastDownloadSample = nil
         download = nil
         state = .idle
-        download(variant: variant, highPerformance: highPerformance)
+        download(variant: variant, flashQuant: flashQuant, highPerformance: highPerformance)
     }
 
     /// Cancel an in-progress download and return to idle without restarting. Bumping the
@@ -358,6 +371,7 @@ final class SupervisorService: ObservableObject {
         downloadPollTimer?.invalidate()
         downloadPollTimer = nil
         downloadAttached = false
+        downloadHasDiskBytes = false
         downloadProcessLive = false
         lastDownloadSample = nil
         staleDownloadPolls = 0
@@ -379,10 +393,10 @@ final class SupervisorService: ObservableObject {
     /// file under the hf cache) and we're idle, re-attach the progress UI without
     /// spawning a new download — avoids the hf lock collision a re-click would cause.
     /// Variant-agnostic on the partial bytes; uses the selected variant for the total.
-    func resumeInFlightDownloadIfAny(variant: Variant) {
+    func resumeInFlightDownloadIfAny(variant: Variant, flashQuant: FlashQuant) {
         guard state == .idle else { return }
         let base = ggufBaseDir()
-        let q = Quant.for(variant, ramGiB: systemRamGiB())
+        let q = Quant.for(variant, flashQuant: flashQuant)
         // Already fully downloaded → nothing to attach.
         if FileManager.default.fileExists(atPath: base.appendingPathComponent(q.ggufFilename).path) { return }
         let received = downloadedBytes(ggufDir: base, filename: q.ggufFilename)
@@ -444,6 +458,7 @@ final class SupervisorService: ObservableObject {
             }
         }
         guard received > 0 else { return }  // nothing on disk yet — leave any stderr-driven value
+        downloadHasDiskBytes = true  // byte-accurate poll now owns the bar (see stderr callback)
         let now = Date()
         var rate: String?
         if let last = lastDownloadSample, received > last.bytes {
@@ -483,8 +498,32 @@ final class SupervisorService: ObservableObject {
     }
 
     /// True when the selected variant's gguf exists on disk.
-    func isDownloaded(_ variant: Variant) -> Bool {
-        FileManager.default.fileExists(atPath: ggufURL(for: variant, ramGiB: systemRamGiB()).path)
+    func isDownloaded(_ variant: Variant, flashQuant: FlashQuant) -> Bool {
+        FileManager.default.fileExists(atPath: ggufURL(for: variant, flashQuant: flashQuant).path)
+    }
+
+    // MARK: - Flash quant store (Settings: download markers + cleanup)
+    func flashQuantURL(_ q: FlashQuant) -> URL {
+        ggufBaseDir().appendingPathComponent(q.quant.ggufFilename)
+    }
+    func isFlashQuantDownloaded(_ q: FlashQuant) -> Bool {
+        FileManager.default.fileExists(atPath: flashQuantURL(q).path)
+    }
+    /// Delete on-disk Flash quant ggufs other than `keep`. V4 Pro is untouched by construction
+    /// (the loop only iterates `FlashQuant`). Gate the call site to idle/error so a loaded or
+    /// downloading model is never removed. Returns the removed filenames.
+    @discardableResult
+    func cleanupUnusedFlashQuants(keep: FlashQuant) -> [String] {
+        var removed: [String] = []
+        for q in FlashQuant.allCases where q != keep {
+            let url = flashQuantURL(q)
+            if FileManager.default.fileExists(atPath: url.path) {
+                try? FileManager.default.removeItem(at: url)
+                removed.append(q.quant.ggufFilename)
+            }
+        }
+        ggufStoreVersion += 1
+        return removed
     }
 
     // MARK: - Health

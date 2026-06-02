@@ -26,6 +26,17 @@ final class DownloadProbeTests: XCTestCase {
         XCTAssertEqual(downloadedBytes(ggufDir: dir, filename: "model.gguf"), 8192)
     }
 
+    func testDownloadedBytesCountsCurlPartFile() throws {
+        let dir = URL(fileURLWithPath: NSTemporaryDirectory()).appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        // download_model.sh's curl streams to "<filename>.part" before renaming on completion.
+        try Data(count: 1234).write(to: dir.appendingPathComponent("model.gguf.part"))
+        XCTAssertEqual(downloadedBytes(ggufDir: dir, filename: "model.gguf"), 1234)
+        // Once the final file lands it takes precedence over any leftover .part.
+        try Data(count: 9999).write(to: dir.appendingPathComponent("model.gguf"))
+        XCTAssertEqual(downloadedBytes(ggufDir: dir, filename: "model.gguf"), 9999)
+    }
+
     func testDownloadedBytesZeroWhenAbsent() {
         let dir = URL(fileURLWithPath: NSTemporaryDirectory()).appendingPathComponent(UUID().uuidString)
         XCTAssertEqual(downloadedBytes(ggufDir: dir, filename: "model.gguf"), 0)

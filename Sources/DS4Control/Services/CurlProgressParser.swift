@@ -19,6 +19,11 @@ func parseCurlProgress(_ chunk: String) -> Double? {
             continue
         }
         // curl --progress-meter style: first token is the percent, second a size.
+        // Require a real byte-size unit on the line (e.g. "90.8G"). curl follows HF's
+        // resolve→CDN redirect (-fL) and the tiny redirect body completes at 100%
+        // ("100  1571  100  1571 …"); without this guard that 100 slams the bar to
+        // complete the instant the real multi-GB transfer begins.
+        guard lineHasByteSize(line) else { continue }
         let tokens = line.split(whereSeparator: { $0 == " " }).map(String.init)
         guard let first = tokens.first, let pct = Double(first),
             pct >= 0, pct <= 100, tokens.count >= 2

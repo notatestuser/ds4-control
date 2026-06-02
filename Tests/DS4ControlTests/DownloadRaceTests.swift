@@ -41,11 +41,11 @@ final class DownloadRaceTests: XCTestCase {
         let dl = CapturingRunner()
         let s = SupervisorService(ds4Dir: try makeDir(), runner: CapturingRunner(), downloadRunner: dl)
 
-        s.download(variant: .flash)
+        s.download(variant: .flash, flashQuant: .q2q4)
         XCTAssertEqual(s.state, .downloading)
         XCTAssertEqual(dl.launches, 1)
 
-        s.retryDownload(variant: .flash)  // terminate + relaunch; generation bumps to 2
+        s.retryDownload(variant: .flash, flashQuant: .q2q4)  // terminate + relaunch; generation bumps to 2
         XCTAssertEqual(s.state, .downloading)
         XCTAssertEqual(dl.launches, 2)
 
@@ -62,7 +62,7 @@ final class DownloadRaceTests: XCTestCase {
         let dl = CapturingRunner()
         let s = SupervisorService(ds4Dir: try makeDir(), runner: CapturingRunner(), downloadRunner: dl)
 
-        s.download(variant: .flash)
+        s.download(variant: .flash, flashQuant: .q2q4)
         XCTAssertTrue(s.downloadProcessLive, "spinner should show once the process launched")
 
         dl.exits[0](0)  // process exits
@@ -75,7 +75,7 @@ final class DownloadRaceTests: XCTestCase {
         let dl = CapturingRunner()
         let s = SupervisorService(ds4Dir: try makeDir(), runner: CapturingRunner(), downloadRunner: dl)
 
-        s.download(variant: .flash)
+        s.download(variant: .flash, flashQuant: .q2q4)
         s.cancelDownload()
         XCTAssertEqual(s.state, .idle)
         XCTAssertFalse(s.downloadProcessLive)

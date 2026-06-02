@@ -3,14 +3,14 @@ import XCTest
 
 final class FeasibilityTests: XCTestCase {
     func testDefaultCtxAnchors() {
-        XCTAssertEqual(defaultCtx(ramGiB: 600, variant: .pro), 1_000_000)  // default at 1M ceiling
-        XCTAssertEqual(defaultCtx(ramGiB: 128, variant: .flash), 393_216)
-        XCTAssertEqual(defaultCtx(ramGiB: 96, variant: .flash), 250_000)
+        XCTAssertEqual(defaultCtx(ramGiB: 600, variant: .pro, flashQuant: .q2q4), 1_000_000)  // default at 1M ceiling
+        XCTAssertEqual(defaultCtx(ramGiB: 128, variant: .flash, flashQuant: .q2), 393_216)
+        XCTAssertEqual(defaultCtx(ramGiB: 96, variant: .flash, flashQuant: .q2), 250_000)
     }
     func testDefaultCtxProgressiveStepDown() {
-        XCTAssertEqual(defaultCtx(ramGiB: 93, variant: .flash), 131_072)
-        XCTAssertEqual(defaultCtx(ramGiB: 92, variant: .flash), 65_536)
-        XCTAssertEqual(defaultCtx(ramGiB: 90, variant: .flash), 32_768)  // floor
+        XCTAssertEqual(defaultCtx(ramGiB: 93, variant: .flash, flashQuant: .q2), 131_072)
+        XCTAssertEqual(defaultCtx(ramGiB: 92, variant: .flash, flashQuant: .q2), 65_536)
+        XCTAssertEqual(defaultCtx(ramGiB: 90, variant: .flash, flashQuant: .q2), 32_768)  // floor
     }
     func testFeasibilityGate() {
         if case .warnWiredLimit = feasibility(ramGiB: 520, variant: .pro) {

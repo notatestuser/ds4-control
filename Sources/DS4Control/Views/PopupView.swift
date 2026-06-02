@@ -8,6 +8,7 @@ struct PopupView: View {
 
     private let ram = systemRamGiB()
     @State private var showStartHint = false
+    @State private var showDownloadHint = false
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
@@ -96,9 +97,18 @@ struct PopupView: View {
                     .font(.caption2)
                     .foregroundStyle(.orange)
             }
+            if showDownloadHint && supervisor.state == .downloading {
+                Text("Settings are locked while a download is in progress.")
+                    .font(.caption2)
+                    .foregroundStyle(.orange)
+            }
             HStack {
                 Button {
-                    openWindow(id: "settings")
+                    if supervisor.state == .downloading {
+                        showDownloadHint = true
+                    } else {
+                        openWindow(id: "settings")
+                    }
                 } label: {
                     Image(systemName: "gearshape")
                 }.buttonStyle(.plain)

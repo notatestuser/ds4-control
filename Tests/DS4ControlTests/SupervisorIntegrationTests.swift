@@ -10,7 +10,7 @@ final class SupervisorIntegrationTests: XCTestCase {
         try FileManager.default.createDirectory(at: dl, withIntermediateDirectories: true)
         try Data(count: 5_000_000).write(to: dl.appendingPathComponent("h.incomplete"))
         let s = SupervisorService(ds4Dir: dir, runner: RealProcessRunner())
-        s.resumeInFlightDownloadIfAny(variant: .pro)
+        s.resumeInFlightDownloadIfAny(variant: .pro, flashQuant: .q2q4)
         XCTAssertEqual(s.state, .downloading)
         XCTAssertEqual(s.download?.receivedBytes, 5_000_000)
     }
@@ -20,7 +20,7 @@ final class SupervisorIntegrationTests: XCTestCase {
         try FileManager.default.createDirectory(
             at: dir.appendingPathComponent("gguf"), withIntermediateDirectories: true)
         let s = SupervisorService(ds4Dir: dir, runner: RealProcessRunner())
-        s.resumeInFlightDownloadIfAny(variant: .pro)
+        s.resumeInFlightDownloadIfAny(variant: .pro, flashQuant: .q2q4)
         XCTAssertEqual(s.state, .idle)
     }
 
@@ -30,7 +30,7 @@ final class SupervisorIntegrationTests: XCTestCase {
         try FileManager.default.createDirectory(at: g, withIntermediateDirectories: true)
         try Data(count: 10).write(to: g.appendingPathComponent(Quant.proImatrix.ggufFilename))
         let s = SupervisorService(ds4Dir: dir, runner: RealProcessRunner())
-        s.resumeInFlightDownloadIfAny(variant: .pro)
+        s.resumeInFlightDownloadIfAny(variant: .pro, flashQuant: .q2q4)
         XCTAssertEqual(s.state, .idle)
     }
 
@@ -54,7 +54,7 @@ final class SupervisorIntegrationTests: XCTestCase {
         try Data(count: 1024).write(
             to: dir.appendingPathComponent("gguf/.cache/huggingface/download/h.incomplete"))
         let s = SupervisorService(ds4Dir: dir, runner: RealProcessRunner())
-        s.retryDownload(variant: .pro)
+        s.retryDownload(variant: .pro, flashQuant: .q2q4)
         XCTAssertEqual(s.state, .downloading)
         XCTAssertNotNil(s.download)
     }
@@ -114,14 +114,14 @@ final class SupervisorIntegrationTests: XCTestCase {
             try FileManager.default.setAttributes(
                 [.posixPermissions: 0o755], ofItemAtPath: dir.appendingPathComponent(f).path)
         }
-        // The supervisor resolves the gguf via Quant.for(.flash, ramGiB: systemRamGiB());
-        // create the file the host's RAM actually selects so the fixture matches on any machine.
-        let hostQuant = Quant.for(.flash, ramGiB: systemRamGiB())
+        // The supervisor resolves the gguf via Quant.for(.flash, flashQuant:); create the
+        // file for the quant the test starts with (.q2q4) so the fixture matches.
+        let hostQuant = Quant.for(.flash, flashQuant: .q2q4)
         let gg = dir.appendingPathComponent("gguf").appendingPathComponent(hostQuant.ggufFilename)
         FileManager.default.createFile(atPath: gg.path, contents: Data("gguf".utf8))
 
         let s = SupervisorService(ds4Dir: dir, runner: RealProcessRunner())
-        s.start(variant: .flash, ctx: 250_000, port: 8137, power: nil)
+        s.start(variant: .flash, flashQuant: .q2q4, ctx: 250_000, port: 8137, power: nil)
         let ready = expectation(description: "ready")
         let token = s.$state.sink { if $0 == .ready { ready.fulfill() } }
         wait(for: [ready], timeout: 10)
@@ -147,7 +147,7 @@ final class SupervisorIntegrationTests: XCTestCase {
         let s = SupervisorService(ds4Dir: dir, runner: RealProcessRunner())
         let done = expectation(description: "download idle")
         let token = s.$state.sink { if $0 == .idle, s.download?.pct == 100 { done.fulfill() } }
-        s.download(variant: .flash)
+        s.download(variant: .flash, flashQuant: .q2q4)
         wait(for: [done], timeout: 10)
         token.cancel()
     }
@@ -173,10 +173,35 @@ final class SupervisorIntegrationTests: XCTestCase {
         let token = s.$download.sink { if let p = $0?.pct { seenPcts.append(p) } }
         let done = expectation(description: "download idle")
         let stateToken = s.$state.sink { if $0 == .idle, s.download?.pct == 100 { done.fulfill() } }
-        s.download(variant: .flash)
+        s.download(variant: .flash, flashQuant: .q2q4)
         wait(for: [done], timeout: 10)
         token.cancel(); stateToken.cancel()
         // Must have observed at least one intermediate (>0, <100) value — proves live streaming, not a 0→100 jump.
         XCTAssertTrue(seenPcts.contains { $0 > 0 && $0 < 100 }, "expected intermediate progress, saw: \(seenPcts)")
+    }
+
+    func testCleanupRemovesUnselectedFlashQuantsKeepingPro() throws {
+        let dir = URL(fileURLWithPath: NSTemporaryDirectory()).appendingPathComponent(UUID().uuidString)
+        let g = dir.appendingPathComponent("gguf")
+        try FileManager.default.createDirectory(at: g, withIntermediateDirectories: true)
+        // Seed all three Flash quants + the Pro file on disk.
+        for q in FlashQuant.allCases {
+            try Data(count: 4).write(to: g.appendingPathComponent(q.quant.ggufFilename))
+        }
+        try Data(count: 4).write(to: g.appendingPathComponent(Quant.proImatrix.ggufFilename))
+        let s = SupervisorService(ds4Dir: dir, runner: RealProcessRunner())
+        XCTAssertTrue(FlashQuant.allCases.allSatisfy { s.isFlashQuantDownloaded($0) })
+        let before = s.ggufStoreVersion
+
+        let removed = s.cleanupUnusedFlashQuants(keep: .q2q4)
+
+        XCTAssertEqual(Set(removed), [FlashQuant.q2.quant.ggufFilename, FlashQuant.q4.quant.ggufFilename])
+        XCTAssertTrue(s.isFlashQuantDownloaded(.q2q4))  // selected kept
+        XCTAssertFalse(s.isFlashQuantDownloaded(.q2))  // removed
+        XCTAssertFalse(s.isFlashQuantDownloaded(.q4))  // removed
+        XCTAssertTrue(  // V4 Pro always kept
+            FileManager.default.fileExists(
+                atPath: g.appendingPathComponent(Quant.proImatrix.ggufFilename).path))
+        XCTAssertEqual(s.ggufStoreVersion, before + 1)
     }
 }

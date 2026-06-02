@@ -37,6 +37,15 @@ final class CurlProgressParserTests: XCTestCase {
         XCTAssertNil(parseCurlProgress("Fetching 1 files:   0%|          | 0/1"))
         XCTAssertNil(parseCurlProgress("Fetching 1 files: 100%|██████████| 1/1 [00:00<00:00]"))
     }
+    func testCurlRedirectBodyIgnored() {
+        // curl -fL follows HF's resolve→CDN 302; the tiny redirect body completes at 100%
+        // ("100  1571  100  1571 …"). It carries no byte-size unit and must NOT move the bar.
+        let redirect = "100  1571  100  1571    0     0   5420      0 --:--:-- --:--:-- --:--:--  5435"
+        XCTAssertNil(parseCurlProgress(redirect))
+        // Redirect line followed by the real transfer at 0% of 90.8G → reads 0, not 100.
+        let buf = redirect + "\r  0 90.8G    0 63.3M    0     0  79.3M      0  0:19:33 --:--:--  0:19:33 79.3M"
+        XCTAssertEqual(parseCurlProgress(buf) ?? .nan, 0, accuracy: 0.001)
+    }
 
     // Transfer-rate extraction for the popup.
     func testRateFromTqdmLine() {

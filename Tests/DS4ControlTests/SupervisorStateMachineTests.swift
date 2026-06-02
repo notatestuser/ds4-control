@@ -29,9 +29,9 @@ final class SupervisorStateMachineTests: XCTestCase {
             FileManager.default.createFile(atPath: u.path, contents: Data("#!/bin/sh\n".utf8))
             try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: u.path)
         }
-        // The supervisor resolves the gguf via Quant.for(.flash, ramGiB: systemRamGiB());
-        // create the file the host's RAM actually selects so the fixture matches on any machine.
-        let hostQuant = Quant.for(.flash, ramGiB: systemRamGiB())
+        // The supervisor resolves the gguf via Quant.for(.flash, flashQuant:); create the
+        // file for the quant the tests start with (.q2q4) so the fixture matches.
+        let hostQuant = Quant.for(.flash, flashQuant: .q2q4)
         let gg = dir.appendingPathComponent("gguf").appendingPathComponent(hostQuant.ggufFilename)
         FileManager.default.createFile(atPath: gg.path, contents: Data("gguf".utf8))
         return SupervisorService(ds4Dir: dir, runner: runner)
@@ -39,7 +39,7 @@ final class SupervisorStateMachineTests: XCTestCase {
 
     func testStartReachesReady() throws {
         let r = FakeRunner(); let s = try makeSupervisor(r)
-        s.start(variant: .flash, ctx: 250_000, port: 8000, power: nil)
+        s.start(variant: .flash, flashQuant: .q2q4, ctx: 250_000, port: 8000, power: nil)
         XCTAssertEqual(s.state, .starting)
         r.emit("ds4-server: listening on http://127.0.0.1:8000")
         XCTAssertEqual(s.state, .ready)
@@ -50,7 +50,7 @@ final class SupervisorStateMachineTests: XCTestCase {
     func testStartAddsKvDiskArgsWhenDirProvided() throws {
         let r = FakeRunner(); let s = try makeSupervisor(r)
         let kv = URL(fileURLWithPath: NSTemporaryDirectory()).appendingPathComponent(UUID().uuidString)
-        s.start(variant: .flash, ctx: 250_000, port: 8000, power: nil, kvDiskDir: kv)
+        s.start(variant: .flash, flashQuant: .q2q4, ctx: 250_000, port: 8000, power: nil, kvDiskDir: kv)
         XCTAssertTrue(r.lastArgs.contains("--kv-disk-dir"))
         XCTAssertTrue(r.lastArgs.contains(kv.path))
         XCTAssertTrue(r.lastArgs.contains("--kv-disk-space-mb"))
@@ -58,24 +58,24 @@ final class SupervisorStateMachineTests: XCTestCase {
     }
     func testCrashIsError() throws {
         let r = FakeRunner(); let s = try makeSupervisor(r)
-        s.start(variant: .flash, ctx: 250_000, port: 8000, power: nil)
+        s.start(variant: .flash, flashQuant: .q2q4, ctx: 250_000, port: 8000, power: nil)
         r.emit("some log line"); r.crash(1)
         if case .error(.crashed) = s.state {} else { XCTFail("expected crashed, got \(s.state)") }
     }
     func testStop() throws {
         let r = FakeRunner(); let s = try makeSupervisor(r)
-        s.start(variant: .flash, ctx: 250_000, port: 8000, power: nil)
+        s.start(variant: .flash, flashQuant: .q2q4, ctx: 250_000, port: 8000, power: nil)
         r.emit("ds4-server: listening on http://127.0.0.1:8000")
         s.stop()
         XCTAssertEqual(s.state, .idle)
     }
     func testRestartRelaunchesWithNewSettings() throws {
         let r = FakeRunner(); let s = try makeSupervisor(r)
-        s.start(variant: .flash, ctx: 250_000, port: 8000, power: nil)
+        s.start(variant: .flash, flashQuant: .q2q4, ctx: 250_000, port: 8000, power: nil)
         r.emit("ds4-server: listening on http://127.0.0.1:8000")
         XCTAssertEqual(s.state, .ready)
 
-        s.restart(variant: .flash, ctx: 393_216, port: 8000, power: nil)
+        s.restart(variant: .flash, flashQuant: .q2q4, ctx: 393_216, port: 8000, power: nil)
         // FakeRunner.terminate fires exit(0) inline, so the relaunch happens immediately.
         XCTAssertEqual(s.state, .starting)
         XCTAssertTrue(r.lastArgs.contains("393216"))  // new ctx applied to the relaunch
@@ -86,7 +86,7 @@ final class SupervisorStateMachineTests: XCTestCase {
     }
     func testRestartIgnoredWhenNotRunning() throws {
         let r = FakeRunner(); let s = try makeSupervisor(r)
-        s.restart(variant: .flash, ctx: 393_216, port: 8000, power: nil)
+        s.restart(variant: .flash, flashQuant: .q2q4, ctx: 393_216, port: 8000, power: nil)
         XCTAssertEqual(s.state, .idle)  // no-op; nothing to restart
     }
     func testMissingModel() throws {
@@ -98,7 +98,23 @@ final class SupervisorStateMachineTests: XCTestCase {
             try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: u.path)
         }
         let s = SupervisorService(ds4Dir: dir, runner: FakeRunner())
-        s.start(variant: .flash, ctx: 250_000, port: 8000, power: nil)
+        s.start(variant: .flash, flashQuant: .q2q4, ctx: 250_000, port: 8000, power: nil)
         if case .error(.modelMissing) = s.state {} else { XCTFail("expected modelMissing, got \(s.state)") }
+    }
+    func testDownloadPassesSelectedQuantArg() throws {
+        let dir = URL(fileURLWithPath: NSTemporaryDirectory()).appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(
+            at: dir.appendingPathComponent("gguf"), withIntermediateDirectories: true)
+        for f in ["ds4-server", "download_model.sh"] {
+            let u = dir.appendingPathComponent(f)
+            FileManager.default.createFile(atPath: u.path, contents: Data("#!/bin/sh\n".utf8))
+            try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: u.path)
+        }
+        let dl = FakeRunner()
+        let s = SupervisorService(ds4Dir: dir, runner: FakeRunner(), downloadRunner: dl)
+        s.download(variant: .flash, flashQuant: .q2q4)
+        XCTAssertEqual(s.state, .downloading)
+        XCTAssertEqual(dl.lastArgs, ["q2-q4-imatrix"])  // selected quant's download_model.sh arg
+        s.cancelDownload()
     }
 }

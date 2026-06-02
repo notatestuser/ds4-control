@@ -15,13 +15,12 @@ enum Variant: String, CaseIterable, Identifiable, Codable {
 }
 
 enum Quant {
-    case proImatrix, q4Imatrix, q2Imatrix
+    case proImatrix, q4Imatrix, q2Imatrix, q2q4Imatrix
 
-    static func `for`(_ variant: Variant, ramGiB: Double) -> Quant {
-        switch variant {
-        case .pro: return .proImatrix
-        case .flash: return ramGiB >= 256 ? .q4Imatrix : .q2Imatrix
-        }
+    /// Concrete quant for a variant. Pro is always `pro-imatrix`; Flash follows the
+    /// user-selected `FlashQuant` (default `q2-q4-imatrix`).
+    static func `for`(_ variant: Variant, flashQuant: FlashQuant) -> Quant {
+        variant == .pro ? .proImatrix : flashQuant.quant
     }
 
     /// Argument passed to `download_model.sh`.
@@ -30,6 +29,7 @@ enum Quant {
         case .proImatrix: return "pro-imatrix"
         case .q4Imatrix: return "q4-imatrix"
         case .q2Imatrix: return "q2-imatrix"
+        case .q2q4Imatrix: return "q2-q4-imatrix"
         }
     }
 
@@ -43,6 +43,9 @@ enum Quant {
                 "DeepSeek-V4-Flash-Q4KExperts-F16HC-F16Compressor-F16Indexer-Q8Attn-Q8Shared-Q8Out-chat-v2-imatrix.gguf"
         case .q2Imatrix:
             return "DeepSeek-V4-Flash-IQ2XXS-w2Q2K-AProjQ8-SExpQ8-OutQ8-chat-v2-imatrix.gguf"
+        case .q2q4Imatrix:
+            return
+                "DeepSeek-V4-Flash-Layers37-42Q4KExperts-OtherExpertLayersIQ2XXSGateUp-Q2KDown-AProjQ8-SExpQ8-OutQ8-chat-v2-imatrix-fixed.gguf"
         }
     }
 
@@ -52,6 +55,25 @@ enum Quant {
         case .proImatrix: return 432
         case .q4Imatrix: return 153
         case .q2Imatrix: return 81
+        case .q2q4Imatrix: return 91
         }
     }
+}
+
+/// User-selectable V4 Flash quant (Settings). Maps to a concrete `Quant`; V4 Pro is always
+/// `pro-imatrix` and ignores this. Declared smallest→largest so the picker orders naturally.
+enum FlashQuant: String, CaseIterable, Identifiable, Codable {
+    case q2 = "q2-imatrix"
+    case q2q4 = "q2-q4-imatrix"
+    case q4 = "q4-imatrix"
+    var id: String { rawValue }
+    var quant: Quant {
+        switch self {
+        case .q2: return .q2Imatrix
+        case .q2q4: return .q2q4Imatrix
+        case .q4: return .q4Imatrix
+        }
+    }
+    /// Picker label: internal key + approximate resident size, e.g. "q2-q4-imatrix · ~91 GiB".
+    var label: String { "\(rawValue) · ~\(Int(quant.weightsGiB)) GiB" }
 }

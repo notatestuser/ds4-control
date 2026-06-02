@@ -1,13 +1,14 @@
 import Foundation
 
-/// Bytes downloaded so far for `filename` under `ggufDir`. The `hf` downloader
-/// writes to `.cache/huggingface/download/<hash>.incomplete` while in flight and
-/// moves it to the final path on completion, so we check the final file first,
-/// then sum any in-flight `*.incomplete` files. This is TTY-independent and works
-/// regardless of which downloader (`hf`, curl, …) `download_model.sh` uses.
+/// Bytes downloaded so far for `filename` under `ggufDir`. Checked in order: the final
+/// file (download complete); curl's `<filename>.part` (download_model.sh streams to it and
+/// renames on completion); then any in-flight `hf` `*.incomplete` files. TTY-independent and
+/// works regardless of which downloader (curl, `hf`, …) `download_model.sh` uses.
 func downloadedBytes(ggufDir: URL, filename: String) -> Int64 {
     let finalSize = fileSize(ggufDir.appendingPathComponent(filename))
     if finalSize > 0 { return finalSize }
+    let partSize = fileSize(ggufDir.appendingPathComponent(filename + ".part"))
+    if partSize > 0 { return partSize }
     let incompleteDir = ggufDir.appendingPathComponent(".cache/huggingface/download")
     guard
         let items = try? FileManager.default.contentsOfDirectory(

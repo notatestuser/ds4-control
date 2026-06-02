@@ -14,6 +14,7 @@ struct ModelRowView: View {
             }
             .pickerStyle(.segmented)
             .labelsHidden()
+            .disabled(supervisor.state == .downloading)  // don't switch model mid-download
 
             let feas = feasibility(ramGiB: ramGiB, variant: app.selectedVariant)
             actionButton(feas)
@@ -22,7 +23,7 @@ struct ModelRowView: View {
     }
 
     @ViewBuilder private func actionButton(_ feas: Feasibility) -> some View {
-        let downloaded = supervisor.isDownloaded(app.selectedVariant)
+        let downloaded = supervisor.isDownloaded(app.selectedVariant, flashQuant: app.selectedFlashQuant)
         let blocked: Bool = {
             switch feas {
             case .blocked: return true
@@ -38,7 +39,8 @@ struct ModelRowView: View {
             HStack {
                 Button("Retry download") {
                     supervisor.retryDownload(
-                        variant: app.selectedVariant, highPerformance: app.highPerformanceDownload)
+                        variant: app.selectedVariant, flashQuant: app.selectedFlashQuant,
+                        highPerformance: app.highPerformanceDownload)
                 }
                 .tint(.orange).frame(maxWidth: .infinity).disabled(blocked)
                 Button("Cancel", role: .destructive) { supervisor.cancelDownload() }
@@ -48,11 +50,13 @@ struct ModelRowView: View {
             Button(downloaded ? "Retry" : "Retry download") {
                 if downloaded {
                     supervisor.start(
-                        variant: app.selectedVariant, ctx: app.effectiveCtx(ramGiB: ramGiB),
+                        variant: app.selectedVariant, flashQuant: app.selectedFlashQuant,
+                        ctx: app.effectiveCtx(ramGiB: ramGiB),
                         port: app.port, power: app.power)
                 } else {
                     supervisor.retryDownload(
-                        variant: app.selectedVariant, highPerformance: app.highPerformanceDownload)
+                        variant: app.selectedVariant, flashQuant: app.selectedFlashQuant,
+                        highPerformance: app.highPerformanceDownload)
                 }
             }
             .tint(.orange).frame(maxWidth: .infinity).disabled(blocked)
@@ -60,13 +64,14 @@ struct ModelRowView: View {
             if !downloaded {
                 Button("Download \(app.selectedVariant.displayName)") {
                     supervisor.download(
-                        variant: app.selectedVariant, highPerformance: app.highPerformanceDownload)
+                        variant: app.selectedVariant, flashQuant: app.selectedFlashQuant,
+                        highPerformance: app.highPerformanceDownload)
                 }
                 .frame(maxWidth: .infinity).disabled(blocked)
             } else {
                 Button("Start") {
                     supervisor.start(
-                        variant: app.selectedVariant,
+                        variant: app.selectedVariant, flashQuant: app.selectedFlashQuant,
                         ctx: app.effectiveCtx(ramGiB: ramGiB),
                         port: app.port, power: app.power,
                         kvDiskDir: app.kvDiskCache ? supervisor.kvDiskCacheURL : nil)

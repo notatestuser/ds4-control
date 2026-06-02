@@ -18,6 +18,11 @@ final class AppState: ObservableObject {
     @Published var selectedVariant: Variant {
         didSet { d.set(selectedVariant.rawValue, forKey: "selectedVariant") }
     }
+    /// User-selected V4 Flash quant (default q2-q4-imatrix). Drives the Flash download/run
+    /// filename and the auto-context calc; V4 Pro ignores it.
+    @Published var selectedFlashQuant: FlashQuant {
+        didSet { d.set(selectedFlashQuant.rawValue, forKey: "selectedFlashQuant") }
+    }
 
     init(defaults: UserDefaults = .standard) {
         self.d = defaults
@@ -30,9 +35,13 @@ final class AppState: ObservableObject {
         let ram = systemRamGiB()
         let stored = d.string(forKey: "selectedVariant").flatMap(Variant.init(rawValue:))
         selectedVariant = stored ?? (ram >= 512 ? .pro : .flash)  // default Pro on ≥512 GiB
+        let storedQuant = d.string(forKey: "selectedFlashQuant").flatMap(FlashQuant.init(rawValue:))
+        selectedFlashQuant = storedQuant ?? defaultFlashQuant(ramGiB: ram)  // default q2-q4-imatrix
     }
 
     func effectiveCtx(ramGiB: Double) -> Int {
-        ctxOverride > 0 ? ctxOverride : defaultCtx(ramGiB: ramGiB, variant: selectedVariant)
+        ctxOverride > 0
+            ? ctxOverride
+            : defaultCtx(ramGiB: ramGiB, variant: selectedVariant, flashQuant: selectedFlashQuant)
     }
 }

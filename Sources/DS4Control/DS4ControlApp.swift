@@ -33,7 +33,8 @@ struct DS4ControlApp: App {
                 .onAppear {
                     metrics.start()
                     supervisor.resumeRunningServerIfAny(port: app.port)
-                    supervisor.resumeInFlightDownloadIfAny(variant: app.selectedVariant)
+                    supervisor.resumeInFlightDownloadIfAny(
+                        variant: app.selectedVariant, flashQuant: app.selectedFlashQuant)
                 }
         } label: {
             Image(systemName: iconName(for: supervisor.state))

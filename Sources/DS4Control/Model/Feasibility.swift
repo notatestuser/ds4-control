@@ -48,11 +48,23 @@ private func snapDown(_ value: Double, ceiling: Int) -> Int {
 }
 
 /// Budget-derived default context (spec §5.2).
-func defaultCtx(ramGiB: Double, variant: Variant) -> Int {
-    let weightsGiB = Quant.for(variant, ramGiB: ramGiB).weightsGiB
+func defaultCtx(ramGiB: Double, variant: Variant, flashQuant: FlashQuant) -> Int {
+    let weightsGiB = Quant.for(variant, flashQuant: flashQuant).weightsGiB
     let budgetBytes = max(0, ramGiB - weightsGiB - osReserveGiB) * 1_073_741_824.0
     let raw = min(budgetBytes / Double(variant.kvBytesPerToken), Double(defaultCtxCap))
     return snapDown(raw, ceiling: variant.ctxCeiling)
+}
+
+/// Whether a Flash quant's resident weights fit this machine (weights + OS reserve ≤ RAM).
+/// Drives which options the Settings quant picker offers.
+func flashQuantFits(_ q: FlashQuant, ramGiB: Double) -> Bool {
+    q.quant.weightsGiB + osReserveGiB <= ramGiB
+}
+
+/// Default Flash quant for a machine: the requested `q2-q4-imatrix`, or the smaller `q2`
+/// when q2-q4 doesn't fit. Only used when nothing is persisted yet.
+func defaultFlashQuant(ramGiB: Double) -> FlashQuant {
+    flashQuantFits(.q2q4, ramGiB: ramGiB) ? .q2q4 : .q2
 }
 
 /// Feasibility gate (spec §5.2). ds4 itself enforces no floor, so the app does.

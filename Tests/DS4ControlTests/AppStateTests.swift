@@ -8,7 +8,9 @@ final class AppStateTests: XCTestCase {
         let app = AppState(defaults: d)
         app.selectedVariant = .flash
         app.ctxOverride = 0
-        XCTAssertEqual(app.effectiveCtx(ramGiB: 128), defaultCtx(ramGiB: 128, variant: .flash))
+        XCTAssertEqual(
+            app.effectiveCtx(ramGiB: 128),
+            defaultCtx(ramGiB: 128, variant: .flash, flashQuant: app.selectedFlashQuant))
         app.ctxOverride = 50_000
         XCTAssertEqual(app.effectiveCtx(ramGiB: 128), 50_000)
     }

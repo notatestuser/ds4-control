@@ -4,15 +4,39 @@ struct SettingsView: View {
     @EnvironmentObject var app: AppState
     @EnvironmentObject var supervisor: SupervisorService
     private let ram = systemRamGiB()
+    @State private var confirmingCleanup = false
 
     private var isRunning: Bool { supervisor.state == .ready || supervisor.state == .starting }
+    /// Busy = a server is running/starting/stopping or a download is in flight; cleanup is
+    /// disabled then so an in-use or downloading model is never removed.
+    private var isBusy: Bool {
+        switch supervisor.state {
+        case .idle, .error: return false
+        default: return true
+        }
+    }
+    /// Downloaded Flash quants other than the selected one — candidates for cleanup.
+    private var removableFlashQuants: [FlashQuant] {
+        FlashQuant.allCases.filter { $0 != app.selectedFlashQuant && supervisor.isFlashQuantDownloaded($0) }
+    }
+    private var removableFreedGiB: Int {
+        Int(removableFlashQuants.reduce(0.0) { $0 + $1.quant.weightsGiB })
+    }
+    private var flashModelFooter: String {
+        let base = "Which V4 Flash quant to download and run. Larger quants need more memory; "
+            + "options that exceed this machine's RAM are disabled."
+        return isBusy
+            ? base + " Stop the server to clean up unused downloads."
+            : base + " Clean up removes other downloaded Flash quants (V4 Pro is always kept)."
+    }
 
     private var ctxHint: String {
         if app.ctxOverride > 0 {
             return thinkMax(ctx: app.ctxOverride)
                 ? "Think-Max active (context ≥ 393,216)." : "Below Think-Max."
         }
-        return "Auto: \(defaultCtx(ramGiB: ram, variant: app.selectedVariant).formatted()) tokens for \(Int(ram)) GiB."
+        return
+            "Auto: \(defaultCtx(ramGiB: ram, variant: app.selectedVariant, flashQuant: app.selectedFlashQuant).formatted()) tokens for \(Int(ram)) GiB."
     }
 
     private var restartHint: String {
@@ -71,6 +95,37 @@ struct SettingsView: View {
             }
 
             Section {
+                Picker("Quant", selection: $app.selectedFlashQuant) {
+                    ForEach(FlashQuant.allCases) { q in
+                        Text(q.label + (supervisor.isFlashQuantDownloaded(q) ? "  (downloaded)" : ""))
+                            .tag(q)
+                            .disabled(!flashQuantFits(q, ramGiB: ram))
+                    }
+                }
+                .disabled(supervisor.state == .downloading)  // locked while a download is in progress
+                Button("Clean up unused Flash downloads") { confirmingCleanup = true }
+                    .disabled(removableFlashQuants.isEmpty || isBusy)
+            } header: {
+                Text("V4 Flash model")
+            } footer: {
+                Text(flashModelFooter)
+            }
+            .confirmationDialog(
+                "Delete other V4 Flash downloads?", isPresented: $confirmingCleanup,
+                titleVisibility: .visible
+            ) {
+                Button(
+                    "Delete \(removableFlashQuants.count) file(s) · ~\(removableFreedGiB) GiB",
+                    role: .destructive
+                ) {
+                    supervisor.cleanupUnusedFlashQuants(keep: app.selectedFlashQuant)
+                }
+                Button("Cancel", role: .cancel) {}
+            } message: {
+                Text("Keeps the selected quant and V4 Pro. Cannot be undone — removed quants must be re-downloaded.")
+            }
+
+            Section {
                 Toggle("High performance mode", isOn: $app.highPerformanceDownload)
             } header: {
                 Text("Downloads")
@@ -100,7 +155,7 @@ struct SettingsView: View {
 
     private func restart() {
         supervisor.restart(
-            variant: app.selectedVariant,
+            variant: app.selectedVariant, flashQuant: app.selectedFlashQuant,
             ctx: app.effectiveCtx(ramGiB: ram),
             port: app.port, power: app.power,
             kvDiskDir: app.kvDiskCache ? supervisor.kvDiskCacheURL : nil)
