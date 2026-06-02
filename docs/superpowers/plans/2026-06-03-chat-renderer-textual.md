@@ -20,6 +20,84 @@ swift test                                              # authoritative
 ```
 Run `swift format format --in-place --recursive Sources Tests` before committing to satisfy the strict lint.
 
+## Reviewer Revisions (implementation handoff)
+
+Verified against the live files — plan line refs, test helpers (`makeViewModel`, `awaitStreamCompletion`, `@MainActor` test class), `ChatMessage`'s defaulted init, and CI (`macos-26`; gates mirror `ci.yml`) are all accurate. The following **override** the task text below where they conflict.
+
+**R1 — In-flight guard: next-tick cooldown, not a microtask clear (Task 9).**
+The planned `Task { @MainActor in self?.updateInFlight = false }` clears the flag before the next 33 ms tick, so it effectively never skips (the empty-buffer `guard mutated else return` was the real backpressure). Clear it inside the *next* `tickFlush` instead — a one-interval cooldown after each applied mutation, which genuinely caps the apply rate under sustained streaming while leaving idle ticks untouched. Use these in place of Task 9 Step 3(b/c):
+
+```swift
+@MainActor
+func tickFlush() {
+    // Single-in-flight guard as a cooldown: a tick landing right after a mutation treats the
+    // prior render as still settling and skips, clearing the flag so the next tick resumes.
+    // Sustained streaming → applies at most ~every other tick (~66ms); idle ticks unaffected.
+    if updateInFlight {
+        updateInFlight = false
+        return
+    }
+    flushTickCount &+= 1
+    let includeThinking = flushTickCount % Self.thinkingFlushEveryNTicks == 0
+    applyPendingDeltas(includeThinking: includeThinking, force: false)
+}
+```
+and the tail of `applyPendingDeltas`:
+```swift
+        guard mutated else { return }
+        if !force { updateInFlight = true }   // cleared by the next tickFlush (cooldown)
+```
+Add to Task 9 Step 1 (requires `tickFlush` internal, like the other guard members):
+```swift
+    func testTickFlushCooldownSkipsNextTick() {
+        let viewModel = makeViewModel(deltas: [])
+        let id = UUID()
+        viewModel.messages = [ChatMessage(id: id, role: .assistant, content: "", isStreaming: true)]
+        viewModel.streamingMessageID = id
+        viewModel.bufferContentDelta("A"); viewModel.tickFlush()   // applies → in-flight
+        XCTAssertEqual(viewModel.messages[0].content, "A")
+        viewModel.bufferContentDelta("B"); viewModel.tickFlush()   // cooldown → skipped
+        XCTAssertEqual(viewModel.messages[0].content, "A")
+        viewModel.tickFlush()                                      // resumes → applies "B"
+        XCTAssertEqual(viewModel.messages[0].content, "AB")
+    }
+```
+
+**R2 — `stripTaggedBlocks` must handle an inline `<tag>…</tag>` line (Task 5).**
+The planned loop scans *following* lines for the close, so a single `<think>x</think>` line over-consumes everything after it. Replace the function with:
+```swift
+    static func stripTaggedBlocks(_ s: String) -> String {
+        var out: [String] = []
+        var lines = s.components(separatedBy: .newlines)[...]
+        while let line = lines.first {
+            lines = lines.dropFirst()
+            let trimmed = line.trimmingCharacters(in: .whitespaces)
+            guard trimmed.hasPrefix("<"), let tag = extractOpeningTag(trimmed),
+                strippedTags.contains(tag)
+            else {
+                out.append(line)
+                continue
+            }
+            if trimmed.contains("</\(tag)>") { continue }  // inline open+close → drop this line only
+            while let next = lines.first,
+                extractClosingTag(next.trimmingCharacters(in: .whitespaces)) != tag
+            {
+                lines = lines.dropFirst()
+            }
+            lines = lines.dropFirst()  // consume the closing tag line (no-op at EOF)
+        }
+        return out.joined(separator: "\n")
+    }
+```
+Add to Task 5's `MarkdownTextTests`:
+```swift
+    func testPreprocessStripsInlineThinkingLine() {
+        XCTAssertEqual(MarkdownText.preprocess("Before\n<think>x</think>\nAfter"), "Before\nAfter")
+    }
+```
+
+**R3 — Endorse split-on-raw + preprocess-per-block (Task 5, no change).** The spec wrote `splitBlocks(preprocess(content))`; the plan splits raw and preprocesses each `MarkdownBlockView`. Keep the plan's order — with `.equatable()` only the live tail re-preprocesses (O(tail)), and `deLaTeXed` doesn't change block boundaries; the rare divergence (a stripped tag block containing an interior blank line) is reconciled when the bubble collapses to single-view on finalize.
+
 ## File Structure
 
 | File | Status | Responsibility | Imports Textual |
