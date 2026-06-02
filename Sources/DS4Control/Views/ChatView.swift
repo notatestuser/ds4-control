@@ -265,8 +265,12 @@ struct MessageBubble: View {
 }
 
 /// Think-Max reasoning, hidden by default in a collapsed disclosure. Expanding reveals the
-/// monologue (capped, internally scrollable so long reasoning doesn't blow up the bubble).
-/// State is per-message (the bubble carries `.id(message.id)`), so expansion sticks per reply.
+/// monologue inline (the outer transcript scrolls if it's long). State is per-message (the bubble
+/// carries `.id(message.id)`), so expansion sticks per reply.
+///
+/// Deliberately NO inner ScrollView: a greedy ScrollView inside the content-sized bubble made the
+/// offered width oscillate against the sibling IntrinsicTextView's pure sizeThatFits, spinning the
+/// SwiftUI layout engine at 100% CPU (the chat-freeze bug). Plain Text sizes deterministically.
 struct ThinkingDisclosure: View {
     let text: String
     let streaming: Bool
@@ -274,15 +278,12 @@ struct ThinkingDisclosure: View {
 
     var body: some View {
         DisclosureGroup(isExpanded: $expanded) {
-            ScrollView {
-                Text(text)
-                    .font(.callout)
-                    .foregroundStyle(.secondary)
-                    .textSelection(.enabled)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-            }
-            .frame(maxHeight: 260)
-            .padding(.top, 4)
+            Text(text)
+                .font(.callout)
+                .foregroundStyle(.secondary)
+                .textSelection(.enabled)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .padding(.top, 4)
         } label: {
             Label(streaming ? "Thinking…" : "Thinking", systemImage: "brain")
                 .font(.caption)
