@@ -93,7 +93,7 @@ struct PopupView: View {
         // resigns key, so an .alert/sheet would collapse the whole popover.
         VStack(alignment: .leading, spacing: 6) {
             if showStartHint && supervisor.state != .ready {
-                Text("Start the model first to use chat and the pi agent.")
+                Text("Start the model first to use chat and a coding agent.")
                     .font(.caption2)
                     .foregroundStyle(.orange)
             }
@@ -111,7 +111,7 @@ struct PopupView: View {
                     }
                 } label: {
                     Image(systemName: "gearshape")
-                }.buttonStyle(.plain)
+                }.buttonStyle(.plain).help("Settings")
                 Button {
                     if supervisor.state == .ready {
                         openWindow(id: "chat")
@@ -120,17 +120,20 @@ struct PopupView: View {
                     }
                 } label: {
                     Image(systemName: "bubble.left")
-                }.buttonStyle(.plain)
+                }.buttonStyle(.plain).help("Open chat")
                 Button {
                     if supervisor.state == .ready {
-                        PiLauncher.launch(
-                            modelSpec: PiLauncher.modelSpec(for: supervisor.activeModel, fallback: app.selectedVariant))
+                        AgentLauncher.launch(
+                            port: supervisor.port,
+                            modelId: AgentLauncher.modelId(
+                                for: supervisor.activeModel, fallback: app.selectedVariant),
+                            ramGiB: ram)
                     } else {
                         showStartHint = true
                     }
                 } label: {
                     Image(systemName: "terminal")
-                }.buttonStyle(.plain)
+                }.buttonStyle(.plain).help("Open a coding agent in Terminal")
                 Spacer()
                 Button("Quit") { NSApplication.shared.terminate(nil) }.buttonStyle(.plain).foregroundStyle(.secondary)
             }

@@ -67,6 +67,10 @@ func defaultFlashQuant(ramGiB: Double) -> FlashQuant {
     flashQuantFits(.q2q4, ramGiB: ramGiB) ? .q2q4 : .q2
 }
 
+/// Client-side context window for the agent CLIs (claude/pi): the full 1M window on machines
+/// that can hold it, else the Flash Think-Max threshold. Separate from the server's `--ctx`.
+func agentContextWindow(ramGiB: Double) -> Int { ramGiB >= 128 ? 1_000_000 : 393_216 }
+
 /// Feasibility gate (spec §5.2). ds4 itself enforces no floor, so the app does.
 func feasibility(ramGiB: Double, variant: Variant) -> Feasibility {
     switch variant {
