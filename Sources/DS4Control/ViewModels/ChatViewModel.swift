@@ -69,6 +69,11 @@ final class ChatViewModel: ObservableObject {
                         if self.genFirstToken == nil { self.genFirstToken = Date() }
                         if !self.hasReceivedFirstToken { self.hasReceivedFirstToken = true }
                         self.appendDelta(delta, to: assistantID)
+                    case .reasoning(let delta):
+                        // Reasoning streams before the answer; the first reasoning token is TTFT.
+                        if self.genFirstToken == nil { self.genFirstToken = Date() }
+                        if !self.hasReceivedFirstToken { self.hasReceivedFirstToken = true }
+                        self.appendThinking(delta, to: assistantID)
                     case .usage(let completion, _, let total):
                         self.genCompletionTokens = completion
                         self.genTotalTokens = total
@@ -100,6 +105,11 @@ final class ChatViewModel: ObservableObject {
     private func appendDelta(_ delta: String, to id: UUID) {
         guard let index = messages.firstIndex(where: { $0.id == id }) else { return }
         messages[index].content += delta
+    }
+
+    private func appendThinking(_ delta: String, to id: UUID) {
+        guard let index = messages.firstIndex(where: { $0.id == id }) else { return }
+        messages[index].thinking += delta
     }
 
     private func finish(_ id: UUID) {

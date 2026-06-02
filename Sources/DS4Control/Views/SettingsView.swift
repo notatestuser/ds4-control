@@ -48,12 +48,17 @@ struct SettingsView: View {
     private var powerBinding: Binding<Double> {
         Binding(get: { Double(app.power ?? 100) }, set: { app.power = Int($0.rounded()) })
     }
-    /// Context-size field as text so it can be cleared back to Auto. Empty/invalid → 0 (auto);
-    /// a number overrides defaultCtx. (An Int `value:` binding can't represent empty, so the
-    /// field snapped the old value back when cleared.)
+    /// Context-size field as text. Always shows the active window: the override if set, else the
+    /// tiered default — so the box is never blank. Backspacing it away stores 0 (auto), which the
+    /// getter immediately re-renders as the default value.
     private var ctxText: Binding<String> {
         Binding(
-            get: { app.ctxOverride > 0 ? String(app.ctxOverride) : "" },
+            get: {
+                let active = app.ctxOverride > 0
+                    ? app.ctxOverride
+                    : defaultCtx(ramGiB: ram, variant: app.selectedVariant, flashQuant: app.selectedFlashQuant)
+                return String(active)
+            },
             set: { app.ctxOverride = Int($0.filter(\.isNumber)) ?? 0 })
     }
 
@@ -93,6 +98,17 @@ struct SettingsView: View {
                         "Disk KV cache persists the cache so repeated or large prompts skip re-prefill "
                             + "— applied on next Start.")
                 }
+            }
+
+            Section {
+                Toggle("Enable Think Max in chat", isOn: $app.thinkMaxChat)
+            } header: {
+                Text("Chat")
+            } footer: {
+                Text(
+                    "Sends reasoning_effort=max so the built-in chat runs DeepSeek's Think Max. "
+                        + "Off uses the fast non-thinking path. Coding-agent CLIs set their own "
+                        + "thinking level, so this affects only the chat.")
             }
 
             Section {
@@ -146,7 +162,7 @@ struct SettingsView: View {
 
         }
         .formStyle(.grouped)
-        .frame(width: 480, height: 520)
+        .frame(width: 480, height: 600)
         .onAppear { WindowChrome.windowOpened(title: "DS4 Control Settings") }
         .onDisappear { WindowChrome.windowClosed() }
     }

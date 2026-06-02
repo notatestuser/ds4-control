@@ -6,6 +6,7 @@ import Foundation
 enum ChatSSEParser {
     enum Event: Equatable {
         case delta(String)
+        case reasoning(String)
         case usage(completionTokens: Int, promptTokens: Int, totalTokens: Int)
         case done
         case ignored
@@ -14,7 +15,9 @@ enum ChatSSEParser {
     /// Decode one already-split SSE line (no trailing newline).
     /// - Recognises `data: [DONE]` as the terminator.
     /// - Extracts the trailing `usage` chunk (token counts) when present.
-    /// - Extracts `choices[0].delta.content` from `data: {json}` lines.
+    /// - Extracts `choices[0].delta.content` (answer) and `.reasoning_content`
+    ///   (Think-Max reasoning) from `data: {json}` lines — ds4 streams them as
+    ///   separate deltas, never both in one chunk.
     /// - Blank lines, comments and malformed payloads are `.ignored`.
     static func parse(line: String) -> Event {
         let trimmed = line.trimmingCharacters(in: .whitespaces)
@@ -41,12 +44,16 @@ enum ChatSSEParser {
         guard
             let choices = root["choices"] as? [[String: Any]],
             let first = choices.first,
-            let delta = first["delta"] as? [String: Any],
-            let content = delta["content"] as? String,
-            !content.isEmpty
+            let delta = first["delta"] as? [String: Any]
         else {
             return .ignored
         }
-        return .delta(content)
+        if let content = delta["content"] as? String, !content.isEmpty {
+            return .delta(content)
+        }
+        if let reasoning = delta["reasoning_content"] as? String, !reasoning.isEmpty {
+            return .reasoning(reasoning)
+        }
+        return .ignored
     }
 }

@@ -3,13 +3,14 @@ import SwiftUI
 @main
 struct DS4ControlApp: App {
     @NSApplicationDelegateAdaptor(AppDelegate.self) var appDelegate
-    @StateObject private var app = AppState()
+    @StateObject private var app: AppState
     @StateObject private var metrics = MetricsManager()
     @StateObject private var supervisor: SupervisorService
     @StateObject private var chat: ChatViewModel
 
     init() {
         let app = AppState()
+        _app = StateObject(wrappedValue: app)  // same instance the chat closures read, so the UI's toggles reach it
         let supervisor = SupervisorService(
             ds4Dir: bundledDS4Dir(), runner: RealProcessRunner(),
             ggufBaseURL: ds4AppSupportDir().appendingPathComponent("gguf", isDirectory: true))
@@ -20,7 +21,7 @@ struct DS4ControlApp: App {
                 model: app.selectedVariant.modelId,
                 port: { [weak supervisor] in supervisor?.port ?? app.port },
                 streamProvider: { port, model, messages in
-                    service.stream(port: port, model: model, messages: messages)
+                    service.stream(port: port, model: model, messages: messages, thinkMax: app.thinkMaxChat)
                 }
             )
         )

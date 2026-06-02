@@ -22,13 +22,17 @@ struct ChatMessage: Identifiable, Equatable {
     let id: UUID
     var role: ChatRole
     var content: String
+    /// Think-Max reasoning (ds4's `reasoning_content`), kept separate from `content` so the UI
+    /// can hide it in a collapsed section. Empty when the reply carried no reasoning.
+    var thinking: String
     var isStreaming: Bool
     var stats: GenerationStats?
 
-    init(id: UUID = UUID(), role: ChatRole, content: String, isStreaming: Bool = false, stats: GenerationStats? = nil) {
+    init(id: UUID = UUID(), role: ChatRole, content: String, thinking: String = "", isStreaming: Bool = false, stats: GenerationStats? = nil) {
         self.id = id
         self.role = role
         self.content = content
+        self.thinking = thinking
         self.isStreaming = isStreaming
         self.stats = stats
     }

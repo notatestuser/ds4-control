@@ -18,8 +18,8 @@ struct ChatService {
     }
 
     /// Streams assistant content deltas (and a trailing usage event) for the conversation.
-    func stream(port: Int, model: String, messages: [ChatMessage]) -> AsyncThrowingStream<ChatStreamEvent, Error> {
-        let request = Self.makeRequest(port: port, model: model, messages: messages)
+    func stream(port: Int, model: String, messages: [ChatMessage], thinkMax: Bool) -> AsyncThrowingStream<ChatStreamEvent, Error> {
+        let request = Self.makeRequest(port: port, model: model, messages: messages, thinkMax: thinkMax)
         let lines = lineSource(request)
         return AsyncThrowingStream { continuation in
             let task = Task {
@@ -28,6 +28,8 @@ struct ChatService {
                         switch ChatSSEParser.parse(line: line) {
                         case .delta(let text):
                             continuation.yield(.text(text))
+                        case .reasoning(let text):
+                            continuation.yield(.reasoning(text))
                         case .usage(let completion, let prompt, let total):
                             continuation.yield(
                                 .usage(completionTokens: completion, promptTokens: prompt, totalTokens: total))
@@ -47,20 +49,23 @@ struct ChatService {
         }
     }
 
-    static func makeRequest(port: Int, model: String, messages: [ChatMessage]) -> URLRequest {
+    static func makeRequest(port: Int, model: String, messages: [ChatMessage], thinkMax: Bool) -> URLRequest {
         var request = URLRequest(url: URL(string: "http://127.0.0.1:\(port)/v1/chat/completions")!)
         request.httpMethod = "POST"
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
         request.setValue("text/event-stream", forHTTPHeaderField: "Accept")
-        let body: [String: Any] = [
+        // Think Max requires thinking on + reasoning_effort "max" (ds4 honors only "max"); it then
+        // engages when the server --ctx ≥ 393,216. Off keeps the chat's fast non-thinking path.
+        var body: [String: Any] = [
             "model": model,
             "messages": messages.map { ["role": $0.role == .user ? "user" : "assistant", "content": $0.content] },
             "temperature": 0.7,
             "max_tokens": 32768,
-            "thinking": false,
+            "thinking": thinkMax,
             "stream": true,
             "stream_options": ["include_usage": true],
         ]
+        if thinkMax { body["reasoning_effort"] = "max" }
         request.httpBody = try? JSONSerialization.data(withJSONObject: body)
         return request
     }

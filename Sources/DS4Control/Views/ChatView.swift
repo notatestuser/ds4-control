@@ -113,6 +113,7 @@ struct ChatView: View {
             }
             .onChange(of: viewModel.isStreaming) { _, streaming in
                 if streaming { atBottom = true; scrollToBottom(proxy) }
+                else if atBottom { scrollToBottom(proxy) }  // reveal the TTFT/stats line on completion
             }
         }
     }
@@ -203,7 +204,15 @@ struct MessageBubble: View {
             }
 
             VStack(alignment: message.role == .user ? .trailing : .leading, spacing: 4) {
-                if !message.content.isEmpty || message.isStreaming {
+                if message.role == .assistant, !message.thinking.isEmpty {
+                    ThinkingDisclosure(
+                        text: message.thinking,
+                        streaming: message.isStreaming && message.content.isEmpty)
+                }
+                // Show the answer bubble once content arrives; while only reasoning is still
+                // streaming (content empty, thinking present) the disclosure stands in for it,
+                // so no empty bubble flashes. The non-thinking path keeps its streaming placeholder.
+                if !message.content.isEmpty || (message.isStreaming && message.thinking.isEmpty) {
                     VStack(alignment: .leading, spacing: 4) {
                         if message.role == .assistant {
                             MarkdownText(message.content.isEmpty && message.isStreaming ? " " : message.content)
@@ -252,6 +261,37 @@ struct MessageBubble: View {
     static func formatDuration(_ seconds: Double) -> String {
         if seconds < 1 { return "\(Int((seconds * 1000).rounded())) ms" }
         return String(format: "%.1fs", seconds)
+    }
+}
+
+/// Think-Max reasoning, hidden by default in a collapsed disclosure. Expanding reveals the
+/// monologue (capped, internally scrollable so long reasoning doesn't blow up the bubble).
+/// State is per-message (the bubble carries `.id(message.id)`), so expansion sticks per reply.
+struct ThinkingDisclosure: View {
+    let text: String
+    let streaming: Bool
+    @State private var expanded = false
+
+    var body: some View {
+        DisclosureGroup(isExpanded: $expanded) {
+            ScrollView {
+                Text(text)
+                    .font(.callout)
+                    .foregroundStyle(.secondary)
+                    .textSelection(.enabled)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+            }
+            .frame(maxHeight: 260)
+            .padding(.top, 4)
+        } label: {
+            Label(streaming ? "Thinking…" : "Thinking", systemImage: "brain")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+        }
+        .padding(.horizontal, 12)
+        .padding(.vertical, 8)
+        .background(Color(.controlBackgroundColor).opacity(0.6))
+        .clipShape(RoundedRectangle(cornerRadius: 12))
     }
 }
 

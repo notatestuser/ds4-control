@@ -8,6 +8,12 @@ final class ChatSSEParserTests: XCTestCase {
         XCTAssertEqual(ChatSSEParser.parse(line: line), .delta("Hello"))
     }
 
+    func testParsesReasoningContentDelta() {
+        // Think-Max reasoning arrives in `reasoning_content`, distinct from the answer.
+        let line = #"data: {"choices":[{"delta":{"reasoning_content":"weighing options"}}]}"#
+        XCTAssertEqual(ChatSSEParser.parse(line: line), .reasoning("weighing options"))
+    }
+
     func testParsesDoneTerminator() {
         XCTAssertEqual(ChatSSEParser.parse(line: "data: [DONE]"), .done)
     }
