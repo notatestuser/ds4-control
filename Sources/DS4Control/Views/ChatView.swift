@@ -268,43 +268,30 @@ struct MessageBubble: View {
     }
 }
 
-/// Think-Max reasoning, hidden by default behind a tap-to-expand header. Expanding reveals the
+/// Think-Max reasoning, hidden by default in a collapsed disclosure. Expanding reveals the
 /// monologue inline (the outer transcript scrolls if it's long). State is per-message (the bubble
 /// carries `.id(message.id)`), so expansion sticks per reply.
 ///
-/// Deliberately NOT a DisclosureGroup and NO `.frame(maxWidth: .infinity)`. Both made this view a
-/// greedy "bounds negotiator": DisclosureGroup pre-measures its own geometry and the infinity frame
-/// claims all width, so the width proposed to the sibling MarkdownText (an NSViewRepresentable whose
-/// height is a function of width — and which returns nil for an unbounded proposal) oscillated, and
-/// the SwiftUI layout pass never reached a fixpoint → 100% CPU spin (the chat-freeze bug, confirmed
-/// by `sample` + a zen second opinion). A plain Button + a `.fixedSize(vertical)` Text is a passive
-/// bounds *receiver*: it accepts the proposed width and reports a deterministic height, so layout
-/// converges on the first pass.
+/// Deliberately NO inner ScrollView: a greedy ScrollView inside the content-sized bubble made the
+/// offered width oscillate against the sibling IntrinsicTextView's pure sizeThatFits, spinning the
+/// SwiftUI layout engine at 100% CPU (the chat-freeze bug). Plain Text sizes deterministically.
 struct ThinkingDisclosure: View {
     let text: String
     let streaming: Bool
     @State private var expanded = false
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 6) {
-            Button { expanded.toggle() } label: {
-                HStack(spacing: 6) {
-                    Label(streaming ? "Thinking…" : "Thinking", systemImage: "brain")
-                    Image(systemName: "chevron.right").rotationEffect(.degrees(expanded ? 90 : 0))
-                }
+        DisclosureGroup(isExpanded: $expanded) {
+            Text(text)
+                .font(.callout)
+                .foregroundStyle(.secondary)
+                .textSelection(.enabled)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .padding(.top, 4)
+        } label: {
+            Label(streaming ? "Thinking…" : "Thinking", systemImage: "brain")
                 .font(.caption)
                 .foregroundStyle(.secondary)
-                .contentShape(Rectangle())
-            }
-            .buttonStyle(.plain)
-            if expanded {
-                Text(text)
-                    .font(.callout)
-                    .foregroundStyle(.secondary)
-                    .textSelection(.enabled)
-                    .fixedSize(horizontal: false, vertical: true)  // deterministic height for the proposed width
-                    .padding(.top, 2)
-            }
         }
         .padding(.horizontal, 12)
         .padding(.vertical, 8)
