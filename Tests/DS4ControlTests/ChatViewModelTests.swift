@@ -145,4 +145,19 @@ final class ChatViewModelTests: XCTestCase {
         viewModel.clear()
         XCTAssertEqual(viewModel.contextUsedTokens, 0)
     }
+
+    /// The streaming flush loop must drain the buffer synchronously on
+    /// `finish(_:)` so the final token isn't lost when the stream ends
+    /// between flush ticks. This test drives a 5-delta stream with no flush
+    /// tick in between (the test never yields to the main run loop, so the
+    /// 33ms flush never fires); the final content is only correct if
+    /// `finish(_:)` flushes synchronously.
+    func testFinishFlushesBufferSynchronously() async {
+        let viewModel = makeViewModel(deltas: ["a", "b", "c", "d", "e"])
+        viewModel.input = "go"
+        viewModel.send()
+        await awaitStreamCompletion(viewModel)
+        XCTAssertEqual(viewModel.messages.count, 2)
+        XCTAssertEqual(viewModel.messages[1].content, "abcde")
+    }
 }
