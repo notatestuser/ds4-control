@@ -28,7 +28,10 @@ struct ChatMessage: Identifiable, Equatable {
     var isStreaming: Bool
     var stats: GenerationStats?
 
-    init(id: UUID = UUID(), role: ChatRole, content: String, thinking: String = "", isStreaming: Bool = false, stats: GenerationStats? = nil) {
+    init(
+        id: UUID = UUID(), role: ChatRole, content: String, thinking: String = "", isStreaming: Bool = false,
+        stats: GenerationStats? = nil
+    ) {
         self.id = id
         self.role = role
         self.content = content

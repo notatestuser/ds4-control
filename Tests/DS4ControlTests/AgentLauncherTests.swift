@@ -48,7 +48,7 @@ final class AgentLauncherTests: XCTestCase {
         // Effort high by default (claude's own default for this model is xhigh), max on Max Think.
         XCTAssertTrue(s.contains("export ANTHROPIC_MODEL=\"deepseek-v4-flash\""))
         XCTAssertTrue(s.contains("export CLAUDE_CODE_EFFORT_LEVEL=high"))  // non-max baseline
-        XCTAssertTrue(s.contains("export CLAUDE_CODE_EFFORT_LEVEL=max"))   // Max Think overrides
+        XCTAssertTrue(s.contains("export CLAUDE_CODE_EFFORT_LEVEL=max"))  // Max Think overrides
         XCTAssertFalse(s.contains("deepseek-chat"))  // dropped — it did not actually disable thinking
         XCTAssertFalse(s.contains("CLAUDE_CODE_DISABLE_THINKING"))
         XCTAssertTrue(s.contains("export CLAUDE_CODE_MAX_CONTEXT_TOKENS=1000000"))
@@ -58,7 +58,8 @@ final class AgentLauncherTests: XCTestCase {
         XCTAssertFalse(s.contains("--strict-mcp-config"))  // reverted to --bare
         XCTAssertTrue(s.contains("[Y/n]"))  // prompt: launch with --bare?
         XCTAssertTrue(s.contains("exec claude --bare --settings"))  // bare path supplies the dummy key
-        XCTAssertTrue(s.contains("exec claude --exclude-dynamic-system-prompt-sections"))  // non-bare path: normal login
+        // non-bare path: normal login
+        XCTAssertTrue(s.contains("exec claude --exclude-dynamic-system-prompt-sections"))
         // pi branch.
         XCTAssertTrue(s.contains("export PI_CODING_AGENT_DIR=\"/tmp/x/pi-agent\""))
         // Max Think → pi xhigh (maps to reasoning_effort "max"); otherwise no --thinking (pi default).

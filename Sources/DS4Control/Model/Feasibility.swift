@@ -70,6 +70,7 @@ func feasibility(ramGiB: Double, variant: Variant) -> Feasibility {
         }
         return .blocked(
             reason:
-                "V4 Flash needs ≥ 96 GiB unified memory. Below that, the ~81 GiB model plus its KV cache exceed RAM, so it can't run.")
+                "V4 Flash needs ≥ 96 GiB unified memory. Below that, the ~81 GiB model plus its KV cache exceed RAM, so it can't run."
+        )
     }
 }

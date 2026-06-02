@@ -24,49 +24,49 @@ enum AgentLauncher {
         let levelMap =
             #"{ "off": null, "minimal": "low", "low": "low", "medium": "medium", "high": "high", "xhigh": "max" }"#
         return """
-        {
-          "providers": {
-            "ds4": {
-              "name": "ds4.c local",
-              "baseUrl": "http://127.0.0.1:\(port)/v1",
-              "api": "openai-completions",
-              "apiKey": "dsv4-local",
-              "compat": {
-                "supportsStore": false,
-                "supportsDeveloperRole": false,
-                "supportsReasoningEffort": true,
-                "supportsUsageInStreaming": true,
-                "maxTokensField": "max_tokens",
-                "supportsStrictMode": false,
-                "thinkingFormat": "deepseek",
-                "requiresReasoningContentOnAssistantMessages": true
-              },
-              "models": [
-                {
-                  "id": "deepseek-v4-pro",
-                  "name": "DeepSeek V4 Pro (ds4.c local)",
-                  "reasoning": true,
-                  "thinkingLevelMap": \(levelMap),
-                  "input": ["text"],
-                  "contextWindow": \(contextWindow),
-                  "maxTokens": 393216,
-                  "cost": { "input": 0, "output": 0, "cacheRead": 0, "cacheWrite": 0 }
-                },
-                {
-                  "id": "deepseek-v4-flash",
-                  "name": "DeepSeek V4 Flash (ds4.c local)",
-                  "reasoning": true,
-                  "thinkingLevelMap": \(levelMap),
-                  "input": ["text"],
-                  "contextWindow": \(contextWindow),
-                  "maxTokens": 393216,
-                  "cost": { "input": 0, "output": 0, "cacheRead": 0, "cacheWrite": 0 }
+            {
+              "providers": {
+                "ds4": {
+                  "name": "ds4.c local",
+                  "baseUrl": "http://127.0.0.1:\(port)/v1",
+                  "api": "openai-completions",
+                  "apiKey": "dsv4-local",
+                  "compat": {
+                    "supportsStore": false,
+                    "supportsDeveloperRole": false,
+                    "supportsReasoningEffort": true,
+                    "supportsUsageInStreaming": true,
+                    "maxTokensField": "max_tokens",
+                    "supportsStrictMode": false,
+                    "thinkingFormat": "deepseek",
+                    "requiresReasoningContentOnAssistantMessages": true
+                  },
+                  "models": [
+                    {
+                      "id": "deepseek-v4-pro",
+                      "name": "DeepSeek V4 Pro (ds4.c local)",
+                      "reasoning": true,
+                      "thinkingLevelMap": \(levelMap),
+                      "input": ["text"],
+                      "contextWindow": \(contextWindow),
+                      "maxTokens": 393216,
+                      "cost": { "input": 0, "output": 0, "cacheRead": 0, "cacheWrite": 0 }
+                    },
+                    {
+                      "id": "deepseek-v4-flash",
+                      "name": "DeepSeek V4 Flash (ds4.c local)",
+                      "reasoning": true,
+                      "thinkingLevelMap": \(levelMap),
+                      "input": ["text"],
+                      "contextWindow": \(contextWindow),
+                      "maxTokens": 393216,
+                      "cost": { "input": 0, "output": 0, "cacheRead": 0, "cacheWrite": 0 }
+                    }
+                  ]
                 }
-              ]
+              }
             }
-          }
-        }
-        """
+            """
     }
 
     /// Wrapper script: prints its own path (so the user can read it), prompts for agent (default pi) /

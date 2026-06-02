@@ -30,7 +30,8 @@ final class ChatServiceTests: XCTestCase {
                 #"data: {"choices":[{"delta":{"content":"ignored"}}]}"#,
             ])
         )
-        let collected = try await collectText(service.stream(port: 8000, model: "deepseek-v4-pro", messages: [], thinkMax: false))
+        let collected = try await collectText(
+            service.stream(port: 8000, model: "deepseek-v4-pro", messages: [], thinkMax: false))
         XCTAssertEqual(collected, ["Hel", "lo"])
     }
 

@@ -23,7 +23,8 @@ struct SettingsView: View {
         Int(removableFlashQuants.reduce(0.0) { $0 + $1.quant.weightsGiB })
     }
     private var flashModelFooter: String {
-        let base = "Which V4 Flash quant to download and run. Larger quants need more memory; "
+        let base =
+            "Which V4 Flash quant to download and run. Larger quants need more memory; "
             + "options that exceed this machine's RAM are disabled."
         return isBusy
             ? base + " Stop the server to clean up unused downloads."
@@ -54,7 +55,8 @@ struct SettingsView: View {
     private var ctxText: Binding<String> {
         Binding(
             get: {
-                let active = app.ctxOverride > 0
+                let active =
+                    app.ctxOverride > 0
                     ? app.ctxOverride
                     : defaultCtx(ramGiB: ram, variant: app.selectedVariant, flashQuant: app.selectedFlashQuant)
                 return String(active)

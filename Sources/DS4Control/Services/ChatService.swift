@@ -18,7 +18,9 @@ struct ChatService {
     }
 
     /// Streams assistant content deltas (and a trailing usage event) for the conversation.
-    func stream(port: Int, model: String, messages: [ChatMessage], thinkMax: Bool) -> AsyncThrowingStream<ChatStreamEvent, Error> {
+    func stream(port: Int, model: String, messages: [ChatMessage], thinkMax: Bool) -> AsyncThrowingStream<
+        ChatStreamEvent, Error
+    > {
         let request = Self.makeRequest(port: port, model: model, messages: messages, thinkMax: thinkMax)
         let lines = lineSource(request)
         return AsyncThrowingStream { continuation in
