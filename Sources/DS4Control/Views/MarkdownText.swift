@@ -12,11 +12,36 @@ struct MarkdownText: View {
     let source: String
 
     init(_ source: String) {
-        self.source = source
+        self.source = Self.deLaTeXed(source)
     }
 
     var body: some View {
         SelectableMarkdownNSText(attributed: Self.attributedString(for: source))
+    }
+
+    /// Light LaTeX cleanup so the model's math answers read as text rather than raw source.
+    /// DeepSeek wraps math in display/inline delimiters (\[ \], \( \), $$), boxes final answers
+    /// with \boxed{…}, and sprinkles a few macros. This strips the wrappers and maps the common
+    /// symbols — it is not a TeX engine; uncommon macros pass through untouched.
+    static func deLaTeXed(_ s: String) -> String {
+        var t = s
+        for d in ["\\[", "\\]", "\\(", "\\)", "$$"] { t = t.replacingOccurrences(of: d, with: "") }
+        t = t.replacingOccurrences(of: #"\\boxed\s*\{([^{}]*)\}"#, with: "**$1**", options: .regularExpression)
+        t = t.replacingOccurrences(of: #"\\text\s*\{([^{}]*)\}"#, with: "$1", options: .regularExpression)
+        t = t.replacingOccurrences(of: #"\\frac\s*\{([^{}]*)\}\s*\{([^{}]*)\}"#, with: "$1/$2", options: .regularExpression)
+        // name → glyph. Listed longest-prefix first (cdots before cdot); the (?![A-Za-z])
+        // lookahead stops a short macro matching inside a longer one (\le vs \leq).
+        let symbols: [(String, String)] = [
+            ("times", "×"), ("cdots", "⋯"), ("cdot", "·"), ("div", "÷"), ("pm", "±"),
+            ("leq", "≤"), ("geq", "≥"), ("neq", "≠"), ("approx", "≈"), ("equiv", "≡"),
+            ("infty", "∞"), ("rightarrow", "→"), ("Rightarrow", "⇒"), ("to", "→"),
+            ("ldots", "…"), ("sqrt", "√"), ("pi", "π"), ("theta", "θ"), ("alpha", "α"),
+            ("beta", "β"), ("sum", "∑"),
+        ]
+        for (name, sym) in symbols {
+            t = t.replacingOccurrences(of: "\\\\" + name + "(?![A-Za-z])", with: sym, options: .regularExpression)
+        }
+        return t
     }
 
     // Tags whose entire block (including the tag lines) we render as a styled "card".

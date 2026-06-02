@@ -111,4 +111,29 @@ final class MarkdownTextTests: XCTestCase {
             tv.invalidations, settled,
             "layout() must not re-invalidate intrinsic size when the height is unchanged")
     }
+
+    func testDeLaTeXBoxedAnswerBecomesBold() {
+        // The screenshot case: \[ \boxed{7} \] → drop delimiters, bold the answer.
+        let out = MarkdownText.deLaTeXed("All seven.\n\\[\n\\boxed{7}\n\\]")
+        XCTAssertTrue(out.contains("**7**"))
+        XCTAssertFalse(out.contains("\\boxed"))
+        XCTAssertFalse(out.contains("\\["))
+        XCTAssertFalse(out.contains("\\]"))
+    }
+
+    func testDeLaTeXStripsDelimitersAndMapsMacros() {
+        XCTAssertEqual(MarkdownText.deLaTeXed("\\(x+1\\)"), "x+1")
+        XCTAssertFalse(MarkdownText.deLaTeXed("$$a$$").contains("$"))
+        XCTAssertEqual(MarkdownText.deLaTeXed("3 \\times 4"), "3 × 4")
+        XCTAssertEqual(MarkdownText.deLaTeXed("\\frac{1}{2}"), "1/2")
+        XCTAssertEqual(MarkdownText.deLaTeXed("\\text{hello}"), "hello")
+    }
+
+    func testDeLaTeXLongerMacroNotEatenByShorter() {
+        // \cdots must not become "·s" via the \cdot rule (ordering + lookahead).
+        XCTAssertEqual(MarkdownText.deLaTeXed("a \\cdots b"), "a ⋯ b")
+        XCTAssertEqual(MarkdownText.deLaTeXed("a \\cdot b"), "a · b")
+        XCTAssertEqual(MarkdownText.deLaTeXed("x \\leq y"), "x ≤ y")
+        XCTAssertEqual(MarkdownText.deLaTeXed("\\unknown"), "\\unknown")  // non-mapped macro passes through
+    }
 }
