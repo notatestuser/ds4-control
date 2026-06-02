@@ -110,7 +110,7 @@ final class SupervisorService: ObservableObject {
     // MARK: - Start
     /// Disk KV-cache budget (MB) when `kvDiskDir` is provided. ds4's compressed KV
     /// is tiny, so this holds many cached prefixes; generous but trivial on modern SSDs.
-    static let kvDiskSpaceMB = 32768
+    static let kvDiskSpaceMB = 16384
 
     func start(variant: Variant, flashQuant: FlashQuant, ctx: Int, port: Int, power: Int?, kvDiskDir: URL? = nil) {
         guard state == .idle || isErrorState else { emitBadState("start"); return }
