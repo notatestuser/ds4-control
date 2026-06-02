@@ -48,18 +48,26 @@ struct SettingsView: View {
     private var powerBinding: Binding<Double> {
         Binding(get: { Double(app.power ?? 100) }, set: { app.power = Int($0.rounded()) })
     }
+    /// Context-size field as text so it can be cleared back to Auto. Empty/invalid → 0 (auto);
+    /// a number overrides defaultCtx. (An Int `value:` binding can't represent empty, so the
+    /// field snapped the old value back when cleared.)
+    private var ctxText: Binding<String> {
+        Binding(
+            get: { app.ctxOverride > 0 ? String(app.ctxOverride) : "" },
+            set: { app.ctxOverride = Int($0.filter(\.isNumber)) ?? 0 })
+    }
 
     var body: some View {
         Form {
             Section {
                 LabeledContent {
-                    TextField("", value: $app.ctxOverride, format: .number)
+                    TextField("Auto", text: ctxText)
                         .labelsHidden().multilineTextAlignment(.trailing).frame(width: 130)
                 } label: {
                     Text("Context size")
                 }
                 LabeledContent {
-                    TextField("", value: $app.port, format: .number)
+                    TextField("", value: $app.port, format: .number.grouping(.never))
                         .labelsHidden().multilineTextAlignment(.trailing).frame(width: 130)
                 } label: {
                     Text("Port")
