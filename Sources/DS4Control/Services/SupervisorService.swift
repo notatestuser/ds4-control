@@ -217,6 +217,9 @@ final class SupervisorService: ObservableObject {
                 self.serverAttached = true
                 self.port = port
                 self.activeModel = loadedModelName(from: data) ?? "ds4-server"
+                // Adopted server: take its real context window from /v1/models so the chat
+                // meter reflects the running `--ctx`, not the start-time default.
+                if let loaded = loadedContextLength(from: data) { self.ctx = loaded }
                 self.state = .ready
                 self.startHealthPolling()
             }
@@ -575,4 +578,14 @@ func loadedModelName(from data: Data) -> String? {
         let arr = obj["data"] as? [[String: Any]], let first = arr.first
     else { return nil }
     return (first["name"] as? String) ?? (first["id"] as? String)
+}
+
+/// The loaded server's context window from /v1/models, so a server we ADOPTED (attached to
+/// rather than started) reports its real `--ctx` instead of `ctx`'s start-time default.
+func loadedContextLength(from data: Data) -> Int? {
+    guard let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+        let arr = obj["data"] as? [[String: Any]], let first = arr.first
+    else { return nil }
+    return (first["context_length"] as? Int)
+        ?? ((first["top_provider"] as? [String: Any])?["context_length"] as? Int)
 }

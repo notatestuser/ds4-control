@@ -70,10 +70,23 @@ final class SupervisorIntegrationTests: XCTestCase {
     func testLoadedModelNameNilOnGarbage() {
         XCTAssertNil(loadedModelName(from: Data("not json".utf8)))
     }
+    func testLoadedContextLengthReadsContextLength() {
+        let d = Data(#"{"data":[{"id":"pro","context_length":1000000}]}"#.utf8)
+        XCTAssertEqual(loadedContextLength(from: d), 1_000_000)
+    }
+    func testLoadedContextLengthFallsBackToTopProvider() {
+        let d = Data(#"{"data":[{"id":"pro","top_provider":{"context_length":393216}}]}"#.utf8)
+        XCTAssertEqual(loadedContextLength(from: d), 393_216)
+    }
+    func testLoadedContextLengthNilOnGarbage() {
+        XCTAssertNil(loadedContextLength(from: Data("nope".utf8)))
+    }
 
     func testResumeAttachesToRunningServer() throws {
         // Inject a deterministic probe — no live socket (nc fixtures are flaky on CI).
-        let body = Data(#"{"object":"list","data":[{"id":"deepseek-v4-pro","name":"DeepSeek V4 Pro"}]}"#.utf8)
+        let body = Data(
+            #"{"object":"list","data":[{"id":"deepseek-v4-pro","name":"DeepSeek V4 Pro","context_length":1000000}]}"#
+                .utf8)
         let dir = URL(fileURLWithPath: NSTemporaryDirectory()).appendingPathComponent(UUID().uuidString)
         try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
         let s = SupervisorService(ds4Dir: dir, runner: RealProcessRunner(), serverProbe: { _ in body })
@@ -83,6 +96,7 @@ final class SupervisorIntegrationTests: XCTestCase {
         wait(for: [ready], timeout: 5)
         token.cancel()
         XCTAssertEqual(s.activeModel, "DeepSeek V4 Pro")
+        XCTAssertEqual(s.ctx, 1_000_000)  // adopted server's real context, not the 393_216 default
         s.stop()
     }
 
