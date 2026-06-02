@@ -3,10 +3,16 @@ import PackageDescription
 
 let package = Package(
     name: "DS4Control",
-    platforms: [.macOS(.v14)],
+    platforms: [.macOS(.v15)],
+    dependencies: [
+        .package(url: "https://github.com/gonzalezreal/textual", .upToNextMinor(from: "0.3.1"))
+    ],
     targets: [
         .executableTarget(
             name: "DS4Control",
+            dependencies: [
+                .product(name: "Textual", package: "textual")
+            ],
             path: "Sources/DS4Control",
             linkerSettings: [
                 .linkedFramework("IOKit"),
