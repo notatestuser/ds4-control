@@ -334,7 +334,22 @@ struct MarkdownText: View {
         return name.isEmpty ? nil : String(name)
     }
 
+    /// Bounded cache of completed message parses keyed by source string. Re-renders of the same
+    /// content (e.g. scrolling back to a completed message after the streaming tail invalidates
+    /// the transcript) skip the markdown re-parse. The streaming tail itself produces a new
+    /// string per token, so it never hits this cache — that's covered upstream by the MessageBubble
+    /// Equatable skip, not here.
+    private static let attributedStringCache: NSCache<NSString, NSAttributedString> = {
+        let c = NSCache<NSString, NSAttributedString>()
+        c.countLimit = 32
+        return c
+    }()
+
     static func attributedString(for source: String) -> NSAttributedString {
+        let key = source as NSString
+        if let cached = attributedStringCache.object(forKey: key) {
+            return cached
+        }
         let result = NSMutableAttributedString()
         let blocks = parseBlocks(source)
         for (index, block) in blocks.enumerated() {
@@ -358,6 +373,7 @@ struct MarkdownText: View {
                 result.append(renderModelTag(name: name, body: body))
             }
         }
+        attributedStringCache.setObject(result, forKey: key)
         return result
     }
 
@@ -566,43 +582,55 @@ struct SelectableMarkdownNSText: NSViewRepresentable {
         textView.textContainerInset = .zero
         textView.textContainer?.lineFragmentPadding = 0
         textView.textContainer?.widthTracksTextView = true
-        textView.isVerticallyResizable = false
+        textView.isVerticallyResizable = true
         textView.isHorizontallyResizable = false
+        textView.autoresizingMask = [.width]
+        textView.textColor = .labelColor
+        textView.linkTextAttributes = [
+            .foregroundColor: NSColor.linkColor,
+            .underlineStyle: NSUnderlineStyle.single.rawValue,
+            .cursor: NSCursor.pointingHand,
+        ]
         textView.textStorage?.setAttributedString(attributed)
         return textView
     }
 
     func updateNSView(_ nsView: IntrinsicTextView, context: Context) {
+        // Only mutate the storage if the assistant's content actually changed.
+        // Streaming chunks call updateNSView many times per second; an unconditional
+        // replace would interrupt an active selection on every frame.
         if nsView.textStorage?.isEqual(to: attributed) == false {
             nsView.textStorage?.setAttributedString(attributed)
+            nsView.invalidateIntrinsicContentSize()
         }
-    }
-
-    /// Report height as a PURE FUNCTION of the proposed width. SwiftUI sizes the view to
-    /// exactly this, so AppKit↔SwiftUI layout reaches a fixed point in one pass. The prior
-    /// `intrinsicContentSize` + `layout()`-invalidate path measured against an oscillating
-    /// container width, so the reported height alternated between two values and spun the
-    /// main thread at 100% CPU once a second bubble existed.
-    func sizeThatFits(
-        _ proposal: ProposedViewSize, nsView: IntrinsicTextView, context: Context
-    ) -> CGSize? {
-        guard let width = proposal.width, width > 0, width.isFinite else { return nil }
-        return CGSize(width: width, height: nsView.height(forWidth: width))
     }
 }
 
-class IntrinsicTextView: NSTextView {
-    /// Deterministic laid-out height for an exact width. Disables width-tracking during the
-    /// measurement so the result depends only on `width` (not the current frame); SwiftUI
-    /// then assigns that same width, so on-screen wrapping matches.
-    func height(forWidth width: CGFloat) -> CGFloat {
-        guard let layoutManager, let textContainer else { return 0 }
-        let tracks = textContainer.widthTracksTextView
-        textContainer.widthTracksTextView = false
-        textContainer.size = NSSize(width: width, height: .greatestFiniteMagnitude)
-        layoutManager.ensureLayout(for: textContainer)
-        let h = ceil(layoutManager.usedRect(for: textContainer).height)
-        textContainer.widthTracksTextView = tracks
-        return h
+/// NSTextView that reports its laid-out height as its intrinsic content size, so embedding
+/// it in SwiftUI's layout system "just works" — no manual height binding required.
+///
+/// `setFrameSize` triggers an invalidation so a width reflow (e.g. the parent re-flows after
+/// a neighbour's width change) re-reports the new height; `didChangeText` does the same after
+/// `textStorage` is replaced. Both together are the proven mlx-serve path: intrinsicContentSize
+/// is read off the current laid-out state, and SwiftUI picks that height up on the next pass.
+final class IntrinsicTextView: NSTextView {
+    override var intrinsicContentSize: NSSize {
+        guard let lm = layoutManager, let tc = textContainer else {
+            return super.intrinsicContentSize
+        }
+        lm.ensureLayout(for: tc)
+        let used = lm.usedRect(for: tc)
+        return NSSize(width: NSView.noIntrinsicMetric, height: ceil(used.height))
+    }
+
+    override func didChangeText() {
+        super.didChangeText()
+        invalidateIntrinsicContentSize()
+    }
+
+    override func setFrameSize(_ newSize: NSSize) {
+        super.setFrameSize(newSize)
+        // Width changes (parent re-flow) require a layout-driven height re-check.
+        invalidateIntrinsicContentSize()
     }
 }

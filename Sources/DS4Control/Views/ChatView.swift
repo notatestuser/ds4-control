@@ -115,6 +115,12 @@ struct ChatView: View {
             .onChange(of: viewModel.messages.last?.content) { _, _ in
                 if atBottom { scrollToBottom(proxy, animated: false) }
             }
+            // ThinkingDisclosure appears the moment reasoning content arrives (the empty
+            // placeholder bubble shows neither the disclosure nor the answer until then). The
+            // bubble's height jumps at that transition, so follow it like a content update.
+            .onChange(of: viewModel.messages.last?.thinking) { _, _ in
+                if atBottom { scrollToBottom(proxy, animated: false) }
+            }
             .onChange(of: viewModel.isStreaming) { _, streaming in
                 if streaming { atBottom = true; scrollToBottom(proxy) }
                 else if atBottom { scrollToBottom(proxy) }  // reveal the TTFT/stats line on completion
@@ -272,9 +278,10 @@ struct MessageBubble: View {
 /// monologue inline (the outer transcript scrolls if it's long). State is per-message (the bubble
 /// carries `.id(message.id)`), so expansion sticks per reply.
 ///
-/// Deliberately NO inner ScrollView: a greedy ScrollView inside the content-sized bubble made the
-/// offered width oscillate against the sibling IntrinsicTextView's pure sizeThatFits, spinning the
-/// SwiftUI layout engine at 100% CPU (the chat-freeze bug). Plain Text sizes deterministically.
+/// Deliberately NO inner ScrollView AND NO `.frame(maxWidth: .infinity)`: a greedy-width child
+/// inside the content-sized bubble made the offered width oscillate against the sibling
+/// IntrinsicTextView's pure sizeThatFits, spinning the SwiftUI layout engine at 100% CPU
+/// (the chat-freeze bug). Plain Text with no width-frame sizes deterministically.
 struct ThinkingDisclosure: View {
     let text: String
     let streaming: Bool
@@ -286,7 +293,6 @@ struct ThinkingDisclosure: View {
                 .font(.callout)
                 .foregroundStyle(.secondary)
                 .textSelection(.enabled)
-                .frame(maxWidth: .infinity, alignment: .leading)
                 .padding(.top, 4)
         } label: {
             Label(streaming ? "Thinking…" : "Thinking", systemImage: "brain")

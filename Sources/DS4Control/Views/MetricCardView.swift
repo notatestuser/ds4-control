@@ -52,6 +52,7 @@ struct MetricCardView: View {
                     .fill(tint)
                     .frame(width: 6, height: 6)
             }
+            .padding(.bottom, emphasized ? 4 : 0)
 
             // Value + subtitle on one row. When a gauge fraction is provided
             // (percentage-based widgets), the value is wrapped in a ring gauge.

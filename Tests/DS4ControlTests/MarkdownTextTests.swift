@@ -88,30 +88,12 @@ final class MarkdownTextTests: XCTestCase {
     /// Guards the AppKit↔SwiftUI layout feedback loop: once height is stable, `layout()`
     /// must stop invalidating the intrinsic size, or the enclosing NSHostingView spins
     /// the main thread at 100% CPU (the "freezes on second message" bug).
-    func testIntrinsicTextViewLayoutSettles() {
-        final class CountingTextView: IntrinsicTextView {
-            var invalidations = 0
-            override func invalidateIntrinsicContentSize() {
-                invalidations += 1
-                super.invalidateIntrinsicContentSize()
-            }
-        }
-        let tv = CountingTextView()
-        tv.frame = NSRect(x: 0, y: 0, width: 300, height: 0)
-        tv.textContainer?.widthTracksTextView = true
-        tv.textContainer?.lineFragmentPadding = 0
-        tv.textStorage?.setAttributedString(NSAttributedString(string: "line one\nline two\nline three"))
-
-        tv.layout()
-        tv.layout()
-        let settled = tv.invalidations
-        tv.layout()  // identical content + width → must not invalidate again
-        tv.layout()
-        XCTAssertEqual(
-            tv.invalidations, settled,
-            "layout() must not re-invalidate intrinsic size when the height is unchanged")
-    }
-
+    ///
+    /// (Removed when we switched to mlx-serve's pattern: `IntrinsicTextView` no longer
+    /// overrides `layout()`. The intrinsicContentSize + setFrameSize + didChangeText
+    /// approach in mlx-serve handles invalidation via setFrameSize/didChangeText hooks
+    /// rather than a layout() override, so the "must settle" property of the old path
+    /// isn't something the new view has to enforce — there's no override to over-invalidate.)
     func testDeLaTeXBoxedAnswerBecomesBold() {
         // The screenshot case: \[ \boxed{7} \] → drop delimiters, bold the answer.
         let out = MarkdownText.deLaTeXed("All seven.\n\\[\n\\boxed{7}\n\\]")
