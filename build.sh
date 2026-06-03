@@ -28,14 +28,18 @@ echo "→ bundle SwiftPM resource bundles"
 shopt -s nullglob
 for b in "$BIN_DIR"/*.bundle; do
   cp -R "$b" "$APP/Contents/Resources/"
-  dest="$APP/Contents/Resources/$(basename "$b")"
-  # Some SwiftPM resource bundles (e.g. Highlightr) ship data-only with no Info.plist, which
-  # makes `codesign` reject them ("bundle format unrecognized") during Developer ID signing /
-  # notarization in the release pipeline. Synthesize a minimal Info.plist so they sign as
-  # resource bundles — matching the layout of the deps that already include one.
-  if [ ! -f "$dest/Info.plist" ] && [ ! -f "$dest/Contents/Info.plist" ]; then
-    name="$(basename "$b" .bundle)"
-    cat > "$dest/Info.plist" <<PLIST
+  echo "  + $(basename "$b")"
+done
+shopt -u nullglob
+
+# Every *.bundle the release pipeline codesigns (it recurses with `find -name '*.bundle'`)
+# needs an Info.plist, or codesign rejects it ("bundle format unrecognized"). Some SwiftPM
+# resource bundles — and bundles nested inside them, e.g. SwiftMath's mathFonts.bundle — ship
+# data-only with none. Synthesize a minimal one for any (top-level or nested) that lacks it.
+while IFS= read -r -d '' bdir; do
+  if [ -f "$bdir/Info.plist" ] || [ -f "$bdir/Contents/Info.plist" ]; then continue; fi
+  name="$(basename "$bdir" .bundle)"
+  cat > "$bdir/Info.plist" <<PLIST
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
@@ -49,12 +53,8 @@ for b in "$BIN_DIR"/*.bundle; do
 </dict>
 </plist>
 PLIST
-    echo "  + $(basename "$b") (synthesized Info.plist)"
-  else
-    echo "  + $(basename "$b")"
-  fi
-done
-shopt -u nullglob
+  echo "  synthesized Info.plist: ${bdir#"$APP"/Contents/Resources/}"
+done < <(find "$APP/Contents/Resources" -type d -name "*.bundle" -print0)
 # Regression guard: Highlightr's bundle is what crashed v1.0.0 when absent. Fail the build
 # rather than ship a .app that crashes on the first code-block render.
 if [ ! -d "$APP/Contents/Resources/Highlightr_Highlightr.bundle" ]; then
