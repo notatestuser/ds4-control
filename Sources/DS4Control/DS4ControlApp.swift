@@ -10,6 +10,7 @@ struct DS4ControlApp: App {
 
     init() {
         MarkdownText.runResourceSelfTestIfRequested()  // headless bundle-resolution check (env-gated)
+        HFDownloader.runSelfTestIfRequested()  // headless native-download check (env-gated)
         let app = AppState()
         _app = StateObject(wrappedValue: app)  // same instance the chat closures read, so the UI's toggles reach it
         let supervisor = SupervisorService(
@@ -36,7 +37,8 @@ struct DS4ControlApp: App {
                     metrics.start()
                     supervisor.resumeRunningServerIfAny(port: app.port)
                     supervisor.resumeInFlightDownloadIfAny(
-                        variant: app.selectedVariant, flashQuant: app.selectedFlashQuant)
+                        variant: app.selectedVariant, flashQuant: app.selectedFlashQuant,
+                        highPerformance: app.highPerformanceDownload)
                 }
         } label: {
             Image(systemName: iconName(for: supervisor.state))

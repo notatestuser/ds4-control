@@ -11,7 +11,7 @@ final class VariantTests: XCTestCase {
         XCTAssertEqual(Variant.flash.ctxCeiling, 1_000_000)  // Flash also supports 1M
     }
     func testQuantSelection() {
-        XCTAssertEqual(Quant.for(.pro, flashQuant: .q2q4).arg, "pro-imatrix")  // Pro ignores flashQuant
+        XCTAssertEqual(Quant.for(.pro, flashQuant: .q2q4).arg, "pro-q2-imatrix")  // Pro ignores flashQuant
         XCTAssertEqual(Quant.for(.flash, flashQuant: .q4).arg, "q4-imatrix")
         XCTAssertEqual(Quant.for(.flash, flashQuant: .q2).arg, "q2-imatrix")
         XCTAssertEqual(Quant.for(.flash, flashQuant: .q2q4).arg, "q2-q4-imatrix")

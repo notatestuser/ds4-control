@@ -101,7 +101,7 @@ final class SupervisorStateMachineTests: XCTestCase {
         s.start(variant: .flash, flashQuant: .q2q4, ctx: 250_000, port: 8000, power: nil)
         if case .error(.modelMissing) = s.state {} else { XCTFail("expected modelMissing, got \(s.state)") }
     }
-    func testDownloadPassesSelectedQuantArg() throws {
+    func testDownloadUsesSelectedQuantFile() throws {
         let dir = URL(fileURLWithPath: NSTemporaryDirectory()).appendingPathComponent(UUID().uuidString)
         try FileManager.default.createDirectory(
             at: dir.appendingPathComponent("gguf"), withIntermediateDirectories: true)
@@ -110,11 +110,12 @@ final class SupervisorStateMachineTests: XCTestCase {
             FileManager.default.createFile(atPath: u.path, contents: Data("#!/bin/sh\n".utf8))
             try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: u.path)
         }
-        let dl = FakeRunner()
-        let s = SupervisorService(ds4Dir: dir, runner: FakeRunner(), downloadRunner: dl)
+        let s = SupervisorService(
+            ds4Dir: dir, runner: FakeRunner(),
+            fetchFile: { _, _, _, _, _ in try await Task.sleep(nanoseconds: 600_000_000_000) })
         s.download(variant: .flash, flashQuant: .q2q4)
         XCTAssertEqual(s.state, .downloading)
-        XCTAssertEqual(dl.lastArgs, ["q2-q4-imatrix"])  // selected quant's download_model.sh arg
+        XCTAssertEqual(s.download?.file, Quant.q2q4Imatrix.ggufFilename)  // selected quant's gguf
         s.cancelDownload()
     }
 }

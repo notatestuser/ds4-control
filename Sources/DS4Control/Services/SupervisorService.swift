@@ -38,17 +38,8 @@ final class SupervisorService: ObservableObject {
     private var expectingExit = false
     private var healthTimer: Timer?
     private var startupTimer: Timer?
-    private var downloadPollTimer: Timer?
+    /// Last (bytes, time) sample from the download progress callback, for the transfer-rate delta.
     private var lastDownloadSample: (bytes: Int64, time: Date)?
-    /// True when tracking a download started by a previous session (we poll its
-    /// .incomplete file but don't own the process — see resumeInFlightDownloadIfAny).
-    private var downloadAttached = false
-    /// Set once the on-disk poll sees real bytes (curl's `.part` or hf's `.incomplete`).
-    /// While true the byte-accurate poll owns `download.pct`; the stderr parser stops
-    /// publishing, so curl's session-relative `% Total` during a `-C -` resume can't
-    /// flicker the bar down toward the resume offset.
-    private var downloadHasDiskBytes = false
-    private var staleDownloadPolls = 0
     /// True when attached to a ds4-server started by a previous session (we don't
     /// own the process; Stop terminates it by port — see resumeRunningServerIfAny).
     private var serverAttached = false
@@ -60,15 +51,30 @@ final class SupervisorService: ObservableObject {
     /// the writable App Support dir; tests pass nil so it falls back to `ds4Dir/gguf`.
     private let ggufBaseOverride: URL?
 
+    /// The pluggable file fetch — defaults to the native parallel `HFDownloader`. Tests inject a fake
+    /// that simulates progress/completion/failure without touching the network. `highPerformance`
+    /// selects the worker count (12 vs 64).
+    typealias FetchFile =
+        @Sendable (
+            _ file: String, _ destDir: URL, _ token: String?, _ highPerformance: Bool,
+            _ onProgress: @escaping @Sendable (Int64, Int64) -> Void
+        ) async throws -> Void
+    private let fetchFile: FetchFile
+
     init(
         ds4Dir: URL, runner: ProcessRunner, serverProbe: ((Int) async -> Data?)? = nil,
-        ggufBaseURL: URL? = nil, downloadRunner: ProcessRunner? = nil
+        ggufBaseURL: URL? = nil, downloadRunner: ProcessRunner? = nil, fetchFile: FetchFile? = nil
     ) {
         self.ds4Dir = ds4Dir
         self.runner = runner
         self.serverProbe = serverProbe ?? SupervisorService.defaultServerProbe
         self.ggufBaseOverride = ggufBaseURL
         self.downloadRunner = downloadRunner ?? RealProcessRunner()
+        self.fetchFile =
+            fetchFile ?? { file, dir, token, highPerformance, prog in
+                try await HFDownloader(repo: SupervisorService.ggufRepo).download(
+                    file: file, into: dir, token: token, highPerformance: highPerformance, onProgress: prog)
+            }
     }
 
     /// Disk KV-cache directory — writable (App Support), not the read-only bundle.
@@ -251,6 +257,10 @@ final class SupervisorService: ObservableObject {
     /// (e.g. terminated-on-retry) process carry an old generation and are ignored, so a
     /// SIGTERM'd process's exit-15 can't clobber the fresh download's state.
     private var downloadGeneration = 0
+    /// The native HF download in flight (nil when idle); cancelled by cancelDownload()/retry.
+    private var downloadTask: Task<Void, Never>?
+    /// HuggingFace repo hosting the DS4 GGUF weights (single source for the resolve URL).
+    private static let ggufRepo = "antirez/deepseek-v4-gguf"
 
     func download(variant: Variant, flashQuant: FlashQuant, highPerformance: Bool = false) {
         guard state == .idle || isErrorState else { emitBadState("download"); return }
@@ -260,208 +270,44 @@ final class SupervisorService: ObservableObject {
         let expectedBytes = Int64(q.weightsGiB * 1_073_741_824)
         download = DownloadProgress(pct: 0, file: q.ggufFilename, receivedBytes: 0, totalBytes: expectedBytes)
         state = .downloading
-        downloadAttached = false
-        downloadHasDiskBytes = false
+        lastDownloadSample = nil
         downloadGeneration += 1
         let gen = downloadGeneration
-        // Progress comes from polling the file on disk: the hf downloader emits no
-        // parseable progress to a non-TTY pipe, so stderr-parsing alone stays at 0%.
-        startDownloadPolling(baseDir: baseDir, filename: q.ggufFilename, expected: expectedBytes)
-        let buf = DownloadStderrBuffer()
-        let args = [q.arg]
-        // Optional auth: pass any HF_TOKEN (env or hf cache) to the child via the
-        // environment so hf can authenticate — never on the command line (no ps leak).
-        var env: [String: String] = ["DS4_GGUF_DIR": baseDir.path]
-        let cache = FileManager.default.homeDirectoryForCurrentUser
-            .appendingPathComponent(".cache/huggingface/token")
-        if let token = resolveHFToken(env: ProcessInfo.processInfo.environment, cacheFile: cache) {
-            env["HF_TOKEN"] = token
-        }
-        // The bundled download_model.sh lives in read-only Resources/ds4 but does
-        // `ln -sfn … ds4flash.gguf` in its own dir; stage it next to the writable gguf
-        // dir so that step (and the download) can write. (In tests the gguf dir is
-        // ds4Dir/gguf, so workDir == ds4Dir and this is a no-op.)
-        let workDir = baseDir.deletingLastPathComponent()
-        let bundledScript = ds4Dir.appendingPathComponent("download_model.sh")
-        let script = workDir.appendingPathComponent("download_model.sh")
-        if script.path != bundledScript.path {
-            try? FileManager.default.createDirectory(at: workDir, withIntermediateDirectories: true)
-            try? FileManager.default.removeItem(at: script)
-            try? FileManager.default.copyItem(at: bundledScript, to: script)
-        }
-        // Default: cap Xet's parallel range-GETs. Its adaptive concurrency otherwise opens
-        // 35+ connections, exhausting a carrier-grade NAT session table and tripping a
-        // ~15-min cooldown; a small reused pool stays well under CGNAT limits. High-performance
-        // mode (Settings, default off) lets it run wide for max throughput on uncapped links.
-        if highPerformance {
-            env["HF_XET_HIGH_PERFORMANCE"] = "1"
-        } else {
-            env["HF_XET_FIXED_DOWNLOAD_CONCURRENCY"] = "10"
-            env["HF_XET_CLIENT_AC_MAX_DOWNLOAD_CONCURRENCY"] = "10"
-        }
-        do {
-            try downloadRunner.launch(
-                executable: script,
-                args: args, cwd: workDir, env: env,
-                onStderrLine: { [weak self] line in
-                    buf.text += line + "\n"
-                    if buf.text.count > 4096 { buf.text = String(buf.text.suffix(2048)) }
-                    // parseCurlProgress now ignores hf's premature "Fetching N files: 100%"
-                    // (it requires a byte-size token); the on-disk poll is the backstop.
-                    guard let pct = parseCurlProgress(buf.text) else { return }
-                    let rate = parseDownloadRate(buf.text)
+        let token = resolveHFToken(
+            env: ProcessInfo.processInfo.environment,
+            cacheFile: FileManager.default.homeDirectoryForCurrentUser
+                .appendingPathComponent(".cache/huggingface/token"))
+        let filename = q.ggufFilename
+        downloadProcessLive = true
+        // Native parallel Swift download: N workers each GET …/resolve/main/<file> with a closed
+        // HTTP Range straight to their offset in `<file>.part`, re-resolving each chunk so the signed
+        // URL never expires. No `hf` CLI, curl, or download_model.sh. Progress is byte-accurate from
+        // the downloader's onProgress callback (the sparse `.part` size is meaningless), hopped to the
+        // main actor and turned into pct/rate by updateDownloadProgress — no on-disk poll for progress.
+        let fetch = fetchFile
+        downloadTask?.cancel()
+        downloadTask = Task { [weak self] in
+            do {
+                try await fetch(filename, baseDir, token, highPerformance) { received, total in
                     Self.onMain {
-                        guard let self, self.downloadGeneration == gen else { return }
-                        // Once the poll has real on-disk bytes it owns the bar; ignore curl's
-                        // session-relative stderr % (during a -C - resume) to avoid flicker.
-                        guard !self.downloadHasDiskBytes else { return }
-                        self.download = DownloadProgress(
-                            pct: pct, file: q.ggufFilename, receivedBytes: 0, totalBytes: nil, rate: rate)
-                    }
-                },
-                onExit: { [weak self] code in
-                    Self.onMain {
-                        guard let self, self.downloadGeneration == gen else { return }
-                        self.downloadProcessLive = false
-                        self.downloadPollTimer?.invalidate()
-                        self.downloadPollTimer = nil
-                        if code == 0 {
-                            self.download = DownloadProgress(
-                                pct: 100, file: q.ggufFilename, receivedBytes: 0, totalBytes: nil)
-                            self.state = .idle
-                        } else {
-                            let tail = String(buf.text.suffix(200)).trimmingCharacters(in: .whitespacesAndNewlines)
-                            self.state = .error(.downloadFailed(detail: tail.isEmpty ? "exit \(code)" : tail))
-                        }
-                    }
-                })
-            downloadProcessLive = true
-        } catch {
-            downloadPollTimer?.invalidate()
-            downloadPollTimer = nil
-            downloadProcessLive = false
-            state = .error(.downloadFailed(detail: "\(error)"))
-        }
-    }
-
-    /// Cancel whatever download is being tracked (owned process or an attached
-    /// orphan) and start a fresh one — the user's escape hatch from a stuck/stalled
-    /// or errored progress bar.
-    func retryDownload(variant: Variant, flashQuant: FlashQuant, highPerformance: Bool = false) {
-        downloadRunner.terminate(graceSeconds: 0)  // no-op if nothing is running
-        downloadPollTimer?.invalidate()
-        downloadPollTimer = nil
-        downloadAttached = false
-        lastDownloadSample = nil
-        download = nil
-        state = .idle
-        download(variant: variant, flashQuant: flashQuant, highPerformance: highPerformance)
-    }
-
-    /// Cancel an in-progress download and return to idle without restarting. Bumping the
-    /// generation makes the killed process's exit callback stale, so it can't flip state to
-    /// .error. An owned download is tree-killed via the runner; an attached one (resumed
-    /// from a prior session, so we hold no Process) is stopped by killing the matching ds4
-    /// download processes — the pattern hits both the shell and `hf`, so neither orphans.
-    func cancelDownload() {
-        guard state == .downloading else { return }
-        downloadGeneration += 1
-        if downloadAttached {
-            killAttachedDownloadProcesses()
-        } else {
-            downloadRunner.terminate(graceSeconds: 0)
-        }
-        downloadPollTimer?.invalidate()
-        downloadPollTimer = nil
-        downloadAttached = false
-        downloadHasDiskBytes = false
-        downloadProcessLive = false
-        lastDownloadSample = nil
-        staleDownloadPolls = 0
-        download = nil
-        state = .idle
-    }
-
-    private func killAttachedDownloadProcesses() {
-        let p = Process()
-        p.executableURL = URL(fileURLWithPath: "/usr/bin/pkill")
-        p.arguments = ["-f", "download_model|deepseek-v4-gguf"]
-        p.standardOutput = Pipe()
-        p.standardError = Pipe()
-        try? p.run()
-        p.waitUntilExit()
-    }
-
-    /// If a download is already in flight from a previous session (an .incomplete
-    /// file under the hf cache) and we're idle, re-attach the progress UI without
-    /// spawning a new download — avoids the hf lock collision a re-click would cause.
-    /// Variant-agnostic on the partial bytes; uses the selected variant for the total.
-    func resumeInFlightDownloadIfAny(variant: Variant, flashQuant: FlashQuant) {
-        guard state == .idle else { return }
-        let base = ggufBaseDir()
-        let q = Quant.for(variant, flashQuant: flashQuant)
-        // Already fully downloaded → nothing to attach.
-        if FileManager.default.fileExists(atPath: base.appendingPathComponent(q.ggufFilename).path) { return }
-        let received = downloadedBytes(ggufDir: base, filename: q.ggufFilename)
-        guard received > 0 else { return }  // no in-flight partial
-        let expected = Int64(q.weightsGiB * 1_073_741_824)
-        downloadAttached = true
-        let pct = expected > 0 ? min(100, Double(received) / Double(expected) * 100) : 0
-        download = DownloadProgress(pct: pct, file: q.ggufFilename, receivedBytes: received, totalBytes: expected)
-        state = .downloading
-        downloadProcessLive = isDownloadProcessRunning()
-        startDownloadPolling(baseDir: base, filename: q.ggufFilename, expected: expected)
-    }
-
-    private func startDownloadPolling(baseDir: URL, filename: String, expected: Int64) {
-        lastDownloadSample = nil
-        staleDownloadPolls = 0
-        downloadPollTimer?.invalidate()
-        downloadPollTimer = Timer.scheduledTimer(withTimeInterval: 1, repeats: true) { [weak self] _ in
-            Task { @MainActor in self?.pollDownload(baseDir: baseDir, filename: filename, expected: expected) }
-        }
-    }
-
-    /// Poll the on-disk download size to publish % and rate (TTY-independent).
-    private func pollDownload(baseDir: URL, filename: String, expected: Int64) {
-        guard state == .downloading else {
-            downloadProcessLive = false
-            downloadPollTimer?.invalidate()
-            downloadPollTimer = nil
-            return
-        }
-        // Liveness for the spinner: our own process, or (when attached) one pgrep finds.
-        // `isRunning` short-circuits for owned downloads, so pgrep only runs when attached.
-        downloadProcessLive = downloadRunner.isRunning || isDownloadProcessRunning()
-        // Attached (externally-owned) download completed: the final file appeared.
-        if downloadAttached, FileManager.default.fileExists(atPath: baseDir.appendingPathComponent(filename).path) {
-            download = DownloadProgress(pct: 100, file: filename, receivedBytes: 0, totalBytes: nil)
-            endAttachedDownload()
-            return
-        }
-        let received = downloadedBytes(ggufDir: baseDir, filename: filename)
-        if downloadAttached {
-            if let last = lastDownloadSample, received <= last.bytes {
-                staleDownloadPolls += 1
-                if staleDownloadPolls >= 10 {
-                    // ~10s without growth. If the external downloader is still alive
-                    // (slow network, or finalizing/verifying near 100%), keep showing
-                    // progress; only revert to idle if the process is truly gone, so a
-                    // click resumes from the .incomplete (and never collides with a
-                    // running download's hf lock).
-                    if isDownloadProcessRunning() {
-                        staleDownloadPolls = 0
-                    } else {
-                        endAttachedDownload()
-                        return
+                        self?.updateDownloadProgress(gen: gen, file: filename, received: received, total: total)
                     }
                 }
-            } else {
-                staleDownloadPolls = 0
+                Self.onMain { self?.completeDownload(gen: gen, filename: filename) }
+            } catch is CancellationError {
+                // cancelDownload() / retryDownload() / stop() own the resulting state.
+            } catch {
+                Self.onMain { self?.failDownload(gen: gen, error: error) }
             }
         }
-        guard received > 0 else { return }  // nothing on disk yet — leave any stderr-driven value
-        downloadHasDiskBytes = true  // byte-accurate poll now owns the bar (see stderr callback)
+    }
+
+    /// Turn a downloader `onProgress(received, total)` tick into a published `DownloadProgress`:
+    /// compute pct, and a transfer rate from the delta against the last sample (the rate logic moved
+    /// here from the old on-disk poll). Generation-guarded so a superseded download's late callback
+    /// can't clobber the current bar. `Date()` is fine in app code.
+    private func updateDownloadProgress(gen: Int, file: String, received: Int64, total: Int64) {
+        guard downloadGeneration == gen, state == .downloading else { return }
         let now = Date()
         var rate: String?
         if let last = lastDownloadSample, received > last.bytes {
@@ -469,35 +315,86 @@ final class SupervisorService: ObservableObject {
             if dt > 0.1 { rate = formatRate(Double(received - last.bytes) / dt) }
         }
         lastDownloadSample = (received, now)
-        let pct = expected > 0 ? min(100, Double(received) / Double(expected) * 100) : 0
+        let pct = total > 0 ? min(100, Double(received) / Double(total) * 100) : 0
         download = DownloadProgress(
-            pct: pct, file: filename, receivedBytes: received, totalBytes: expected, rate: rate ?? download?.rate)
+            pct: pct, file: file, receivedBytes: received, totalBytes: total > 0 ? total : nil,
+            rate: rate ?? download?.rate)
     }
 
-    /// Whether ds4's downloader (download_model.sh / hf for this repo) is running.
-    /// Used only when growth stalls, to distinguish "slow/finalizing" from "dead".
-    private func isDownloadProcessRunning() -> Bool {
-        let p = Process()
-        p.executableURL = URL(fileURLWithPath: "/usr/bin/pgrep")
-        p.arguments = ["-f", "download_model|deepseek-v4-gguf"]
-        p.standardOutput = Pipe()
-        p.standardError = Pipe()
-        do {
-            try p.run()
-            p.waitUntilExit()
-        } catch {
-            return false
-        }
-        return p.terminationStatus == 0
-    }
-
-    private func endAttachedDownload() {
-        downloadAttached = false
-        downloadProcessLive = false
-        staleDownloadPolls = 0
-        downloadPollTimer?.invalidate()
-        downloadPollTimer = nil
+    private func completeDownload(gen: Int, filename: String) {
+        guard downloadGeneration == gen else { return }
+        endDownloadActivity()
+        download = DownloadProgress(pct: 100, file: filename, receivedBytes: 0, totalBytes: nil)
         state = .idle
+    }
+
+    private func failDownload(gen: Int, error: Error) {
+        guard downloadGeneration == gen else { return }
+        endDownloadActivity()
+        let detail: String
+        switch error {
+        case HFDownloader.Failure.http(let code): detail = "HTTP \(code)"
+        case HFDownloader.Failure.incompleteAfterRetries: detail = "download interrupted (retries exhausted)"
+        default: detail = (error as NSError).localizedDescription
+        }
+        state = .error(.downloadFailed(detail: detail))
+    }
+
+    private func endDownloadActivity() {
+        downloadTask = nil
+        downloadProcessLive = false
+    }
+
+    /// Cancel whatever download is in flight and start a fresh one — the user's escape hatch from a
+    /// stuck/stalled or errored progress bar. The native downloader cancels through the cancelled
+    /// task; `download` re-resumes from the on-disk bitmap.
+    func retryDownload(variant: Variant, flashQuant: FlashQuant, highPerformance: Bool = false) {
+        downloadTask?.cancel()
+        downloadTask = nil
+        lastDownloadSample = nil
+        download = nil
+        state = .idle
+        download(variant: variant, flashQuant: flashQuant, highPerformance: highPerformance)
+    }
+
+    /// Cancel an in-progress download and return to idle without restarting. Bumping the generation
+    /// makes the cancelled task's completion callback stale, so it can't flip state to .error.
+    func cancelDownload() {
+        guard state == .downloading else { return }
+        downloadGeneration += 1
+        downloadTask?.cancel()
+        downloadTask = nil
+        // Cancel discards the partial (a deliberate stop, not a pause): remove the sparse `.part`
+        // AND its `.part.dl` bitmap sidecar so the next launch's resume check doesn't pick it back
+        // up. Quitting mid-download keeps both, so a relaunch resumes from the bitmap.
+        if let f = download?.file {
+            let base = ggufBaseDir()
+            try? FileManager.default.removeItem(at: base.appendingPathComponent(f + ".part"))
+            try? FileManager.default.removeItem(at: base.appendingPathComponent(f + ".part.dl"))
+        }
+        downloadProcessLive = false
+        lastDownloadSample = nil
+        download = nil
+        state = .idle
+    }
+
+    /// If a partial download was left by a prior session (the app quit mid-download) and we're idle,
+    /// resume it without re-prompting. The native parallel downloader continues from the on-disk
+    /// `.part.dl` bitmap (or, for a legacy contiguous `.part`/hf `.incomplete`, from its byte count),
+    /// so this is just a normal `download()`. `highPerformance` (the persisted setting) is threaded
+    /// through so the resumed download uses the user's chosen worker count.
+    func resumeInFlightDownloadIfAny(variant: Variant, flashQuant: FlashQuant, highPerformance: Bool = false) {
+        guard state == .idle else { return }
+        let base = ggufBaseDir()
+        let q = Quant.for(variant, flashQuant: flashQuant)
+        // Already fully downloaded → nothing to resume.
+        if FileManager.default.fileExists(atPath: base.appendingPathComponent(q.ggufFilename).path) { return }
+        // Resume when the bitmap sidecar records durable bytes (parallel partial), or a legacy
+        // contiguous `.part`/hf `.incomplete` has bytes on disk.
+        let resumable = resumableBytes(ggufDir: base, filename: q.ggufFilename) > 0
+        let legacy = downloadedBytes(ggufDir: base, filename: q.ggufFilename) > 0
+        guard resumable || legacy else { return }
+        download(variant: variant, flashQuant: flashQuant, highPerformance: highPerformance)
     }
 
     /// True when the selected variant's gguf exists on disk.
