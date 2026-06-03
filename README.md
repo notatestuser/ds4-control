@@ -21,8 +21,12 @@ A macOS menu-bar control pane for **DeepSeek V4** via [`ds4`](https://github.com
 
 <p align="center">
   <b>Signed with a live Apple Developer ID &amp; notarized by Apple.</b><br>
-  <sub>Opens the <a href="https://github.com/notatestuser/ds4-control/releases/latest">latest release</a> — always the newest signed build</sub>
+  <sub>Prerequisites: Make sure you have the Hugging Face CLI installed for model downloads: `brew install hf`</sub>
 </p>
+
+## Prerequisites
+
+- Hugging Face CLI for model downloads: `brew install hf`
 
 ## What it does
 
@@ -36,9 +40,7 @@ What it is **not**:
 - No model search or registry browsing.
 - No embedded inference — all inference is delegated to `ds4-server`. This app only supervises the process and surfaces system metrics.
 
-## Screenshot
-
-## Quick start
+## Dev quick start
 
 1. **Build ds4** — clone and build [antirez/ds4](https://github.com/antirez/ds4) so you have the `ds4-server` binary and `download_model.sh`.
 2. **Build DS4 Control** — `bash build.sh`, then open `DS4 Control.app` (or `swift run` during development).
@@ -49,6 +51,7 @@ What it is **not**:
 ## Requirements
 
 - **Apple Silicon**
+- Hugging Face CLI needed for model downloads: `brew install hf`
 - You do **not** pre-download the model — DS4 Control downloads it for you via ds4's `download_model.sh`.
 - **HuggingFace Xet:** the model GGUFs are served from HF's Xet storage, which a plain-`curl` downloader can't fetch (HTTP 400). `download_model.sh` must use the `hf` CLI (`pip install -U huggingface_hub`); the app parses progress from either `hf`/tqdm or `curl` output.
 - **Auth (optional):** the repo is public, so no token is required. If a token is present in the `HF_TOKEN` environment variable or the local hf cache (`hf auth login`), the app forwards it to the downloader **via the environment** (never `--token`, so it can't leak in `ps`). Authenticating can help avoid anonymous rate-limits/throttling.
