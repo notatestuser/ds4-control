@@ -20,19 +20,14 @@ A macOS menu-bar control pane for **DeepSeek V4** via [`ds4`](https://github.com
 </p>
 
 <p align="center">
-  <b>Signed with a live Apple Developer ID &amp; notarized by Apple.</b><br>
-  <sub>**NOTE: Make sure you have the Hugging Face CLI installed for model downloads: <code>brew install hf</code>**</sub>
+  <b>Signed with a live Apple Developer ID &amp; notarized by Apple.</b>
 </p>
-
-## Prerequisites
-
-- Hugging Face CLI for model downloads: `brew install hf`
 
 ## What it does
 
 - **Start / stop / monitor** the local `ds4-server` child process — spawn, stderr readiness detection, health polling, graceful stop, and crash detection.
 - **Pro / Flash selector** with a RAM-feasibility gate (Pro defaults on machines with ≥ 512 GiB unified memory).
-- **Model downloads** delegated to ds4's `download_model.sh`, with a live progress bar parsed from the downloader's output (`hf`/tqdm or `curl`).
+- **Model downloads** via a built-in native parallel downloader, with a live progress bar (speed, MB, %) and resume across restarts.
 - **Mini resource widgets**: unified memory (hero), GPU, power/ANE, and CPU, sampled on a 2 s timer.
 - **Launch Chat** to talk to the model.
 - **Launch Claude Code or Pi** to plan, write, maintain or refactor code.
@@ -44,7 +39,7 @@ What it is **not**:
 
 ## Dev quick start
 
-1. **Build ds4** — clone and build [antirez/ds4](https://github.com/antirez/ds4) so you have the `ds4-server` binary and `download_model.sh`.
+1. **Build ds4** — clone and build [antirez/ds4](https://github.com/antirez/ds4) so you have the `ds4-server` binary.
 2. **Build DS4 Control** — `bash build.sh`, then open `DS4 Control.app` (or `swift run` during development).
 3. **Pick a model** — choose **Pro** or **Flash** (the app preselects based on your installed RAM).
 4. **Start** — click **Start** (or **Download** first if the model isn't present yet).
@@ -53,11 +48,9 @@ What it is **not**:
 ## Requirements
 
 - **Apple Silicon**
-- Hugging Face CLI needed for model downloads: `brew install hf`
-- You do **not** pre-download the model — DS4 Control downloads it for you via ds4's `download_model.sh`.
-- **HuggingFace Xet:** the model GGUFs are served from HF's Xet storage, which a plain-`curl` downloader can't fetch. `download_model.sh` must use the `hf` CLI (`pip install -U huggingface_hub`); the app parses progress from either `hf`/tqdm or `curl` output.
-- **Auth (optional):** the repo is public, so no token is required. If a token is present in the `HF_TOKEN` environment variable or the local hf cache (`hf auth login`), the app forwards it to the downloader **via the environment** (never `--token`, so it can't leak in `ps`). Authenticating can help avoid anonymous rate-limits/throttling.
-- **RAM** - see below.
+- You do **not** pre-download the model — DS4 Control downloads it for you with a built-in parallel downloader, resumable across restarts.
+- **Auth (optional):** the model repository is public, so no token is required for normal use.
+- **RAM** — see below.
 
 ## RAM feasibility
 
@@ -106,7 +99,7 @@ bash build.sh
 
 This builds a release binary and assembles `DS4 Control.app`.
 
-**First run:** open **Settings** (the gear in the popup) and set the **ds4 directory** — the folder that contains `ds4-server` and `download_model.sh`.
+**First run:** open **Settings** (the gear in the popup) and set the **ds4 directory** — the folder that contains `ds4-server`.
 
 ## Signing
 
@@ -128,11 +121,11 @@ To sign with your own key:
 
 DS4 Control is a single Swift binary — no embedded inference and no second process language. Three `@MainActor` objects do the work, and the SwiftUI layer just observes them:
 
-- **`SupervisorService`** owns the `ds4-server` lifecycle through `Foundation.Process`: it builds the launch arguments, watches stderr for the `listening on http://` readiness line, polls `GET /v1/models` for health, and stops gracefully with SIGTERM (SIGKILL fallback). Model downloads shell out to ds4's `download_model.sh` with live `curl` progress.
+- **`SupervisorService`** owns the `ds4-server` lifecycle through `Foundation.Process`: it builds the launch arguments, watches stderr for the `listening on http://` readiness line, polls `GET /v1/models` for health, and stops gracefully with SIGTERM (SIGKILL fallback). Model weights are fetched by a built-in native parallel downloader (resumable across restarts).
 - **`MetricsManager`** samples CPU, memory, GPU, and power/ANE via Mach, IOKit, and the private IOReport interface every 2 s, publishing a `SystemSnapshot` to the widgets.
 - **`Feasibility`** turns installed RAM into a variant choice and a budget-derived default context (pure, fully unit-tested).
 
-The pieces with real logic — the feasibility/context math, the readiness and `curl`-progress parsers, and the supervisor state machine — are pure and covered by tests. The supervisor is exercised end-to-end against a fake `ds4-server` and a fake `download_model.sh`, so the full lifecycle is tested without downloading a multi-hundred-gigabyte model.
+The pieces with real logic — the feasibility/context math, the readiness parser, the resumable chunk/bitmap downloader, and the supervisor state machine — are pure and covered by tests. The supervisor is exercised end-to-end against a fake `ds4-server` and an injected download, so the full lifecycle is tested without downloading a multi-hundred-gigabyte model.
 
 ## Testing / QA
 
@@ -140,7 +133,7 @@ The pieces with real logic — the feasibility/context math, the readiness and `
 swift test
 ```
 
-Tests cover the pure logic (variant/feasibility/context math, readiness and curl-progress parsers) plus model-free integration of the supervisor via a fake `ds4-server` and a fake `download_model.sh`. No real model is needed.
+Tests cover the pure logic (variant/feasibility/context math, readiness parser, chunk-bitmap resume) plus model-free integration of the supervisor via a fake `ds4-server` and an injected download. No real model is needed.
 
 CI (GitHub Actions, `macos-26`) runs, on every pull request:
 
