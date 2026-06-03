@@ -28,7 +28,7 @@ A macOS menu-bar control pane for **DeepSeek V4** via [`ds4`](https://github.com
 
 - **Start / stop / monitor** the local `ds4-server` child process — spawn, stderr readiness detection, health polling, graceful stop, and crash detection.
 - **Pro / Flash selector** with a RAM-feasibility gate (Pro defaults on machines with ≥ 512 GiB unified memory).
-- **Model downloads** delegated to ds4's `download_model.sh`, with a live progress bar parsed from the downloader's output (`hf`/tqdm or `curl`).
+- **Model downloads** via a built-in native parallel downloader, with a live progress bar (speed, MB, %) and resume across restarts.
 - **Mini resource widgets**: unified memory (hero), GPU, power/ANE, and CPU, sampled on a 2 s timer.
 
 What it is **not**:
@@ -49,9 +49,8 @@ What it is **not**:
 ## Requirements
 
 - **Apple Silicon**
-- You do **not** pre-download the model — DS4 Control downloads it for you via ds4's `download_model.sh`.
-- **HuggingFace Xet:** the model GGUFs are served from HF's Xet storage, which a plain-`curl` downloader can't fetch (HTTP 400). `download_model.sh` must use the `hf` CLI (`pip install -U huggingface_hub`); the app parses progress from either `hf`/tqdm or `curl` output.
-- **Auth (optional):** the repo is public, so no token is required. If a token is present in the `HF_TOKEN` environment variable or the local hf cache (`hf auth login`), the app forwards it to the downloader **via the environment** (never `--token`, so it can't leak in `ps`). Authenticating can help avoid anonymous rate-limits/throttling.
+- You do **not** pre-download the model — DS4 Control downloads it for you with a built-in parallel downloader, resumable across restarts.
+- **Auth (optional):** the model repository is public, so no token is required for normal use.
 
 ## RAM feasibility
 
