@@ -12,6 +12,8 @@ A macOS menu-bar control pane for **DeepSeek V4** via [`ds4`](https://github.com
 </picture>
 
 <br>
+<br>
+<br>
 
 <p align="center">
   <a href="https://github.com/notatestuser/ds4-control/releases/latest">
