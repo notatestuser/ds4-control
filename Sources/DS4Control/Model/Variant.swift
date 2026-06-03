@@ -24,11 +24,10 @@ enum Quant {
         variant == .pro ? .proImatrix : flashQuant.quant
     }
 
-    /// Argument passed to `download_model.sh`.
+    /// The ds4 model-target identifier for this quant (e.g. `pro-q2-imatrix`).
     var arg: String {
         switch self {
-        // ds4 renamed the single-file Pro target `pro-imatrix` → `pro-q2-imatrix` and downloads
-        // it via the `hf` CLI (the IQ2XXS Pro GGUF is Xet-backed, which plain curl 400s on).
+        // ds4 renamed the single-file Pro target `pro-imatrix` → `pro-q2-imatrix`.
         case .proImatrix: return "pro-q2-imatrix"
         case .q4Imatrix: return "q4-imatrix"
         case .q2Imatrix: return "q2-imatrix"
@@ -36,7 +35,7 @@ enum Quant {
         }
     }
 
-    /// Exact GGUF filename produced by `download_model.sh` (under $DS4_GGUF_DIR / gguf).
+    /// Exact GGUF filename the downloader fetches (under $DS4_GGUF_DIR / gguf).
     var ggufFilename: String {
         switch self {
         case .proImatrix:
