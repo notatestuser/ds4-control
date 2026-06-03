@@ -20,7 +20,11 @@ jobs:
       build-command: |
         # ds4 is a pinned git submodule (external/ds4), fetched via the reusable
         # workflow's submodules:recursive checkout. Build it, then build.sh bundles it.
-        make -C external/ds4 -j ds4-server
+        # Pin the CPU baseline to apple-m1 (the oldest Apple Silicon) instead of the
+        # Makefile's default -mcpu=native: the GitHub runner is M1 today but unguaranteed,
+        # so a native build on a future newer-chip runner could SIGILL on M1 user Macs.
+        # GPU kernels are JIT-compiled at runtime, so inference speed is unaffected.
+        make -C external/ds4 NATIVE_CPU_FLAG=-mcpu=apple-m1 -j ds4-server
         DS4_SRC=external/ds4 bash build.sh
       app-path: "DS4 Control.app"
       bundle-id: "sg.embeddedtech.ds4control"
