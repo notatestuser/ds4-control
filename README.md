@@ -64,7 +64,7 @@ DeepSeek V4 is memory-hungry, and `ds4-server` enforces no RAM floor itself — 
 | --- | --- | --- | --- |
 | V4 Pro | pro-imatrix | **≥ 512 GiB required** | Anything below is blocked. |
 | V4 Flash | q4-imatrix | ≥ 256 GiB | Standard. |
-| V4 Flash | q2-imatrix | **128 GiB recommended**, 96 GiB minimum | 96–127 GiB requires raising the Metal wired limit (see below). |
+| V4 Flash | q2-imatrix | 96 GiB minimum | 96–127 GiB requires raising the Metal wired limit (see below). |
 | V4 Flash | — | **< 96 GiB unsupported** | Hidden behind an opt-in "unsupported low-RAM mode" toggle; may swap or crash. Not usable for real generation. |
 
 On **96–127 GiB** machines you must raise the Metal wired limit so the GPU working set fits, e.g.:
