@@ -309,16 +309,23 @@ final class SupervisorService: ObservableObject {
     private func updateDownloadProgress(gen: Int, file: String, received: Int64, total: Int64) {
         guard downloadGeneration == gen, state == .downloading else { return }
         let now = Date()
-        var rate: String?
-        if let last = lastDownloadSample, received > last.bytes {
-            let dt = now.timeIntervalSince(last.time)
-            if dt > 0.1 { rate = formatRate(Double(received - last.bytes) / dt) }
+        // Rate over a fixed ~0.5 s window: advance the anchor only when the window elapses, so the
+        // reading is (bytes over the window) / (window). Sampling per-callback instead pins it to
+        // progressStep / main-actor-batch-gap and under-reports ~8x at high throughput.
+        var rate = download?.rate  // hold the last reading between window boundaries
+        if let anchor = lastDownloadSample {
+            let dt = now.timeIntervalSince(anchor.time)
+            if dt >= 0.5 {
+                if received > anchor.bytes { rate = formatRate(Double(received - anchor.bytes) / dt) }
+                lastDownloadSample = (received, now)
+            }
+        } else {
+            lastDownloadSample = (received, now)
         }
-        lastDownloadSample = (received, now)
         let pct = total > 0 ? min(100, Double(received) / Double(total) * 100) : 0
         download = DownloadProgress(
             pct: pct, file: file, receivedBytes: received, totalBytes: total > 0 ? total : nil,
-            rate: rate ?? download?.rate)
+            rate: rate)
     }
 
     private func completeDownload(gen: Int, filename: String) {
