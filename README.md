@@ -6,6 +6,13 @@ A macOS menu-bar control pane for **DeepSeek V4** via [`ds4`](https://github.com
 
 <br>
 
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/screenshot-dark-v4.png">
+  <img alt="DS4 Control: the menu-bar popup (Pro/Flash selector with unified-memory, GPU, CPU and power widgets) next to the chat window showing per-message timing/throughput and a context-usage bar" src="docs/screenshot-light-v4.png">
+</picture>
+
+<br>
+
 <p align="center">
   <a href="https://github.com/notatestuser/ds4-control/releases/latest/download/DS4-Control-v1.0.0.dmg">
     <img src="https://img.shields.io/badge/Download-DS4%20Control%20for%20macOS%20(.dmg)-1f6feb?style=for-the-badge&logo=apple&logoColor=white" alt="Download DS4 Control for macOS (.dmg)" height="46">
@@ -17,13 +24,6 @@ A macOS menu-bar control pane for **DeepSeek V4** via [`ds4`](https://github.com
   The <code>.dmg</code> passes Gatekeeper cleanly — no “unidentified developer” warning and no right-click&nbsp;→&nbsp;Open workaround. macOS&nbsp;15+ · Apple&nbsp;silicon.<br>
   <sub><a href="https://github.com/notatestuser/ds4-control/releases/latest">All releases</a> · direct link: <code>DS4-Control-v1.0.0.dmg</code></sub>
 </p>
-
-<br>
-
-<picture>
-  <source media="(prefers-color-scheme: dark)" srcset="docs/screenshot-dark-v4.png">
-  <img alt="DS4 Control: the menu-bar popup (Pro/Flash selector with unified-memory, GPU, CPU and power widgets) next to the chat window showing per-message timing/throughput and a context-usage bar" src="docs/screenshot-light-v4.png">
-</picture>
 
 ## What it does
 
