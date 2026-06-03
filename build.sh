@@ -10,13 +10,32 @@ BUILD="${APP_BUILD:-$VERSION}"
 
 echo "→ swift build (release)"
 swift build -c release 2>&1 | tail -3
-BIN="$(swift build -c release --show-bin-path)/DS4Control"
+BIN_DIR="$(swift build -c release --show-bin-path)"
+BIN="$BIN_DIR/DS4Control"
 
 echo "→ assemble bundle"
 rm -rf "$APP"
 mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
 cp "$BIN" "$APP/Contents/MacOS/DS4Control"
 cp Info.plist "$APP/Contents/Info.plist"
+
+# SwiftPM dependency resource bundles (Highlightr's highlight.js + CSS, SwiftMath's fonts,
+# MarkdownView/Litext resources). `Bundle.module` resolves these from the app's
+# Contents/Resources at runtime; without them the first code-block render crashes in
+# Highlightr.init → Bundle.module (assertionFailure / EXC_BREAKPOINT). Copy before signing
+# so codesign seals them into the bundle.
+echo "→ bundle SwiftPM resource bundles"
+shopt -s nullglob
+for b in "$BIN_DIR"/*.bundle; do
+  cp -R "$b" "$APP/Contents/Resources/"
+  echo "  + $(basename "$b")"
+done
+shopt -u nullglob
+# Regression guard: Highlightr's bundle is what crashed v1.0.0 when absent. Fail the build
+# rather than ship a .app that crashes on the first code-block render.
+if [ ! -d "$APP/Contents/Resources/Highlightr_Highlightr.bundle" ]; then
+  echo "  ERROR: Highlightr_Highlightr.bundle missing from app — markdown code rendering would crash"; exit 1
+fi
 /usr/libexec/PlistBuddy -c "Set :CFBundleVersion $BUILD" "$APP/Contents/Info.plist"
 /usr/libexec/PlistBuddy -c "Set :CFBundleShortVersionString $VERSION" "$APP/Contents/Info.plist"
 
