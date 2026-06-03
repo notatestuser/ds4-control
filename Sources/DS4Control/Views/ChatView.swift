@@ -500,7 +500,9 @@ struct ThinkingDisclosure: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
-            Button { expanded.toggle() } label: {
+            Button {
+                expanded.toggle()
+            } label: {
                 HStack(spacing: 6) {
                     Image(systemName: expanded ? "chevron.down" : "chevron.right")
                         .font(.caption2)
