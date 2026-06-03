@@ -88,6 +88,15 @@ struct PopupView: View {
         }
     }
 
+    /// "v1.0.2 (162)" from the bundle's short version + build, shown under Quit. Falls back to
+    /// "dev build" when run without a packaged Info.plist (e.g. `swift run`).
+    private static var appVersion: String {
+        let info = Bundle.main.infoDictionary
+        guard let short = info?["CFBundleShortVersionString"] as? String else { return "dev build" }
+        if let build = info?["CFBundleVersion"] as? String, build != short { return "v\(short) (\(build))" }
+        return "v\(short)"
+    }
+
     private var footer: some View {
         // Inline hint rather than a modal: a `.window` MenuBarExtra dismisses when it
         // resigns key, so an .alert/sheet would collapse the whole popover.
@@ -136,6 +145,13 @@ struct PopupView: View {
                 }.buttonStyle(.plain).help("Open a coding agent in Terminal")
                 Spacer()
                 Button("Quit") { NSApplication.shared.terminate(nil) }.buttonStyle(.plain).foregroundStyle(.secondary)
+            }
+            HStack {
+                Spacer()
+                Text(Self.appVersion)
+                    .font(.caption2)
+                    .foregroundStyle(.tertiary)
+                    .help("DS4 Control version")
             }
         }
         .onChange(of: supervisor.state) { _, newState in
