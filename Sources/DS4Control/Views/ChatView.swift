@@ -25,11 +25,18 @@ struct ChatView: View {
     /// list grows the window backward when the user wants to scroll back.
     private static let transcriptWindowSize = 50
 
+    /// Stable id of a 1 pt anchor pinned to the end of the transcript, so the scroll view can be
+    /// told to follow the bottom as the latest reply streams in.
+    private static let bottomAnchorID = "transcript-bottom"
+
     /// Extra older messages the user has explicitly expanded into the window via
     /// the "Show earlier" button. Reset to 0 on `clear` (handled by the
     /// `onChange` of `messages.count` — if the user clears, the window starts
     /// fresh; if they keep chatting, the window keeps whatever they've loaded).
     @State private var transcriptExtraAbove = 0
+
+    /// Drives the continuous bottom-follow while a reply streams; cancelled when it ends.
+    @State private var followTask: Task<Void, Never>?
 
     var body: some View {
         VStack(spacing: 0) {
@@ -133,29 +140,60 @@ struct ChatView: View {
                             GeneratingIndicator()
                             Spacer()
                         }
-                        .id("generating-indicator")
                     }
+                    // Invisible tail anchor — always the last element — that the scroll view is
+                    // told to follow, so the newest content stays in view.
+                    Color.clear.frame(height: 1).id(Self.bottomAnchorID)
                 }
                 .padding(16)
             }
+            // Keep the newest content in view without `.defaultScrollAnchor` (it fought the
+            // explicit scroll and flickered). The initial open and each new message jump to the
+            // bottom; while a reply streams, a ~30 Hz loop re-anchors continuously — decoupled
+            // from the 33 ms token flush, so fast growth tracks smoothly instead of drifting then
+            // snapping; on finish, one more anchor lands after the finalize + stats-line render.
+            .onAppear {
+                anchorBottom(proxy)
+                if viewModel.isStreaming { startBottomFollow(proxy) }
+            }
             .onChange(of: viewModel.messages.count) { _, _ in
-                // Scroll to the bottom once per new message (i.e. once on Enter).
-                // No other onChange handler — the streaming `content` and `thinking`
-                // mutations are NOT scrolled-to here, so the viewport doesn't
-                // continuously re-anchor as the assistant streams. The CSS
-                // `overflow-anchor: auto` analogue: the scroll position adjusts once
-                // when a new bubble is committed; while the user is reading or
-                // the model is streaming, the position is preserved.
-                scrollToBottom(proxy, animated: true)
+                anchorBottom(proxy)
+            }
+            .onChange(of: viewModel.isStreaming) { _, streaming in
+                if streaming {
+                    startBottomFollow(proxy)
+                } else {
+                    followTask?.cancel()
+                    followTask = nil
+                    Task { @MainActor in anchorBottom(proxy) }
+                }
+            }
+            .onDisappear {
+                followTask?.cancel()
+                followTask = nil
             }
         }
     }
 
-    private func scrollToBottom(_ proxy: ScrollViewProxy, animated: Bool = true) {
-        if animated {
-            withAnimation(.easeOut(duration: 0.15)) { proxy.scrollTo("generating-indicator", anchor: .bottom) }
-        } else {
-            proxy.scrollTo("generating-indicator", anchor: .bottom)
+    /// Scrolls the transcript so the tail anchor sits at the bottom, with animation disabled so
+    /// the rapid streaming re-anchors don't visibly animate (the flicker source).
+    private func anchorBottom(_ proxy: ScrollViewProxy) {
+        var transaction = Transaction()
+        transaction.disablesAnimations = true
+        withTransaction(transaction) {
+            proxy.scrollTo(Self.bottomAnchorID, anchor: .bottom)
+        }
+    }
+
+    /// While a reply streams, re-anchor to the bottom at ~30 Hz — independent of the token-flush
+    /// cadence — so the view tracks fast growth smoothly. The loop self-cancels when streaming ends.
+    private func startBottomFollow(_ proxy: ScrollViewProxy) {
+        followTask?.cancel()
+        followTask = Task { @MainActor in
+            while !Task.isCancelled && viewModel.isStreaming {
+                anchorBottom(proxy)
+                try? await Task.sleep(nanoseconds: 33_000_000)  // ~30 Hz
+            }
         }
     }
 
