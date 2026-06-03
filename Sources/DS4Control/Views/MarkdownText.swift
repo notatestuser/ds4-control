@@ -1,25 +1,35 @@
-// Selectable markdown renderer for chat bubbles, backed by Textual (pure SwiftUI).
-// Replaces the former NSTextView stack (SelectableMarkdownNSText / IntrinsicTextView):
-// going pure-SwiftUI removes the NSView width↔height self-sizing loop that caused the chat
-// freeze. This is the ONLY file that imports Textual — the dependency seam.
+// Markdown renderer for chat bubbles, backed by Lakr233/MarkdownView (battle-tested in FlowDown).
+// This is the ONLY file that imports the renderer — the dependency seam.
+//
+// We render through the library's raw AppKit `MarkdownTextView` wrapped in our own
+// `MarkdownNSText` representable, NOT the library's SwiftUI `MarkdownView`. That wrapper sizes
+// itself with a GeometryReader plus a `DispatchQueue.main.async` height binding, which schedules a
+// fresh layout pass on every pass; inside our LazyVStack-in-ScrollView (with the 30 Hz bottom
+// follow) the placement graph never converges → 100% main-thread spin in
+// `LazySubviewPlacements.placeSubviews` (profiled). `MarkdownNSText` instead reports height
+// synchronously from `sizeThatFits` — width in, height out, in the same layout pass, no async
+// binding — so layout converges in one pass. Selection, code highlighting, tables and math are
+// still handled inside `MarkdownTextView`.
 
+import Combine
+import MarkdownParser
+import MarkdownView
 import SwiftUI
-import Textual
 
-/// Renders a complete (non-streaming) markdown string as one Textual document: one parse,
-/// correct inter-block spacing, whole-message text selection. Used for finished assistant
-/// bubbles and the thinking disclosure.
+/// Renders a complete (non-streaming) markdown string. Used for finished assistant bubbles and the
+/// thinking disclosure.
 struct MarkdownText: View {
     let source: String
 
     init(_ source: String) { self.source = source }
 
     var body: some View {
-        StructuredText(markdown: Self.preprocess(source))
-            .ds4MarkdownStyle()
+        // `.default` theme: its colors are `NSColor.labelColor` / system dynamic colors, so it
+        // tracks light/dark automatically — no explicit colorScheme plumbing needed.
+        MarkdownNSText(markdown: Self.preprocess(source))
     }
 
-    /// LaTeX cleanup + tag stripping applied before handing markdown to Textual. Pure and
+    /// LaTeX cleanup + tag stripping applied before handing markdown to the renderer. Pure and
     /// renderer-agnostic.
     static func preprocess(_ s: String) -> String {
         stripTaggedBlocks(deLaTeXed(s))
@@ -99,59 +109,93 @@ struct MarkdownText: View {
     }
 }
 
-/// Renders a streaming markdown string incrementally: completed blocks are frozen via
-/// `.equatable()` (SwiftUI skips re-rendering a block whose text is unchanged), and only the
-/// trailing incomplete block re-parses per tick. Bounds per-tick cost to O(tail).
+/// Renders a streaming markdown string, throttling how often the full markdown re-render runs.
+///
+/// Each `MarkdownView` update rebuilds the *entire* document — attributed text plus table/code
+/// subviews — and measures its full height, i.e. O(document) per render (the library's view pool
+/// recycles `CodeView`/`TableView` instances but not the text layout). Handing it the message
+/// string on every ~30 Hz content flush runs that O(document) work dozens of times per second over
+/// an ever-growing string → O(n²), which pegs the main thread on large replies.
+///
+/// Streaming live-ness doesn't need 30 Hz. A steady 15 Hz clock copies the latest text into the
+/// rendered string (`shown`), so the heavy rebuild runs 15×/s instead of ~30. Because
+/// `@State` keeps its first value, `source` only reaches the renderer through the tick — and the
+/// complete text is rendered once when the bubble swaps to `MarkdownText` on stream end, so nothing
+/// the throttle skipped is lost.
 struct StreamingMarkdownText: View {
     let source: String
+    @State private var shown: String
 
-    /// Gap between block views; tuned to match `MarkdownText`'s single-view inter-block
-    /// spacing so there is no visual "settle" when the bubble collapses on finalize (Task 6).
-    private static let blockSpacing: CGFloat = 8
+    /// 15 Hz on the common run-loop mode so it keeps ticking during scroll tracking (15 divides
+    /// evenly into 60/120/240 Hz display refresh). `static` so it survives the struct re-inits
+    /// SwiftUI does on every content flush — a per-instance timer would have its countdown reset
+    /// ~30×/s and never fire, leaving the bubble stuck on its first token until stream end.
+    private static let tick = Timer.publish(every: 1.0 / 15.0, on: .main, in: .common).autoconnect()
 
-    init(_ source: String) { self.source = source }
+    init(_ source: String) {
+        self.source = source
+        _shown = State(initialValue: source)
+    }
 
     var body: some View {
-        let parts = MarkdownBlocks.splitBlocks(source)
-        VStack(alignment: .leading, spacing: Self.blockSpacing) {
-            ForEach(Array(parts.completed.enumerated()), id: \.offset) { _, block in
-                MarkdownBlockView(markdown: block).equatable()
-            }
-            if !parts.tail.isEmpty {
-                MarkdownBlockView(markdown: parts.tail)
-            }
-        }
+        MarkdownNSText(markdown: MarkdownText.preprocess(shown))
+            .onReceive(Self.tick) { _ in if shown != source { shown = source } }
     }
 }
 
-/// One markdown block rendered via Textual. `Equatable` on its source so SwiftUI skips
-/// re-rendering frozen (completed) blocks while later blocks stream.
-private struct MarkdownBlockView: View, Equatable {
+/// Renders one preprocessed markdown string through the library's raw AppKit `MarkdownTextView`,
+/// reporting its height **synchronously** for the proposed width via `sizeThatFits`. This is the
+/// freeze-safe sizing contract: SwiftUI proposes a width, we return the matching height in the same
+/// layout pass — a pure function of (width, content), no GeometryReader and no async height binding,
+/// so the layout graph converges instead of re-scheduling itself (the cause of the profiled
+/// `placeSubviews` spin). `boundingSize(for:)` is cached by Litext per width, so the repeated calls
+/// SwiftUI makes while scrolling are cheap.
+private struct MarkdownNSText: NSViewRepresentable {
     let markdown: String
 
-    nonisolated static func == (a: MarkdownBlockView, b: MarkdownBlockView) -> Bool {
-        a.markdown == b.markdown
+    func makeNSView(context _: Context) -> MarkdownTextView {
+        let view = MarkdownTextView()
+        view.theme = .default
+        view.setContentHuggingPriority(.required, for: .vertical)
+        view.setContentCompressionResistancePriority(.required, for: .vertical)
+        view.setContentHuggingPriority(.defaultLow, for: .horizontal)
+        view.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+        return view
     }
 
-    var body: some View {
-        StructuredText(markdown: MarkdownText.preprocess(markdown))
-            .ds4MarkdownStyle()
+    func updateNSView(_ view: MarkdownTextView, context: Context) {
+        guard context.coordinator.lastMarkdown != markdown else { return }
+        context.coordinator.lastMarkdown = markdown
+        let result = MarkdownParser().parse(markdown)
+        let content = MarkdownTextView.PreprocessedContent(parserResult: result, theme: .default)
+        view.setMarkdownManually(content)
+        view.invalidateIntrinsicContentSize()
+        context.coordinator.measuredWidth = -1  // content changed → next measure is real, not cached
     }
-}
 
-extension View {
-    /// The DS4 markdown look: Textual's `.gitHub` style — whose colors are `DynamicColor`
-    /// light/dark pairs, so it tracks the system appearance via the SwiftUI `colorScheme`.
-    ///
-    /// Textual's native text selection (`.textual.textSelection(.enabled)`) is intentionally
-    /// omitted: its AppKit selection overlay (`AppKitTextSelectionView` + per-fragment
-    /// `GeometryReader`s + `@Environment` keypath/metadata resolution) pegs the main thread when
-    /// scrolling a transcript of many bubbles — a profiled 100% main-thread AttributeGraph storm.
-    /// Copy stays available through the bubble's context menu ("Copy Message"). Note: SwiftUI's own
-    /// `.textSelection(.enabled)` is NOT a workaround — Textual reads SwiftUI's `textSelectability`
-    /// environment and activates the same overlay (re-profiled: identical scroll freeze).
-    fileprivate func ds4MarkdownStyle() -> some View {
-        self
-            .textual.structuredTextStyle(.gitHub)
+    func sizeThatFits(_ proposal: ProposedViewSize, nsView: MarkdownTextView, context: Context) -> CGSize? {
+        guard let width = proposal.width, width.isFinite, width > 0 else { return nil }
+        // `boundingSize` → `LTXLabel.intrinsicContentSize` runs a full CoreText framesetter pass and
+        // is NOT cached by the label; SwiftUI probes `sizeThatFits` many times per layout and the
+        // 30 Hz bottom-follow re-lays-out constantly, so measuring on every call re-typesets the
+        // whole document and pegs CoreText (profiled). Cache the height per width and re-measure only
+        // when the streamed text changed (`measuredWidth` is reset in `updateNSView`); the frequent
+        // scroll/probe re-layouts then cost nothing.
+        let cache = context.coordinator
+        if abs(cache.measuredWidth - width) < 0.5 {
+            return CGSize(width: width, height: cache.measuredHeight)
+        }
+        let height = ceil(nsView.boundingSize(for: width).height)
+        cache.measuredWidth = width
+        cache.measuredHeight = height
+        return CGSize(width: width, height: height)
+    }
+
+    func makeCoordinator() -> Coordinator { Coordinator() }
+
+    @MainActor final class Coordinator {
+        var lastMarkdown = ""
+        var measuredWidth: CGFloat = -1
+        var measuredHeight: CGFloat = 0
     }
 }
