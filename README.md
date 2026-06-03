@@ -14,15 +14,15 @@ A macOS menu-bar control pane for **DeepSeek V4** via [`ds4`](https://github.com
 <br>
 
 <p align="center">
-  <a href="https://github.com/notatestuser/ds4-control/releases/latest/download/DS4-Control-v1.0.0.dmg">
-    <img src="https://img.shields.io/badge/Download-DS4%20Control%20for%20macOS%20(.dmg)-1f6feb?style=for-the-badge&logo=apple&logoColor=white" alt="Download DS4 Control for macOS (.dmg)" height="46">
+  <a href="https://github.com/notatestuser/ds4-control/releases/latest">
+    <img src="https://img.shields.io/badge/Download-DS4%20Control%20for%20macOS%20(.dmg)-1f6feb?style=for-the-badge&logo=apple&logoColor=white" alt="Download the latest DS4 Control .dmg for macOS" height="46">
   </a>
 </p>
 
 <p align="center">
   <b>Signed with a live Apple Developer ID &amp; notarized by Apple.</b><br>
   The <code>.dmg</code> passes Gatekeeper cleanly — no “unidentified developer” warning and no right-click&nbsp;→&nbsp;Open workaround. macOS&nbsp;15+ · Apple&nbsp;silicon.<br>
-  <sub><a href="https://github.com/notatestuser/ds4-control/releases/latest">All releases</a> · direct link: <code>DS4-Control-v1.0.0.dmg</code></sub>
+  <sub>Opens the <a href="https://github.com/notatestuser/ds4-control/releases/latest">latest release</a> — always the newest signed build · <a href="https://github.com/notatestuser/ds4-control/releases">all releases</a></sub>
 </p>
 
 ## What it does
