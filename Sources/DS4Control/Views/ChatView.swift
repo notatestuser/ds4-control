@@ -488,8 +488,7 @@ struct MessageBubble: View {
 
 /// Think-Max reasoning, hidden by default in a collapsed disclosure. The reasoning is built
 /// only when expanded, so collapsed reasoning costs nothing to render (the deltas just
-/// accumulate in the model). State is per-message (the bubble carries `.id(message.id)`), so
-/// expansion sticks per reply.
+/// accumulate in the model).
 ///
 /// Rendered via `MarkdownText` (pure-SwiftUI Textual). The old `.fixedSize`/no-greedy-width
 /// guards existed only to stop the NSTextView width↔height layout loop (the chat-freeze bug);
@@ -500,24 +499,29 @@ struct ThinkingDisclosure: View {
     @State private var expanded = false
 
     var body: some View {
-        DisclosureGroup(isExpanded: $expanded) {
+        VStack(alignment: .leading, spacing: 6) {
+            Button { expanded.toggle() } label: {
+                HStack(spacing: 6) {
+                    Image(systemName: expanded ? "chevron.down" : "chevron.right")
+                        .font(.caption2)
+                        .frame(width: 10)
+                    Label(streaming ? "Thinking…" : "Thinking", systemImage: "brain")
+                        .font(.caption)
+                }
+                .foregroundStyle(.secondary)
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+
             if expanded {
                 MarkdownText(text)
                     .opacity(0.9)
-                    .padding(.top, 4)
             }
-        } label: {
-            Label(streaming ? "Thinking…" : "Thinking", systemImage: "brain")
-                .font(.caption)
-                .foregroundStyle(.secondary)
         }
         .padding(.horizontal, 12)
         .padding(.vertical, 8)
         .background(Color(.controlBackgroundColor).opacity(0.6))
         .clipShape(RoundedRectangle(cornerRadius: 12))
-        // Collapse the disclosure's view tree into one accessibility node so the
-        // focus-responder walker doesn't recurse into every child on each layout pass.
-        .accessibilityElement(children: .combine)
     }
 }
 
