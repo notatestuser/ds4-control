@@ -17,6 +17,10 @@ struct MarkdownText: View {
     var body: some View {
         StructuredText(markdown: Self.preprocess(source))
             .ds4MarkdownStyle()
+            // SwiftUI's own text selection (NOT Textual's `.textual.textSelection`, which froze the
+            // main thread on scroll). Applied only on this finished-bubble renderer — the streaming
+            // renderer (StreamingMarkdownText) has none, so selection appears once a reply is done.
+            .textSelection(.enabled)
     }
 
     /// LaTeX cleanup + tag stripping applied before handing markdown to Textual. Pure and
