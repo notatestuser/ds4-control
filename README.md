@@ -40,7 +40,7 @@ A macOS menu-bar control pane for **DeepSeek V4** via [`ds4`](https://github.com
 What it is **not**:
 
 - No model search or registry browsing.
-- No embedded inference — all inference is delegated to `ds4-server`. This app only supervises the process and surfaces system metrics.
+- No embedded inference — all inference is delegated to `ds4-server`.
 
 ## Dev quick start
 
