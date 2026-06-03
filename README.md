@@ -110,13 +110,6 @@ To sign with your own key:
 - Install an Apple Development certificate (Xcode → Settings → Accounts → Manage Certificates → **+** → Apple Development), **or**
 - Set `DS4_SIGN_IDENTITY="Apple Development: …"` before running `build.sh`.
 
-## Known limitations
-
-1. Changing the **ds4 directory** in Settings takes effect on the next launch.
-2. Power sampling briefly blocks the main thread (~100 ms every 2 s) on Apple Silicon — imperceptible in normal use. An off-main refactor is planned.
-3. No app icon yet; the menu-bar glyph is an SF Symbol.
-4. ds4 enforces no RAM floor itself — DS4 Control is what gates feasibility.
-
 ## How it works
 
 DS4 Control is a single Swift binary — no embedded inference and no second process language. Three `@MainActor` objects do the work, and the SwiftUI layer just observes them:
