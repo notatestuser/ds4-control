@@ -30,9 +30,9 @@ final class HFDownloader: NSObject, @unchecked Sendable {
     /// `download` parameter so tests can force many chunks on a small file.
     static let parallelChunkSize: Int64 = 256 * 1024 * 1024
 
-    /// Parallel connection count: a CGNAT-safe 12 by default, an aggressive-but-safe 64 when the
+    /// Parallel connection count: a CGNAT-safe 16 by default, an aggressive-but-safe 64 when the
     /// user opts into High Performance (still under the 256 fd soft-limit, with headroom for HF 429).
-    static func workerCount(highPerformance: Bool) -> Int { highPerformance ? 64 : 12 }
+    static func workerCount(highPerformance: Bool) -> Int { highPerformance ? 64 : 16 }
 
     init(repo: String, endpoint: String = "https://huggingface.co", revision: String = "main", maxRetries: Int = 8) {
         self.repo = repo
