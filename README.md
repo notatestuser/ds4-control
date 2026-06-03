@@ -21,7 +21,7 @@ A macOS menu-bar control pane for **DeepSeek V4** via [`ds4`](https://github.com
 
 <p align="center">
   <b>Signed with a live Apple Developer ID &amp; notarized by Apple.</b><br>
-  <sub>Prerequisites: Make sure you have the Hugging Face CLI installed for model downloads: `brew install hf`</sub>
+  <sub>**NOTE: Make sure you have the Hugging Face CLI installed for model downloads: <code>brew install hf</code>**</sub>
 </p>
 
 ## Prerequisites
