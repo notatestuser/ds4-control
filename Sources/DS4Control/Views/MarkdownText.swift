@@ -126,37 +126,21 @@ extension MarkdownText {
     }
 }
 
-/// Renders a streaming markdown string, throttling how often the full markdown re-render runs.
+/// Renders a streaming markdown string.
 ///
-/// Each `MarkdownView` update rebuilds the *entire* document — attributed text plus table/code
-/// subviews — and measures its full height, i.e. O(document) per render (the library's view pool
-/// recycles `CodeView`/`TableView` instances but not the text layout). Handing it the message
-/// string on every ~30 Hz content flush runs that O(document) work dozens of times per second over
-/// an ever-growing string → O(n²), which pegs the main thread on large replies.
-///
-/// Streaming live-ness doesn't need 30 Hz. A steady 15 Hz clock copies the latest text into the
-/// rendered string (`shown`), so the heavy rebuild runs 15×/s instead of ~30. Because
-/// `@State` keeps its first value, `source` only reaches the renderer through the tick — and the
-/// complete text is rendered once when the bubble swaps to `MarkdownText` on stream end, so nothing
-/// the throttle skipped is lost.
+/// `ChatViewModel` already throttles published streaming mutations with a single-in-flight
+/// cooldown, so this view must stay a pure function of `source`. A previous view-local timer copied
+/// `source` into `@State`; when that tick landed during scroll/layout, SwiftUI logged "Publishing
+/// changes from within view updates" and could spin AttributeGraph.
 struct StreamingMarkdownText: View {
     let source: String
-    @State private var shown: String
-
-    /// 15 Hz on the common run-loop mode so it keeps ticking during scroll tracking (15 divides
-    /// evenly into 60/120/240 Hz display refresh). `static` so it survives the struct re-inits
-    /// SwiftUI does on every content flush — a per-instance timer would have its countdown reset
-    /// ~30×/s and never fire, leaving the bubble stuck on its first token until stream end.
-    private static let tick = Timer.publish(every: 1.0 / 15.0, on: .main, in: .common).autoconnect()
 
     init(_ source: String) {
         self.source = source
-        _shown = State(initialValue: source)
     }
 
     var body: some View {
-        MarkdownNSText(markdown: MarkdownText.preprocess(shown))
-            .onReceive(Self.tick) { _ in if shown != source { shown = source } }
+        MarkdownNSText(markdown: MarkdownText.preprocess(source))
     }
 }
 

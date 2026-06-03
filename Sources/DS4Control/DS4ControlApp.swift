@@ -7,6 +7,7 @@ struct DS4ControlApp: App {
     @StateObject private var metrics = MetricsManager()
     @StateObject private var supervisor: SupervisorService
     @StateObject private var chat: ChatViewModel
+    @State private var menuBarStartup = MenuBarStartupCoordinator()
 
     init() {
         MarkdownText.runResourceSelfTestIfRequested()  // headless bundle-resolution check (env-gated)
@@ -33,13 +34,7 @@ struct DS4ControlApp: App {
         MenuBarExtra {
             PopupView()
                 .environmentObject(app).environmentObject(metrics).environmentObject(supervisor)
-                .onAppear {
-                    metrics.start()
-                    supervisor.resumeRunningServerIfAny(port: app.port)
-                    supervisor.resumeInFlightDownloadIfAny(
-                        variant: app.selectedVariant, flashQuant: app.selectedFlashQuant,
-                        highPerformance: app.highPerformanceDownload)
-                }
+                .onAppear { startMenuBarServicesIfNeeded() }
         } label: {
             Image(systemName: iconName(for: supervisor.state))
                 .renderingMode(.template)
@@ -73,6 +68,22 @@ struct DS4ControlApp: App {
         default: return .secondary
         }
     }
+
+    private func startMenuBarServicesIfNeeded() {
+        guard !menuBarStartup.started else { return }
+        menuBarStartup.started = true
+        DispatchQueue.main.async {
+            metrics.start()
+            supervisor.resumeRunningServerIfAny(port: app.port)
+            supervisor.resumeInFlightDownloadIfAny(
+                variant: app.selectedVariant, flashQuant: app.selectedFlashQuant,
+                highPerformance: app.highPerformanceDownload)
+        }
+    }
+}
+
+private final class MenuBarStartupCoordinator {
+    var started = false
 }
 
 final class AppDelegate: NSObject, NSApplicationDelegate {

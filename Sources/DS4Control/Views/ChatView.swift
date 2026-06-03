@@ -25,9 +25,7 @@ struct ChatView: View {
     /// list grows the window backward when the user wants to scroll back.
     private static let transcriptWindowSize = 50
 
-    /// Stable id of a 1 pt anchor pinned to the end of the transcript, so the scroll view can be
-    /// told to follow the bottom as the latest reply streams in.
-    private static let bottomAnchorID = "transcript-bottom"
+    @State private var bottomSnapRequest = 0
 
     /// Extra older messages the user has explicitly expanded into the window via
     /// the "Show earlier" button. Reset to 0 on `clear` (handled by the
@@ -35,17 +33,141 @@ struct ChatView: View {
     /// fresh; if they keep chatting, the window keeps whatever they've loaded).
     @State private var transcriptExtraAbove = 0
 
-    /// Drives the bottom-follow while a reply streams (and briefly after); cancelled when it ends.
-    @State private var followTask: Task<Void, Never>?
-
-    /// Whether the user is still pinned to the bottom. False while they've scrolled up (so the
-    /// follow pauses and lets them read); true again once they return to the bottom.
-    @State private var userPinnedToBottom = true
+    /// Imperative scroll-follow bookkeeping. These values do not render UI, so they must not be
+    /// SwiftUI-publishing state: scroll geometry callbacks can run during layout, and publishing
+    /// from there dirties AttributeGraph while it is already placing the transcript.
+    @State private var scrollCoordinator = ScrollCoordinator()
 
     /// Scroll metrics observed (via `onScrollGeometryChange`) to drive the follow guard.
     private struct ScrollMetrics: Equatable {
         var offsetY: CGFloat
         var distanceFromBottom: CGFloat
+    }
+
+    private struct StreamingTailRevision: Equatable {
+        var messageID: UUID?
+        var messageCount: Int
+        var snapRequest: Int
+        var contentLength: Int
+        var thinkingLength: Int
+
+        var isActive: Bool { messageID != nil }
+
+        static let inactive = StreamingTailRevision(
+            messageID: nil,
+            messageCount: 0,
+            snapRequest: 0,
+            contentLength: 0,
+            thinkingLength: 0)
+    }
+
+    private final class ScrollCoordinator {
+        var userPinnedToBottom = true
+    }
+
+    private struct BottomScrollDriver: NSViewRepresentable {
+        let shouldFollow: Bool
+        let revision: StreamingTailRevision
+
+        func makeNSView(context _: Context) -> NSView {
+            let view = NSView(frame: .zero)
+            view.setContentHuggingPriority(.required, for: .vertical)
+            view.setContentCompressionResistancePriority(.required, for: .vertical)
+            return view
+        }
+
+        func updateNSView(_ view: NSView, context: Context) {
+            let snapRequested = context.coordinator.lastRevision.snapRequest != revision.snapRequest
+            guard shouldFollow || snapRequested else {
+                context.coordinator.lastRevision = revision
+                return
+            }
+
+            let rowCountChanged = context.coordinator.lastRevision.messageCount != revision.messageCount
+            let changed = context.coordinator.lastRevision != revision || !context.coordinator.didInitialScroll
+            context.coordinator.lastRevision = revision
+            context.coordinator.didInitialScroll = true
+            guard changed, !context.coordinator.scrollScheduled else { return }
+
+            context.coordinator.scrollScheduled = true
+            DispatchQueue.main.async { [weak view, weak coordinator = context.coordinator] in
+                coordinator?.scrollScheduled = false
+                guard let view else { return }
+                Self.scrollTranscriptToBottom(from: view)
+            }
+            if rowCountChanged {
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) { [weak view] in
+                    guard let view else { return }
+                    Self.scrollTranscriptToBottom(from: view)
+                }
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.15) { [weak view] in
+                    guard let view else { return }
+                    Self.scrollTranscriptToBottom(from: view)
+                }
+            }
+        }
+
+        private static func scrollTranscriptToBottom(from view: NSView) {
+            guard let scrollView = findTranscriptScrollView(from: view),
+                let documentView = scrollView.documentView
+            else { return }
+
+            scrollView.layoutSubtreeIfNeeded()
+            documentView.layoutSubtreeIfNeeded()
+
+            let bottomY = max(0, documentView.frame.height - scrollView.contentView.bounds.height)
+            let point = NSPoint(x: scrollView.contentView.bounds.origin.x, y: bottomY)
+            scrollView.contentView.scroll(to: point)
+            scrollView.reflectScrolledClipView(scrollView.contentView)
+        }
+
+        private static func findTranscriptScrollView(from view: NSView) -> NSScrollView? {
+            if let enclosing = view.enclosingScrollView { return enclosing }
+
+            var current: NSView? = view
+            while let candidate = current {
+                if let scrollView = findLargestVerticalScrollView(in: candidate) {
+                    return scrollView
+                }
+                current = candidate.superview
+            }
+
+            guard let contentView = view.window?.contentView else { return nil }
+            return findLargestVerticalScrollView(in: contentView)
+        }
+
+        private static func findLargestVerticalScrollView(in root: NSView) -> NSScrollView? {
+            var best: NSScrollView?
+            var bestArea: CGFloat = 0
+
+            func visit(_ view: NSView) {
+                if let scrollView = view as? NSScrollView,
+                    let documentView = scrollView.documentView
+                {
+                    let scrollableHeight = documentView.frame.height - scrollView.contentView.bounds.height
+                    let area = scrollView.bounds.width * scrollView.bounds.height
+                    if scrollableHeight > 1, area > bestArea {
+                        best = scrollView
+                        bestArea = area
+                    }
+                }
+
+                for subview in view.subviews {
+                    visit(subview)
+                }
+            }
+
+            visit(root)
+            return best
+        }
+
+        func makeCoordinator() -> Coordinator { Coordinator() }
+
+        final class Coordinator {
+            var lastRevision = StreamingTailRevision.inactive
+            var didInitialScroll = false
+            var scrollScheduled = false
+        }
     }
 
     var body: some View {
@@ -112,116 +234,98 @@ struct ChatView: View {
     }
 
     private var transcript: some View {
-        ScrollViewReader { proxy in
-            ScrollView {
-                LazyVStack(spacing: 12) {
-                    let window = transcriptWindow()
-                    let hiddenAbove = viewModel.messages.count - window.count
-                    if hiddenAbove > 0 {
-                        // "Show earlier" affordance — tap to grow the window backward by
-                        // another `transcriptWindowSize`. Each click materialises another
-                        // batch of older bubbles into the view tree, which is expensive
-                        // (re-measures, lays out, invalidates the layout cache) — but it's
-                        // an explicit user action, not a per-token cost.
-                        Button {
-                            transcriptExtraAbove += min(hiddenAbove, Self.transcriptWindowSize)
-                        } label: {
-                            HStack(spacing: 6) {
-                                Image(systemName: "arrow.up.circle")
-                                Text(
-                                    "Show \(min(hiddenAbove, Self.transcriptWindowSize)) earlier message\(hiddenAbove == 1 ? "" : "s")"
-                                )
-                            }
-                            .font(.callout)
-                            .foregroundStyle(.secondary)
-                            .frame(maxWidth: .infinity, alignment: .center)
-                            .padding(.vertical, 8)
-                            .background(Color(.controlBackgroundColor).opacity(0.5))
-                            .clipShape(RoundedRectangle(cornerRadius: 8))
-                        }
-                        .buttonStyle(.plain)
+        List {
+            let window = transcriptWindow()
+            let hiddenAbove = viewModel.messages.count - window.count
+            if hiddenAbove > 0 {
+                // "Show earlier" affordance — tap to grow the window backward by another
+                // `transcriptWindowSize`. The system list keeps rows outside the viewport
+                // virtualized, so expanded history is not fully materialized during streaming.
+                Button {
+                    transcriptExtraAbove += min(hiddenAbove, Self.transcriptWindowSize)
+                } label: {
+                    HStack(spacing: 6) {
+                        Image(systemName: "arrow.up.circle")
+                        Text(
+                            "Show \(min(hiddenAbove, Self.transcriptWindowSize)) earlier message\(hiddenAbove == 1 ? "" : "s")"
+                        )
                     }
-                    ForEach(window) { message in
-                        MessageBubble(message: message)
-                            .id(message.id)
-                    }
-                    if viewModel.isStreaming && !viewModel.hasReceivedFirstToken {
-                        HStack {
-                            GeneratingIndicator()
-                            Spacer()
-                        }
-                    }
-                    // Invisible tail anchor — always the last element — that the scroll view is
-                    // told to follow, so the newest content stays in view.
-                    Color.clear.frame(height: 1).id(Self.bottomAnchorID)
+                    .font(.callout)
+                    .foregroundStyle(.secondary)
+                    .frame(maxWidth: .infinity, alignment: .center)
+                    .padding(.vertical, 8)
+                    .background(Color(.controlBackgroundColor).opacity(0.5))
+                    .clipShape(RoundedRectangle(cornerRadius: 8))
                 }
-                .padding(16)
+                .buttonStyle(.plain)
+                .listRowInsets(EdgeInsets(top: 6, leading: 16, bottom: 6, trailing: 16))
+                .listRowSeparator(.hidden)
+                .listRowBackground(Color.clear)
             }
-            // Keep the newest content in view (no `.defaultScrollAnchor` — it fought the explicit
-            // scroll and flickered). New messages jump to the bottom; while a reply streams a
-            // ~30 Hz loop follows the bottom, but only while the user is pinned there — scrolling
-            // up pauses the follow so they can read. On finish, a single delayed re-anchor lands
-            // after the bubble re-renders as one view and its layout settles.
-            .onAppear {
-                anchorBottom(proxy)
-                if viewModel.isStreaming { startBottomFollow(proxy) }
+            ForEach(window) { message in
+                MessageBubble(message: message)
+                    .listRowInsets(EdgeInsets(top: 6, leading: 16, bottom: 6, trailing: 16))
+                    .listRowSeparator(.hidden)
+                    .listRowBackground(Color.clear)
             }
-            .onChange(of: viewModel.messages.count) { _, _ in
-                userPinnedToBottom = true
-                anchorBottom(proxy)
-            }
-            .onChange(of: viewModel.isStreaming) { _, streaming in
-                if streaming { startBottomFollow(proxy) }
-            }
-            .onScrollGeometryChange(for: ScrollMetrics.self) { geometry in
-                ScrollMetrics(
-                    offsetY: geometry.contentOffset.y,
-                    distanceFromBottom: geometry.contentSize.height - geometry.visibleRect.maxY)
-            } action: { old, new in
-                // Disengage the follow only on a deliberate scroll-up — the offset *decreases*.
-                // Streaming growth pushes the bottom away (distance grows) but leaves the offset
-                // unchanged, so it must NOT unpin. Re-engage once the view is back at the bottom.
-                if new.offsetY < old.offsetY - 40 {
-                    userPinnedToBottom = false
-                } else if new.distanceFromBottom < 24 {
-                    userPinnedToBottom = true
+            if viewModel.isStreaming && !viewModel.hasReceivedFirstToken {
+                HStack {
+                    GeneratingIndicator()
+                    Spacer()
                 }
+                .listRowInsets(EdgeInsets(top: 6, leading: 16, bottom: 6, trailing: 16))
+                .listRowSeparator(.hidden)
+                .listRowBackground(Color.clear)
             }
-            .onDisappear {
-                followTask?.cancel()
-                followTask = nil
+        }
+        .listStyle(.plain)
+        .scrollContentBackground(.hidden)
+        .overlay(alignment: .bottom) {
+            BottomScrollDriver(
+                shouldFollow: scrollCoordinator.userPinnedToBottom,
+                revision: streamingTailRevision
+            )
+            .frame(width: 1, height: 1)
+            .allowsHitTesting(false)
+        }
+        .onChange(of: viewModel.messages.count) { _, _ in
+            scrollCoordinator.userPinnedToBottom = true
+        }
+        .onScrollGeometryChange(for: ScrollMetrics.self) { geometry in
+            ScrollMetrics(
+                offsetY: geometry.contentOffset.y,
+                distanceFromBottom: geometry.contentSize.height - geometry.visibleRect.maxY)
+        } action: { old, new in
+            // Disengage the follow only on a deliberate scroll-up — the offset *decreases*.
+            // Streaming growth pushes the bottom away (distance grows) but leaves the offset
+            // unchanged, so it must NOT unpin. Re-engage once the view is back at the bottom.
+            if new.offsetY < old.offsetY - 40 {
+                scrollCoordinator.userPinnedToBottom = false
+            } else if new.distanceFromBottom < 24 {
+                scrollCoordinator.userPinnedToBottom = true
             }
         }
     }
 
-    /// Scrolls the transcript so the tail anchor sits at the bottom, with animation disabled so
-    /// the rapid streaming re-anchors don't visibly animate (the flicker source).
-    private func anchorBottom(_ proxy: ScrollViewProxy) {
-        var transaction = Transaction()
-        transaction.disablesAnimations = true
-        withTransaction(transaction) {
-            proxy.scrollTo(Self.bottomAnchorID, anchor: .bottom)
-        }
+    private var streamingTailRevision: StreamingTailRevision {
+        guard viewModel.isStreaming,
+            let message = viewModel.messages.last,
+            message.isStreaming
+        else { return .inactive }
+
+        return StreamingTailRevision(
+            messageID: message.id,
+            messageCount: viewModel.messages.count,
+            snapRequest: bottomSnapRequest,
+            contentLength: message.content.utf8.count,
+            thinkingLength: message.thinking.utf8.count)
     }
 
-    /// Follows the bottom at ~30 Hz while a reply streams (only while the user stays pinned to the
-    /// bottom), then — ~500 ms after streaming ends, once the bubble has re-rendered as a single
-    /// view and its layout has settled — re-anchors one last time. The loop self-cancels on the
-    /// next stream or on disappear.
-    private func startBottomFollow(_ proxy: ScrollViewProxy) {
-        followTask?.cancel()
-        followTask = Task { @MainActor in
-            while !Task.isCancelled && viewModel.isStreaming {
-                if userPinnedToBottom { anchorBottom(proxy) }
-                try? await Task.sleep(nanoseconds: 33_000_000)  // ~30 Hz
-            }
-            // Capture the pinned state at stream-end, before the finalize re-render (block-split →
-            // single view) can shift the content height and flip the guard; if the user was
-            // following, land one last anchor after it settles.
-            let wasPinned = userPinnedToBottom
-            try? await Task.sleep(nanoseconds: 500_000_000)  // let the finalize re-render settle
-            if !Task.isCancelled && wasPinned { anchorBottom(proxy) }
-        }
+    private func submitMessage() {
+        guard supervisor.state == .ready, viewModel.canSend else { return }
+        scrollCoordinator.userPinnedToBottom = true
+        viewModel.send()
+        bottomSnapRequest &+= 1
     }
 
     /// Slices the message list to the active window: the last
@@ -267,7 +371,7 @@ struct ChatView: View {
                             return .handled
                         }
                         if supervisor.state == .ready, viewModel.canSend {
-                            viewModel.send()
+                            submitMessage()
                         }
                         return .handled
                     }
@@ -277,7 +381,7 @@ struct ChatView: View {
                     if viewModel.isStreaming {
                         viewModel.stop()
                     } else {
-                        viewModel.send()
+                        submitMessage()
                     }
                 } label: {
                     Image(systemName: viewModel.isStreaming ? "stop.circle.fill" : "arrow.up.circle.fill")
@@ -417,30 +521,21 @@ struct ThinkingDisclosure: View {
     }
 }
 
-/// Minimal three-dot pulse shown while awaiting the first streamed token.
+/// Minimal three-dot indicator shown while awaiting the first streamed token.
 /// Fresh DS4 code (mlx-serve's original was a GPU-telemetry animation).
 struct GeneratingIndicator: View {
-    @State private var animating = false
-
     var body: some View {
         HStack(spacing: 4) {
             ForEach(0..<3, id: \.self) { index in
                 Circle()
                     .fill(.secondary)
                     .frame(width: 8, height: 8)
-                    .opacity(animating ? 1 : 0.3)
-                    .animation(
-                        .easeInOut(duration: 0.5)
-                            .repeatForever(autoreverses: true)
-                            .delay(Double(index) * 0.15),
-                        value: animating
-                    )
+                    .opacity(1.0 - Double(index) * 0.25)
             }
         }
         .padding(.horizontal, 14)
         .padding(.vertical, 12)
         .background(Color(nsColor: .controlBackgroundColor))
         .clipShape(RoundedRectangle(cornerRadius: 18))
-        .onAppear { animating = true }
     }
 }
