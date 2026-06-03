@@ -141,11 +141,15 @@ private struct MarkdownBlockView: View, Equatable {
 
 extension View {
     /// The DS4 markdown look: Textual's `.gitHub` style — whose colors are `DynamicColor`
-    /// light/dark pairs, so it tracks the system appearance via the SwiftUI `colorScheme` —
-    /// plus native text selection.
+    /// light/dark pairs, so it tracks the system appearance via the SwiftUI `colorScheme`.
+    ///
+    /// Textual's native text selection (`.textual.textSelection(.enabled)`) is intentionally
+    /// omitted: its AppKit selection overlay (`AppKitTextSelectionView` + per-fragment
+    /// `GeometryReader`s + `@Environment` keypath/metadata resolution) pegs the main thread when
+    /// scrolling a transcript of many bubbles — a profiled 100% main-thread AttributeGraph storm.
+    /// Copy stays available through the bubble's context menu ("Copy Message").
     fileprivate func ds4MarkdownStyle() -> some View {
         self
             .textual.structuredTextStyle(.gitHub)
-            .textual.textSelection(.enabled)
     }
 }
