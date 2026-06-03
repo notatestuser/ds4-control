@@ -13,8 +13,6 @@ A macOS menu-bar control pane for **DeepSeek V4** via [`ds4`](https://github.com
   </picture>
 </p>
 
-<br>
-
 <p align="center">
   <a href="https://github.com/notatestuser/ds4-control/releases/latest">
     <img src="https://img.shields.io/badge/Download-DS4%20Control%20for%20macOS%20(.dmg)-1f6feb?style=for-the-badge&logo=apple&logoColor=white" alt="Download the latest DS4 Control .dmg for macOS" height="46">
