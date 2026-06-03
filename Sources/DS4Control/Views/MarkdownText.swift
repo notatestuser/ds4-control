@@ -11,6 +11,7 @@
 // binding — so layout converges in one pass. Selection, code highlighting, tables and math are
 // still handled inside `MarkdownTextView`.
 
+import AppKit
 import Combine
 import MarkdownParser
 import MarkdownView
@@ -106,6 +107,22 @@ struct MarkdownText: View {
         guard s.hasPrefix("</"), s.hasSuffix(">") else { return nil }
         let name = s.dropFirst(2).dropLast().prefix { $0.isLetter || $0 == "_" }
         return name.isEmpty ? nil : String(name)
+    }
+}
+
+extension MarkdownText {
+    /// Debug-only smoke test for the SwiftPM resource-bundle load path — the one that crashed the
+    /// shipped .app when Highlightr's/SwiftMath's bundles weren't resolvable (`Bundle.module`
+    /// `fatalError`). Building a code block + math forces Highlightr and SwiftMath to load their
+    /// resource bundles. Gated by `DS4_SELFTEST_MARKDOWN=1` so it's inert in normal use; build.sh/CI
+    /// runs the packaged binary with the env set to verify the bundles resolve before shipping.
+    @MainActor static func runResourceSelfTestIfRequested() {
+        guard ProcessInfo.processInfo.environment["DS4_SELFTEST_MARKDOWN"] == "1" else { return }
+        _ = NSApplication.shared  // math rendering reads NSApp.effectiveAppearance; set NSApp first
+        let md = "```swift\nlet x = 1\n```\n\nInline math: $x^2 + 1$\n"
+        _ = MarkdownTextView.PreprocessedContent(parserResult: MarkdownParser().parse(md), theme: .default)
+        FileHandle.standardError.write(Data("DS4_SELFTEST_MARKDOWN: OK\n".utf8))
+        exit(0)
     }
 }
 

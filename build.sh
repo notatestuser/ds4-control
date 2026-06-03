@@ -8,6 +8,39 @@ APP="$APP_NAME.app"
 VERSION="${APP_VERSION:-${DS4_CONTROL_VERSION:-$(date +%y.%-m.0)}}"
 BUILD="${APP_BUILD:-$VERSION}"
 
+# SwiftPM generates each dependency's resource-bundle accessor to look for `X.bundle` at
+# `Bundle.main.bundleURL` (the .app ROOT once packaged — where macOS forbids unsealed content)
+# with a dev-machine-absolute `.build` fallback, so the shipped .app can't find them and crashes
+# (`Bundle.module` fatalError on the first code/math render). We place the bundles in
+# Contents/Resources (sealed, notarizable); to make the accessor look THERE, intercept the compiler
+# via SWIFT_EXEC and rewrite `Bundle.main.bundleURL` → `(Bundle.main.resourceURL ?? …)` just before
+# each compile. SwiftPM regenerates the accessor every build, so patching the file directly is wiped
+# — patching between regeneration and compilation (here) survives. `resourceURL` is Contents/Resources
+# in the .app and falls back to the executable dir for `swift run`/tests, so local runs still work.
+WRAP="$(mktemp -t ds4-swiftc-wrap).sh"
+cat > "$WRAP" <<'WRAP_EOF'
+#!/bin/bash
+patch_file() {
+  local f="$1"
+  if [ -f "$f" ] && grep -q 'Bundle\.main\.bundleURL' "$f" && ! grep -q 'resourceURL ?? Bundle.main.bundleURL' "$f"; then
+    sed -i '' 's/Bundle\.main\.bundleURL/(Bundle.main.resourceURL ?? Bundle.main.bundleURL)/g' "$f"
+  fi
+}
+for arg in "$@"; do
+  case "$arg" in
+    *resource_bundle_accessor.swift) patch_file "$arg" ;;
+    @*) rf="${arg#@}"; [ -f "$rf" ] && grep -o '[^"]*resource_bundle_accessor.swift' "$rf" 2>/dev/null | while read -r s; do patch_file "$s"; done ;;
+  esac
+done
+exec xcrun swiftc "$@"
+WRAP_EOF
+chmod +x "$WRAP"
+export SWIFT_EXEC="$WRAP"
+trap 'rm -f "$WRAP"' EXIT
+# Force the accessors to regenerate+recompile this build so the interceptor definitely patches them
+# (a no-op for a fresh CI checkout; matters for incremental local builds).
+find .build -name resource_bundle_accessor.swift -delete 2>/dev/null || true
+
 echo "→ swift build (release)"
 swift build -c release 2>&1 | tail -3
 BIN_DIR="$(swift build -c release --show-bin-path)"

@@ -9,6 +9,7 @@ struct DS4ControlApp: App {
     @StateObject private var chat: ChatViewModel
 
     init() {
+        MarkdownText.runResourceSelfTestIfRequested()  // headless bundle-resolution check (env-gated)
         let app = AppState()
         _app = StateObject(wrappedValue: app)  // same instance the chat closures read, so the UI's toggles reach it
         let supervisor = SupervisorService(
