@@ -28,7 +28,31 @@ echo "→ bundle SwiftPM resource bundles"
 shopt -s nullglob
 for b in "$BIN_DIR"/*.bundle; do
   cp -R "$b" "$APP/Contents/Resources/"
-  echo "  + $(basename "$b")"
+  dest="$APP/Contents/Resources/$(basename "$b")"
+  # Some SwiftPM resource bundles (e.g. Highlightr) ship data-only with no Info.plist, which
+  # makes `codesign` reject them ("bundle format unrecognized") during Developer ID signing /
+  # notarization in the release pipeline. Synthesize a minimal Info.plist so they sign as
+  # resource bundles — matching the layout of the deps that already include one.
+  if [ ! -f "$dest/Info.plist" ] && [ ! -f "$dest/Contents/Info.plist" ]; then
+    name="$(basename "$b" .bundle)"
+    cat > "$dest/Info.plist" <<PLIST
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>CFBundleInfoDictionaryVersion</key><string>6.0</string>
+  <key>CFBundlePackageType</key><string>BNDL</string>
+  <key>CFBundleIdentifier</key><string>sg.embeddedtech.ds4control.resources.$(echo "$name" | tr '_' '-')</string>
+  <key>CFBundleName</key><string>$name</string>
+  <key>CFBundleShortVersionString</key><string>1.0</string>
+  <key>CFBundleVersion</key><string>1</string>
+</dict>
+</plist>
+PLIST
+    echo "  + $(basename "$b") (synthesized Info.plist)"
+  else
+    echo "  + $(basename "$b")"
+  fi
 done
 shopt -u nullglob
 # Regression guard: Highlightr's bundle is what crashed v1.0.0 when absent. Fail the build
