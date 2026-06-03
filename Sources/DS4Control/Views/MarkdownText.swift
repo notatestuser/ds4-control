@@ -17,10 +17,6 @@ struct MarkdownText: View {
     var body: some View {
         StructuredText(markdown: Self.preprocess(source))
             .ds4MarkdownStyle()
-            // SwiftUI's own text selection (NOT Textual's `.textual.textSelection`, which froze the
-            // main thread on scroll). Applied only on this finished-bubble renderer — the streaming
-            // renderer (StreamingMarkdownText) has none, so selection appears once a reply is done.
-            .textSelection(.enabled)
     }
 
     /// LaTeX cleanup + tag stripping applied before handing markdown to Textual. Pure and
@@ -151,7 +147,9 @@ extension View {
     /// omitted: its AppKit selection overlay (`AppKitTextSelectionView` + per-fragment
     /// `GeometryReader`s + `@Environment` keypath/metadata resolution) pegs the main thread when
     /// scrolling a transcript of many bubbles — a profiled 100% main-thread AttributeGraph storm.
-    /// Copy stays available through the bubble's context menu ("Copy Message").
+    /// Copy stays available through the bubble's context menu ("Copy Message"). Note: SwiftUI's own
+    /// `.textSelection(.enabled)` is NOT a workaround — Textual reads SwiftUI's `textSelectability`
+    /// environment and activates the same overlay (re-profiled: identical scroll freeze).
     fileprivate func ds4MarkdownStyle() -> some View {
         self
             .textual.structuredTextStyle(.gitHub)
