@@ -46,9 +46,9 @@ What it is **not**:
 
 1. **Build ds4** — clone and build [antirez/ds4](https://github.com/antirez/ds4) so you have the `ds4-server` binary and `download_model.sh`.
 2. **Build DS4 Control** — `bash build.sh`, then open `DS4 Control.app` (or `swift run` during development).
-3. **Point it at ds4** — click the menu-bar icon → the gear → set the **ds4 directory** to your ds4 checkout.
-4. **Pick a model** — choose **Pro** or **Flash** (the app preselects based on your installed RAM).
-5. **Start** — click **Start** (or **Download** first if the model isn't present yet). Watch the icon go orange → green and unified memory climb as the model loads — no terminal required.
+3. **Pick a model** — choose **Pro** or **Flash** (the app preselects based on your installed RAM).
+4. **Start** — click **Start** (or **Download** first if the model isn't present yet).
+5. Do things with DeepSeek.
 
 ## Requirements
 
