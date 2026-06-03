@@ -34,6 +34,8 @@ A macOS menu-bar control pane for **DeepSeek V4** via [`ds4`](https://github.com
 - **Pro / Flash selector** with a RAM-feasibility gate (Pro defaults on machines with ≥ 512 GiB unified memory).
 - **Model downloads** delegated to ds4's `download_model.sh`, with a live progress bar parsed from the downloader's output (`hf`/tqdm or `curl`).
 - **Mini resource widgets**: unified memory (hero), GPU, power/ANE, and CPU, sampled on a 2 s timer.
+- **Launch Chat** to talk to the model.
+- **Launch Claude Code or Pi** to plan, write, maintain or refactor code.
 
 What it is **not**:
 
