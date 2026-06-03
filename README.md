@@ -21,47 +21,53 @@ A macOS menu-bar control pane for **DeepSeek V4** via [`ds4`](https://github.com
 
 <p align="center">
   <b>Signed with a live Apple Developer ID &amp; notarized by Apple.</b><br>
-  <sub>Opens the <a href="https://github.com/notatestuser/ds4-control/releases/latest">latest release</a> — always the newest signed build</sub>
+  <sub>**NOTE: Make sure you have the Hugging Face CLI installed for model downloads: <code>brew install hf</code>**</sub>
 </p>
+
+## Prerequisites
+
+- Hugging Face CLI for model downloads: `brew install hf`
 
 ## What it does
 
 - **Start / stop / monitor** the local `ds4-server` child process — spawn, stderr readiness detection, health polling, graceful stop, and crash detection.
 - **Pro / Flash selector** with a RAM-feasibility gate (Pro defaults on machines with ≥ 512 GiB unified memory).
-- **Model downloads** via a built-in native parallel downloader, with a live progress bar (speed, MB, %) and resume across restarts.
+- **Model downloads** delegated to ds4's `download_model.sh`, with a live progress bar parsed from the downloader's output (`hf`/tqdm or `curl`).
 - **Mini resource widgets**: unified memory (hero), GPU, power/ANE, and CPU, sampled on a 2 s timer.
+- **Launch Chat** to talk to the model.
+- **Launch Claude Code or Pi** to plan, write, maintain or refactor code.
 
 What it is **not**:
 
 - No model search or registry browsing.
-- No embedded inference — all inference is delegated to `ds4-server`. This app only supervises the process and surfaces system metrics.
+- No embedded inference — all inference is delegated to `ds4-server`.
 
-## Screenshot
-
-## Quick start
+## Dev quick start
 
 1. **Build ds4** — clone and build [antirez/ds4](https://github.com/antirez/ds4) so you have the `ds4-server` binary and `download_model.sh`.
 2. **Build DS4 Control** — `bash build.sh`, then open `DS4 Control.app` (or `swift run` during development).
-3. **Point it at ds4** — click the menu-bar icon → the gear → set the **ds4 directory** to your ds4 checkout.
-4. **Pick a model** — choose **Pro** or **Flash** (the app preselects based on your installed RAM).
-5. **Start** — click **Start** (or **Download** first if the model isn't present yet). Watch the icon go orange → green and unified memory climb as the model loads — no terminal required.
+3. **Pick a model** — choose **Pro** or **Flash** (the app preselects based on your installed RAM).
+4. **Start** — click **Start** (or **Download** first if the model isn't present yet).
+5. Do things with DeepSeek.
 
 ## Requirements
 
 - **Apple Silicon**
-- You do **not** pre-download the model — DS4 Control downloads it for you with a built-in parallel downloader, resumable across restarts.
-- **Auth (optional):** the model repository is public, so no token is required for normal use.
+- Hugging Face CLI needed for model downloads: `brew install hf`
+- You do **not** pre-download the model — DS4 Control downloads it for you via ds4's `download_model.sh`.
+- **HuggingFace Xet:** the model GGUFs are served from HF's Xet storage, which a plain-`curl` downloader can't fetch. `download_model.sh` must use the `hf` CLI (`pip install -U huggingface_hub`); the app parses progress from either `hf`/tqdm or `curl` output.
+- **Auth (optional):** the repo is public, so no token is required. If a token is present in the `HF_TOKEN` environment variable or the local hf cache (`hf auth login`), the app forwards it to the downloader **via the environment** (never `--token`, so it can't leak in `ps`). Authenticating can help avoid anonymous rate-limits/throttling.
+- **RAM** - see below.
 
 ## RAM feasibility
 
-DeepSeek V4 is memory-hungry, and `ds4-server` enforces no RAM floor itself — so DS4 Control gates feasibility before launching.
+DeepSeek V4 is memory-hungry so DS4 Control gates feasibility before launching.
 
 | Variant | Quant | RAM | Notes |
 | --- | --- | --- | --- |
 | V4 Pro | pro-imatrix | **≥ 512 GiB required** | Anything below is blocked. |
 | V4 Flash | q4-imatrix | ≥ 256 GiB | Standard. |
-| V4 Flash | q2-imatrix | **128 GiB recommended**, 96 GiB minimum | 96–127 GiB requires raising the Metal wired limit (see below). |
-| V4 Flash | — | **< 96 GiB unsupported** | Hidden behind an opt-in "unsupported low-RAM mode" toggle; may swap or crash. Not usable for real generation. |
+| V4 Flash | q2-imatrix | 96 GiB minimum | 96–127 GiB requires raising the Metal wired limit (see below). |
 
 On **96–127 GiB** machines you must raise the Metal wired limit so the GPU working set fits, e.g.:
 
@@ -110,8 +116,6 @@ To sign with your own key:
 
 - Install an Apple Development certificate (Xcode → Settings → Accounts → Manage Certificates → **+** → Apple Development), **or**
 - Set `DS4_SIGN_IDENTITY="Apple Development: …"` before running `build.sh`.
-
-There is no notarization in v1.
 
 ## Known limitations
 
