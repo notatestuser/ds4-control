@@ -6,10 +6,12 @@ A macOS menu-bar control pane for **DeepSeek V4** via [`ds4`](https://github.com
 
 <br>
 
-<picture>
-  <source media="(prefers-color-scheme: dark)" srcset="docs/screenshot-dark-v5.png">
-  <img alt="DS4 Control: the menu-bar popup (Pro/Flash selector with unified-memory, GPU, CPU and power widgets) next to the chat window showing per-message timing/throughput and a context-usage bar" src="docs/screenshot-light-v5.png">
-</picture>
+<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="docs/screenshot-dark-v6.png">
+    <img alt="DS4 Control menu-bar popup: the V4 Pro/Flash selector, a Unified Memory hero gauge, GPU, CPU and power widgets, and gear/chat/terminal shortcuts" src="docs/screenshot-light-v6.png" width="380">
+  </picture>
+</p>
 
 <br>
 <br>
