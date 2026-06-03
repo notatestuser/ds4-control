@@ -57,10 +57,11 @@ What it is **not**:
 - You do **not** pre-download the model — DS4 Control downloads it for you via ds4's `download_model.sh`.
 - **HuggingFace Xet:** the model GGUFs are served from HF's Xet storage, which a plain-`curl` downloader can't fetch. `download_model.sh` must use the `hf` CLI (`pip install -U huggingface_hub`); the app parses progress from either `hf`/tqdm or `curl` output.
 - **Auth (optional):** the repo is public, so no token is required. If a token is present in the `HF_TOKEN` environment variable or the local hf cache (`hf auth login`), the app forwards it to the downloader **via the environment** (never `--token`, so it can't leak in `ps`). Authenticating can help avoid anonymous rate-limits/throttling.
+- **RAM** - see below.
 
 ## RAM feasibility
 
-DeepSeek V4 is memory-hungry, and `ds4-server` enforces no RAM floor itself — so DS4 Control gates feasibility before launching.
+DeepSeek V4 is memory-hungry so DS4 Control gates feasibility before launching.
 
 | Variant | Quant | RAM | Notes |
 | --- | --- | --- | --- |
