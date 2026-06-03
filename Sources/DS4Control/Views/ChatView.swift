@@ -35,8 +35,12 @@ struct ChatView: View {
     /// fresh; if they keep chatting, the window keeps whatever they've loaded).
     @State private var transcriptExtraAbove = 0
 
-    /// Drives the continuous bottom-follow while a reply streams; cancelled when it ends.
+    /// Drives the bottom-follow while a reply streams (and briefly after); cancelled when it ends.
     @State private var followTask: Task<Void, Never>?
+
+    /// Whether the user is still pinned to the bottom. False while they've scrolled up (so the
+    /// follow pauses and lets them read); true again once they return to the bottom.
+    @State private var userPinnedToBottom = true
 
     var body: some View {
         VStack(spacing: 0) {
@@ -147,26 +151,28 @@ struct ChatView: View {
                 }
                 .padding(16)
             }
-            // Keep the newest content in view without `.defaultScrollAnchor` (it fought the
-            // explicit scroll and flickered). The initial open and each new message jump to the
-            // bottom; while a reply streams, a ~30 Hz loop re-anchors continuously — decoupled
-            // from the 33 ms token flush, so fast growth tracks smoothly instead of drifting then
-            // snapping; on finish, one more anchor lands after the finalize + stats-line render.
+            // Keep the newest content in view (no `.defaultScrollAnchor` — it fought the explicit
+            // scroll and flickered). New messages jump to the bottom; while a reply streams a
+            // ~30 Hz loop follows the bottom, but only while the user is pinned there — scrolling
+            // up pauses the follow so they can read. On finish, a single delayed re-anchor lands
+            // after the bubble re-renders as one view and its layout settles.
             .onAppear {
                 anchorBottom(proxy)
                 if viewModel.isStreaming { startBottomFollow(proxy) }
             }
             .onChange(of: viewModel.messages.count) { _, _ in
+                userPinnedToBottom = true
                 anchorBottom(proxy)
             }
             .onChange(of: viewModel.isStreaming) { _, streaming in
-                if streaming {
-                    startBottomFollow(proxy)
-                } else {
-                    followTask?.cancel()
-                    followTask = nil
-                    Task { @MainActor in anchorBottom(proxy) }
-                }
+                if streaming { startBottomFollow(proxy) }
+            }
+            .onScrollGeometryChange(for: Bool.self) { geometry in
+                // Pinned when the viewport bottom is within ~100 pt of the content bottom.
+                // Per-tick streaming growth stays under that, so only a deliberate scroll-up unpins.
+                geometry.contentSize.height - geometry.visibleRect.maxY < 100
+            } action: { _, pinned in
+                userPinnedToBottom = pinned
             }
             .onDisappear {
                 followTask?.cancel()
@@ -185,15 +191,19 @@ struct ChatView: View {
         }
     }
 
-    /// While a reply streams, re-anchor to the bottom at ~30 Hz — independent of the token-flush
-    /// cadence — so the view tracks fast growth smoothly. The loop self-cancels when streaming ends.
+    /// Follows the bottom at ~30 Hz while a reply streams (only while the user stays pinned to the
+    /// bottom), then — ~500 ms after streaming ends, once the bubble has re-rendered as a single
+    /// view and its layout has settled — re-anchors one last time. The loop self-cancels on the
+    /// next stream or on disappear.
     private func startBottomFollow(_ proxy: ScrollViewProxy) {
         followTask?.cancel()
         followTask = Task { @MainActor in
             while !Task.isCancelled && viewModel.isStreaming {
-                anchorBottom(proxy)
+                if userPinnedToBottom { anchorBottom(proxy) }
                 try? await Task.sleep(nanoseconds: 33_000_000)  // ~30 Hz
             }
+            try? await Task.sleep(nanoseconds: 500_000_000)  // let the finalize re-render settle
+            if !Task.isCancelled && userPinnedToBottom { anchorBottom(proxy) }
         }
     }
 
