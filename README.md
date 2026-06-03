@@ -117,8 +117,6 @@ To sign with your own key:
 - Install an Apple Development certificate (Xcode → Settings → Accounts → Manage Certificates → **+** → Apple Development), **or**
 - Set `DS4_SIGN_IDENTITY="Apple Development: …"` before running `build.sh`.
 
-There is no notarization in v1.
-
 ## Known limitations
 
 1. Changing the **ds4 directory** in Settings takes effect on the next launch.
