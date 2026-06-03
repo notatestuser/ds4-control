@@ -23,8 +23,7 @@ A macOS menu-bar control pane for **DeepSeek V4** via [`ds4`](https://github.com
 
 <p align="center">
   <b>Signed with a live Apple Developer ID &amp; notarized by Apple.</b><br>
-  The <code>.dmg</code> passes Gatekeeper cleanly — no “unidentified developer” warning and no right-click&nbsp;→&nbsp;Open workaround. macOS&nbsp;15+ · Apple&nbsp;silicon.<br>
-  <sub>Opens the <a href="https://github.com/notatestuser/ds4-control/releases/latest">latest release</a> — always the newest signed build · <a href="https://github.com/notatestuser/ds4-control/releases">all releases</a></sub>
+  <sub>Opens the <a href="https://github.com/notatestuser/ds4-control/releases/latest">latest release</a> — always the newest signed build</sub>
 </p>
 
 ## What it does
