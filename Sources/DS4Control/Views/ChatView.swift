@@ -42,6 +42,12 @@ struct ChatView: View {
     /// follow pauses and lets them read); true again once they return to the bottom.
     @State private var userPinnedToBottom = true
 
+    /// Scroll metrics observed (via `onScrollGeometryChange`) to drive the follow guard.
+    private struct ScrollMetrics: Equatable {
+        var offsetY: CGFloat
+        var distanceFromBottom: CGFloat
+    }
+
     var body: some View {
         VStack(spacing: 0) {
             header
@@ -167,12 +173,19 @@ struct ChatView: View {
             .onChange(of: viewModel.isStreaming) { _, streaming in
                 if streaming { startBottomFollow(proxy) }
             }
-            .onScrollGeometryChange(for: Bool.self) { geometry in
-                // Pinned when the viewport bottom is within ~100 pt of the content bottom.
-                // Per-tick streaming growth stays under that, so only a deliberate scroll-up unpins.
-                geometry.contentSize.height - geometry.visibleRect.maxY < 100
-            } action: { _, pinned in
-                userPinnedToBottom = pinned
+            .onScrollGeometryChange(for: ScrollMetrics.self) { geometry in
+                ScrollMetrics(
+                    offsetY: geometry.contentOffset.y,
+                    distanceFromBottom: geometry.contentSize.height - geometry.visibleRect.maxY)
+            } action: { old, new in
+                // Disengage the follow only on a deliberate scroll-up — the offset *decreases*.
+                // Streaming growth pushes the bottom away (distance grows) but leaves the offset
+                // unchanged, so it must NOT unpin. Re-engage once the view is back at the bottom.
+                if new.offsetY < old.offsetY - 40 {
+                    userPinnedToBottom = false
+                } else if new.distanceFromBottom < 24 {
+                    userPinnedToBottom = true
+                }
             }
             .onDisappear {
                 followTask?.cancel()
@@ -202,8 +215,12 @@ struct ChatView: View {
                 if userPinnedToBottom { anchorBottom(proxy) }
                 try? await Task.sleep(nanoseconds: 33_000_000)  // ~30 Hz
             }
+            // Capture the pinned state at stream-end, before the finalize re-render (block-split →
+            // single view) can shift the content height and flip the guard; if the user was
+            // following, land one last anchor after it settles.
+            let wasPinned = userPinnedToBottom
             try? await Task.sleep(nanoseconds: 500_000_000)  // let the finalize re-render settle
-            if !Task.isCancelled && userPinnedToBottom { anchorBottom(proxy) }
+            if !Task.isCancelled && wasPinned { anchorBottom(proxy) }
         }
     }
 
