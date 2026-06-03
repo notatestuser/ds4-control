@@ -23,6 +23,25 @@ final class SupervisorIntegrationTests: XCTestCase {
         }
     }
 
+    /// Seed a real sparse `<file>.part` preallocated to `total`, plus its `<file>.part.dl` bitmap
+    /// sidecar with `completeChunks` chunks marked complete — exactly the resumable partial the real
+    /// downloader leaves behind. The `ChunkBitmap` (which holds an open `FileHandle` to the sidecar)
+    /// is created and dropped entirely WITHIN this function, so on return ARC releases it and the
+    /// handle's deinit closes the fd: no open descriptor to `.part.dl` survives into the caller. That
+    /// matters for the cancel test, whose `removeItem(.part.dl)` would otherwise race an open handle
+    /// and leave a lingering directory entry on macOS (a build/optimizer-dependent false-red).
+    private func seedResumablePartial(
+        part: URL, total: Int64, chunkSize: Int64, completeChunks: Int
+    ) throws {
+        FileManager.default.createFile(atPath: part.path, contents: nil)
+        let bitmap = try ChunkBitmap.loadOrCreate(
+            partURL: part, total: total, chunkSize: chunkSize, seedContiguousBytes: 0)
+        for i in 0..<completeChunks { try bitmap.markComplete(i) }
+        let sizer = try FileHandle(forWritingTo: part)
+        try sizer.truncate(atOffset: UInt64(total))
+        try sizer.close()
+    }
+
     /// Legacy `.incomplete` (hf-style) partial on disk → resume detects it via `downloadedBytes` and
     /// re-enters `.downloading`. (Live byte progress now comes from the downloader's `onProgress`
     /// callback, not an on-disk poll, so `Self.pending` — which never calls it — leaves `download` at
@@ -215,19 +234,12 @@ final class SupervisorIntegrationTests: XCTestCase {
         try stubDs4(dir)
         let filename = Quant.proImatrix.ggufFilename
         let part = g.appendingPathComponent(filename + ".part")
-        // Small chunks so a handful represents a meaningful total; mark chunks 0 and 1 complete.
+        // Small chunks so a handful represents a meaningful total; mark chunks 0 and 1 complete. The
+        // helper closes the bitmap's sidecar handle on return, leaving the `.part.dl` on disk for
+        // resume to read back (it never calls bitmap.delete()).
         let chunkSize: Int64 = 16 * 1024 * 1024
         let total = chunkSize * 8
-        FileManager.default.createFile(atPath: part.path, contents: nil)
-        let bitmap = try ChunkBitmap.loadOrCreate(
-            partURL: part, total: total, chunkSize: chunkSize, seedContiguousBytes: 0)
-        try bitmap.markComplete(0)
-        try bitmap.markComplete(1)
-        // Don't call bitmap.delete() — leave the sidecar on disk so resume can read it back.
-        // Preallocate the sparse `.part` to the full size, as the real downloader does.
-        let sizer = try FileHandle(forWritingTo: part)
-        try sizer.truncate(atOffset: UInt64(total))
-        try sizer.close()
+        try seedResumablePartial(part: part, total: total, chunkSize: chunkSize, completeChunks: 2)
 
         // The sidecar must report two chunks' worth of durable bytes.
         XCTAssertEqual(resumableBytes(ggufDir: g, filename: filename), 2 * chunkSize)
@@ -238,6 +250,123 @@ final class SupervisorIntegrationTests: XCTestCase {
         XCTAssertEqual(s.state, .downloading, "a bitmap with completed chunks must trigger resume")
         XCTAssertEqual(s.download?.file, filename)
         XCTAssertTrue(s.downloadProcessLive)
+        s.cancelDownload()
+    }
+
+    /// Cancel is a DELETE: a deliberate stop discards the partial. Seed a real sparse `<file>.part`
+    /// plus its `<file>.part.dl` bitmap sidecar (a couple chunks complete — the canonical seeding from
+    /// `testResumeFromBitmapSidecar`), enter `.downloading`, then `cancelDownload()` must remove BOTH
+    /// the `.part` and the `.part.dl`. A mutation dropping either `removeItem` (or deleting the wrong
+    /// path) leaves a file behind and fails here.
+    func testCancelDownloadDeletesPartAndSidecar() throws {
+        let dir = URL(fileURLWithPath: NSTemporaryDirectory()).appendingPathComponent(UUID().uuidString)
+        let g = dir.appendingPathComponent("gguf")
+        try FileManager.default.createDirectory(at: g, withIntermediateDirectories: true)
+        try stubDs4(dir)
+        let q = Quant.for(.flash, flashQuant: .q2q4)
+        let filename = q.ggufFilename
+        let part = g.appendingPathComponent(filename + ".part")
+        let sidecar = g.appendingPathComponent(filename + ".part.dl")
+        // Seed a sparse preallocated `.part` truncated to the full size, plus a bitmap with two chunks
+        // marked complete — exactly as the real downloader leaves a resumable partial. Seeding via the
+        // helper guarantees the bitmap's `.part.dl` FileHandle is CLOSED before cancel runs, so cancel's
+        // `removeItem(.part.dl)` deletes the directory entry deterministically (an open fd to that inode
+        // would otherwise let `fileExists(.part.dl)` linger true depending on ARC/optimizer ordering).
+        let chunkSize: Int64 = 16 * 1024 * 1024
+        let total = chunkSize * 8
+        try seedResumablePartial(part: part, total: total, chunkSize: chunkSize, completeChunks: 2)
+        XCTAssertTrue(FileManager.default.fileExists(atPath: part.path), "seeded .part must exist")
+        XCTAssertTrue(FileManager.default.fileExists(atPath: sidecar.path), "seeded .part.dl must exist")
+
+        let s = SupervisorService(ds4Dir: dir, runner: RealProcessRunner(), fetchFile: Self.pending)
+        s.download(variant: .flash, flashQuant: .q2q4)
+        XCTAssertEqual(s.state, .downloading)
+        XCTAssertEqual(s.download?.file, filename)
+
+        s.cancelDownload()
+        XCTAssertFalse(
+            FileManager.default.fileExists(atPath: part.path), "cancel must delete the .part")
+        XCTAssertFalse(
+            FileManager.default.fileExists(atPath: sidecar.path), "cancel must delete the .part.dl sidecar")
+        XCTAssertEqual(s.state, .idle)
+        XCTAssertNil(s.download)
+        XCTAssertFalse(s.downloadProcessLive)
+    }
+
+    /// Failure is a KEEP: a download that fails (vs. is cancelled) leaves the partial on disk so a
+    /// retry/relaunch resumes from the bitmap. The fake writes a real sparse `<file>.part` + bitmap
+    /// sidecar (one chunk complete), reports progress once, then throws — driving `failDownload`, which
+    /// (unlike `cancelDownload`) does NOT delete the partial. Locks the KEEP-on-failure vs.
+    /// DELETE-on-cancel asymmetry.
+    func testFailDownloadKeepsPartAndSidecar() async throws {
+        let dir = URL(fileURLWithPath: NSTemporaryDirectory()).appendingPathComponent(UUID().uuidString)
+        let g = dir.appendingPathComponent("gguf")
+        try FileManager.default.createDirectory(at: g, withIntermediateDirectories: true)
+        try stubDs4(dir)
+        let q = Quant.for(.flash, flashQuant: .q2q4)
+        let filename = q.ggufFilename
+        let chunkSize: Int64 = 16 * 1024 * 1024
+        let total = chunkSize * 8
+        // Fake fetch: create the real partial in the destDir (2nd positional arg), report one progress
+        // tick, then throw the retries-exhausted failure. No network.
+        let failing: SupervisorService.FetchFile = { _, destDir, _, _, onProgress in
+            let part = destDir.appendingPathComponent(filename + ".part")
+            FileManager.default.createFile(atPath: part.path, contents: nil)
+            let bitmap = try ChunkBitmap.loadOrCreate(
+                partURL: part, total: total, chunkSize: chunkSize, seedContiguousBytes: 0)
+            try bitmap.markComplete(0)
+            let sizer = try FileHandle(forWritingTo: part)
+            try sizer.truncate(atOffset: UInt64(total))
+            try sizer.close()
+            onProgress(chunkSize, total)
+            throw HFDownloader.Failure.incompleteAfterRetries
+        }
+        let s = SupervisorService(ds4Dir: dir, runner: RealProcessRunner(), fetchFile: failing)
+        s.download(variant: .flash, flashQuant: .q2q4)
+        await until { if case .error = s.state { return true } else { return false } }
+
+        let part = g.appendingPathComponent(filename + ".part")
+        let sidecar = g.appendingPathComponent(filename + ".part.dl")
+        XCTAssertTrue(
+            FileManager.default.fileExists(atPath: part.path), "failure must KEEP the .part")
+        XCTAssertTrue(
+            FileManager.default.fileExists(atPath: sidecar.path), "failure must KEEP the .part.dl sidecar")
+        XCTAssertGreaterThan(
+            resumableBytes(ggufDir: g, filename: filename), 0, "the kept bitmap must record durable bytes")
+        guard case .error = s.state else { return XCTFail("expected .error, got \(s.state)") }
+    }
+
+    /// Retry must resume from the bitmap, not wipe durable progress. Seed a real `<file>.part` +
+    /// `<file>.part.dl` with two chunks complete, enter `.downloading`, then `retryDownload`: the
+    /// partial and its sidecar must SURVIVE and `resumableBytes` must be unchanged (>= 2 chunks),
+    /// proving retry restarts the fetch off the existing bitmap rather than deleting it (which is the
+    /// cancel path's job, not retry's).
+    func testRetryPreservesBitmapSidecar() throws {
+        let dir = URL(fileURLWithPath: NSTemporaryDirectory()).appendingPathComponent(UUID().uuidString)
+        let g = dir.appendingPathComponent("gguf")
+        try FileManager.default.createDirectory(at: g, withIntermediateDirectories: true)
+        try stubDs4(dir)
+        let q = Quant.for(.flash, flashQuant: .q2q4)
+        let filename = q.ggufFilename
+        let part = g.appendingPathComponent(filename + ".part")
+        let sidecar = g.appendingPathComponent(filename + ".part.dl")
+        let chunkSize: Int64 = 16 * 1024 * 1024
+        let total = chunkSize * 8
+        try seedResumablePartial(part: part, total: total, chunkSize: chunkSize, completeChunks: 2)
+        XCTAssertEqual(resumableBytes(ggufDir: g, filename: filename), 2 * chunkSize)
+
+        let s = SupervisorService(ds4Dir: dir, runner: RealProcessRunner(), fetchFile: Self.pending)
+        s.download(variant: .flash, flashQuant: .q2q4)
+        XCTAssertEqual(s.state, .downloading)
+
+        s.retryDownload(variant: .flash, flashQuant: .q2q4)
+        XCTAssertEqual(s.state, .downloading, "retry re-enters .downloading")
+        XCTAssertTrue(FileManager.default.fileExists(atPath: part.path), "retry must preserve the .part")
+        XCTAssertTrue(
+            FileManager.default.fileExists(atPath: sidecar.path), "retry must preserve the .part.dl sidecar")
+        XCTAssertEqual(
+            resumableBytes(ggufDir: g, filename: filename), 2 * chunkSize,
+            "retry must not wipe durable bitmap progress")
         s.cancelDownload()
     }
 
