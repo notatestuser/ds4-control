@@ -7,8 +7,8 @@ A macOS menu-bar control pane for **DeepSeek V4** via [`ds4`](https://github.com
 <br>
 
 <picture>
-  <source media="(prefers-color-scheme: dark)" srcset="docs/screenshot-dark-v2.png">
-  <img alt="DS4 Control: the menu-bar popup (Pro/Flash selector with unified-memory, GPU, CPU and power widgets) next to the chat window showing per-message timing/throughput and a context-usage bar" src="docs/screenshot.png">
+  <source media="(prefers-color-scheme: dark)" srcset="docs/screenshot-dark-v3.png">
+  <img alt="DS4 Control: the menu-bar popup (Pro/Flash selector with unified-memory, GPU, CPU and power widgets) next to the chat window showing per-message timing/throughput and a context-usage bar" src="docs/screenshot-light-v3.png">
 </picture>
 
 ## What it does
