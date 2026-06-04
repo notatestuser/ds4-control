@@ -2,9 +2,9 @@
 
 [![CI](https://github.com/notatestuser/ds4-control/actions/workflows/ci.yml/badge.svg)](https://github.com/notatestuser/ds4-control/actions/workflows/ci.yml)
 
-A macOS menu bar pane for **DeepSeek V4** via [`ds4`](https://github.com/antirez/ds4). It launches, supervises, and monitors a local ds4 server, lets you pick **V4 Pro** or **V4 Flash** with **1M** context, and shows resource use in the popup.
+A macOS menu bar pane for **DeepSeek V4** via [`ds4`](https://github.com/antirez/ds4). It launches, supervises, and monitors a local ds4 server, lets you pick **V4 Pro** or **V4 Flash** with **1M** context, and shows live resource use.
 
-Launch Pi, Claude Code or BYOC (Bring Your Own CLI) for local agentic coding.
+Choose Pi, Claude Code or BYOC (Bring Your Own CLI) for local agentic coding.
 
 <br>
 
