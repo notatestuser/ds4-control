@@ -2,15 +2,13 @@
 
 [![CI](https://github.com/notatestuser/ds4-control/actions/workflows/ci.yml/badge.svg)](https://github.com/notatestuser/ds4-control/actions/workflows/ci.yml)
 
-A macOS menu-bar control pane for **DeepSeek V4** via [`ds4`](https://github.com/antirez/ds4). It launches, supervises, and monitors a local `ds4-server`, lets you pick **V4 Pro** or **V4 Flash** with **1M context**, and shows mini resource use in the popup.
+A macOS menu bar pane for **DeepSeek V4** via [`ds4`](https://github.com/antirez/ds4). It launches, supervises, and monitors a local ds4 server, lets you pick **V4 Pro** or **V4 Flash** with **1M** context, and shows resource use in the popup.
 
 <br>
 
 <p align="center">
-  <picture>
-    <source media="(prefers-color-scheme: dark)" srcset="docs/screenshot-dark-v8.png">
-    <img alt="DS4 Control menu-bar popup: the V4 Pro/Flash selector, a Unified Memory hero gauge, GPU, CPU and power widgets, and gear/chat/terminal shortcuts" src="docs/screenshot-full-light-v3.png">
-  </picture>
+  <img alt="DS4 Control menu-bar popup: the V4 Pro/Flash selector, a Unified Memory hero gauge, GPU, CPU and power widgets, and gear/chat/terminal shortcuts" src="docs/screenshot-full-light-v4.png#gh-light-mode-only">
+  <img alt="DS4 Control menu-bar popup: the V4 Pro/Flash selector, a Unified Memory hero gauge, GPU, CPU and power widgets, and gear/chat/terminal shortcuts" src="docs/screenshot-dark-v8.png#gh-dark-mode-only" width="380">
 </p>
 
 <p align="center">
@@ -20,15 +18,15 @@ A macOS menu-bar control pane for **DeepSeek V4** via [`ds4`](https://github.com
 </p>
 
 <p align="center">
-  <b>Signed with a live Apple Developer ID &amp; notarized by Apple.</b>
+  <b>Signed with a live Apple Developer ID &amp; notarized by Apple</b>
 </p>
 
 ## What it does
 
 - **Start / stop / monitor** the local `ds4-server` child process — spawn, stderr readiness detection, health polling, graceful stop, and crash detection.
-- **Pro / Flash selector** with a RAM-feasibility gate (Pro defaults on machines with ≥ 512 GiB unified memory).
-- **Model downloads** via a built-in native parallel downloader, with a live progress bar (speed, MB, %) and resume across restarts.
-- **Mini resource widgets**: unified memory (hero), GPU, power/ANE, and CPU, sampled on a 2 s timer.
+- **Pro / Flash selector** with a RAM feasibility gate.
+- **Model downloads** via a built-in native parallel downloader, with a live progress bar and resume across restarts.
+- **Mini resource widgets**: unified memory, GPU, power, and CPU, sampled on a timer.
 - **Launch Chat** to talk to the model.
 - **Launch Claude Code or Pi** to plan, write, maintain or refactor code.
 - **1M Context** configurable in settings.
