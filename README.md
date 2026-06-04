@@ -38,11 +38,15 @@ What it is **not**:
 
 ## Dev quick start
 
-1. **Build ds4** — clone and build [antirez/ds4](https://github.com/antirez/ds4) so you have the `ds4-server` binary.
-2. **Build DS4 Control** — `bash build.sh`, then open `DS4 Control.app` (or `swift run` during development).
-3. **Pick a model** — choose **Pro** or **Flash** (the app preselects based on your installed RAM).
-4. **Start** — click **Start** (or **Download** first if the model isn't present yet).
-5. Do things with DeepSeek.
+[antirez/ds4](https://github.com/antirez/ds4) is vendored as a git submodule at `external/ds4`:
+
+```sh
+git submodule update --init --recursive    # fetch ds4 into external/ds4
+make -C external/ds4 -j ds4-server          # build the ds4-server binary
+DS4_DIR="$PWD/external/ds4" swift run        # build + run the dev app against the submodule
+```
+
+`DS4_DIR` points the app at that ds4 checkout so **Start** can spawn `ds4-server` — without it the dev build looks for a bundled `ds4/` next to the binary and won't find the server. It's a menu-bar app (no dock icon): after launch, click the bolt icon in the macOS menu bar, pick **Pro** or **Flash** (preselected by your RAM), then **Download** (if the model isn't present) and **Start**.
 
 ## Requirements
 
