@@ -2,7 +2,7 @@
 
 [![CI](https://github.com/notatestuser/ds4-control/actions/workflows/ci.yml/badge.svg)](https://github.com/notatestuser/ds4-control/actions/workflows/ci.yml)
 
-A macOS menu-bar control pane for **DeepSeek V4** via [`ds4`](https://github.com/antirez/ds4). It launches, supervises, and monitors a local `ds4-server`, lets you pick **V4 Pro** or **V4 Flash** with **1M context**, and shows mini resource-monitoring widgets right in the popup — so you can run a frontier local model without ever touching a terminal.
+A macOS menu-bar control pane for **DeepSeek V4** via [`ds4`](https://github.com/antirez/ds4). It launches, supervises, and monitors a local `ds4-server`, lets you pick **V4 Pro** or **V4 Flash** with **1M context**, and shows mini resource use in the popup.
 
 <br>
 
