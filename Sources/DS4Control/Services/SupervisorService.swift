@@ -53,7 +53,7 @@ final class SupervisorService: ObservableObject {
 
     /// The pluggable file fetch — defaults to the native parallel `HFDownloader`. Tests inject a fake
     /// that simulates progress/completion/failure without touching the network. `highPerformance`
-    /// selects the worker count (12 vs 64).
+    /// selects the worker count (14 vs 64).
     typealias FetchFile =
         @Sendable (
             _ file: String, _ destDir: URL, _ token: String?, _ highPerformance: Bool,
@@ -121,9 +121,14 @@ final class SupervisorService: ObservableObject {
     func start(variant: Variant, flashQuant: FlashQuant, ctx: Int, port: Int, power: Int?, kvDiskDir: URL? = nil) {
         guard state == .idle || isErrorState else { emitBadState("start"); return }
         if let e = validateDs4Dir() { state = .error(e); return }
+        let quant = Quant.for(variant, flashQuant: flashQuant)
         let gguf = ggufURL(for: variant, flashQuant: flashQuant)
         guard FileManager.default.fileExists(atPath: gguf.path) else {
             state = .error(.modelMissing(filename: gguf.lastPathComponent)); return
+        }
+        if let validationError = downloadedModelValidationError(gguf, quant: quant) {
+            state = .error(.modelInvalid(filename: gguf.lastPathComponent, detail: validationError.description))
+            return
         }
         self.port = port; self.ctx = ctx; self.activeModel = variant.modelId
         stderrTail = []; expectingExit = false; serverAttached = false
@@ -342,6 +347,7 @@ final class SupervisorService: ObservableObject {
         switch error {
         case HFDownloader.Failure.http(let code): detail = "HTTP \(code)"
         case HFDownloader.Failure.incompleteAfterRetries: detail = "download interrupted (retries exhausted)"
+        case HFDownloader.Failure.invalidFinalFile(let reason): detail = "invalid model file (\(reason))"
         default: detail = (error as NSError).localizedDescription
         }
         state = .error(.downloadFailed(detail: detail))
@@ -395,7 +401,7 @@ final class SupervisorService: ObservableObject {
         let base = ggufBaseDir()
         let q = Quant.for(variant, flashQuant: flashQuant)
         // Already fully downloaded → nothing to resume.
-        if FileManager.default.fileExists(atPath: base.appendingPathComponent(q.ggufFilename).path) { return }
+        if downloadedModelValidationError(base.appendingPathComponent(q.ggufFilename), quant: q) == nil { return }
         // Resume when the bitmap sidecar records durable bytes (parallel partial), or a legacy
         // contiguous `.part`/hf `.incomplete` has bytes on disk.
         let resumable = resumableBytes(ggufDir: base, filename: q.ggufFilename) > 0
@@ -406,7 +412,19 @@ final class SupervisorService: ObservableObject {
 
     /// True when the selected variant's gguf exists on disk.
     func isDownloaded(_ variant: Variant, flashQuant: FlashQuant) -> Bool {
-        FileManager.default.fileExists(atPath: ggufURL(for: variant, flashQuant: flashQuant).path)
+        let quant = Quant.for(variant, flashQuant: flashQuant)
+        return downloadedModelValidationError(ggufURL(for: variant, flashQuant: flashQuant), quant: quant) == nil
+    }
+
+    private func downloadedModelValidationError(_ url: URL, quant: Quant) -> ModelFileValidationError? {
+        switch ModelFileValidator.validateGGUF(
+            at: url, minimumBytes: ModelFileValidator.minimumBytes(for: quant))
+        {
+        case .success:
+            return nil
+        case .failure(let error):
+            return error
+        }
     }
 
     // MARK: - Flash quant store (Settings: download markers + cleanup)

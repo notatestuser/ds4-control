@@ -3,6 +3,7 @@ import Foundation
 enum ServerError: Equatable {
     case ds4DirInvalid(missing: String)
     case modelMissing(filename: String)
+    case modelInvalid(filename: String, detail: String)
     case startupTimeout
     case unhealthy
     case crashed(tail: String)

@@ -17,10 +17,12 @@ final class ChunkFetcher: NSObject, URLSessionDataDelegate, @unchecked Sendable 
     /// The shared session, configured (and owned) by the caller — notably its
     /// `httpMaximumConnectionsPerHost`, which gates real parallelism.
     private let session: URLSession
+    private let lock = NSLock()
 
     // Per-fetch state. Written only on the session's serial delegate queue and read after the attempt
     // completes, with a happens-before edge through the continuation resume. Reset at the top of every
     // `fetch` so a reused `ChunkFetcher` instance never carries a previous chunk's counters.
+    private var activeTaskIdentifier: Int?
     private var handle: FileHandle?
     /// The `Range` of the in-flight attempt, re-applied across the cas-bridge redirect.
     private var currentRange: String?
@@ -50,17 +52,8 @@ final class ChunkFetcher: NSObject, URLSessionDataDelegate, @unchecked Sendable 
         url: URL, offset: Int64, end: Int64, token: String?, fileHandle: FileHandle,
         onBytes: @escaping (Int64) -> Void
     ) async throws -> Int64 {
-        // Reset all per-fetch state for this chunk.
-        self.handle = fileHandle
-        self.onBytes = onBytes
-        self.expectedLength = end - offset + 1
-        self.writtenThisChunk = 0
-        self.total = -1
-        self.cont = nil
-
         var req = URLRequest(url: url)
         let range = "bytes=\(offset)-\(end)"
-        self.currentRange = range
         req.setValue(range, forHTTPHeaderField: "Range")
         if let token, !token.isEmpty {
             req.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
@@ -68,15 +61,27 @@ final class ChunkFetcher: NSObject, URLSessionDataDelegate, @unchecked Sendable 
 
         let task = session.dataTask(with: req)
         task.delegate = self  // per-task delegate so many fetchers share one session (macOS 13+).
+        lock.withLock {
+            activeTaskIdentifier = task.taskIdentifier
+            handle = fileHandle
+            self.onBytes = onBytes
+            expectedLength = end - offset + 1
+            writtenThisChunk = 0
+            total = -1
+            cont = nil
+            currentRange = range
+        }
         try await withTaskCancellationHandler {
             try await withCheckedThrowingContinuation { (c: CheckedContinuation<Void, Error>) in
+                self.lock.lock()
                 self.cont = c
+                self.lock.unlock()
                 task.resume()
             }
         } onCancel: {
             task.cancel()
         }
-        return total
+        return lock.withLock { total }
     }
 
     // MARK: URLSessionDataDelegate
@@ -90,8 +95,12 @@ final class ChunkFetcher: NSObject, URLSessionDataDelegate, @unchecked Sendable 
         // our Range across the redirect → it would serve the WRONG bytes (the whole file from 0), so
         // re-apply it. Strip Authorization — the signed URL needs none, and forwarding the token
         // cross-host breaks the S3 signature.
+        guard let currentRange = currentRange(for: task) else {
+            completionHandler(nil)
+            return
+        }
         var req = request
-        if let currentRange { req.setValue(currentRange, forHTTPHeaderField: "Range") }
+        req.setValue(currentRange, forHTTPHeaderField: "Range")
         req.setValue(nil, forHTTPHeaderField: "Authorization")
         completionHandler(req)
     }
@@ -100,59 +109,114 @@ final class ChunkFetcher: NSObject, URLSessionDataDelegate, @unchecked Sendable 
         _ session: URLSession, dataTask: URLSessionDataTask, didReceive response: URLResponse,
         completionHandler: @escaping (URLSession.ResponseDisposition) -> Void
     ) {
+        guard isCurrent(task: dataTask) else {
+            completionHandler(.cancel)
+            return
+        }
         guard let http = response as? HTTPURLResponse else {
-            finish(.failure(HFDownloader.Failure.http(-1)))
+            finish(for: dataTask, .failure(HFDownloader.Failure.http(-1)))
             completionHandler(.cancel)
             return
         }
         // 429 (rate limited) / 503 (unavailable) are RETRYABLE — surface them as Failure.http so the
         // caller's retry loop backs off and re-fetches; any other non-2xx is a hard failure for this
         // chunk. Either way we cancel the task.
-        guard http.statusCode == 200 || http.statusCode == 206 else {
-            finish(.failure(HFDownloader.Failure.http(http.statusCode)))
+        guard http.statusCode == 206 else {
+            finish(for: dataTask, .failure(HFDownloader.Failure.http(http.statusCode)))
             completionHandler(.cancel)
             return
         }
+        lock.lock()
         if total < 0 { total = Self.parseTotal(http, fallbackOffset: writtenThisChunk) }
+        lock.unlock()
         completionHandler(.allow)
     }
 
     func urlSession(_ session: URLSession, dataTask: URLSessionDataTask, didReceive data: Data) {
-        guard let handle else { return }
+        lock.lock()
+        guard isCurrentLocked(task: dataTask), let handle else {
+            lock.unlock()
+            return
+        }
+        lock.unlock()
         do {
             try handle.write(contentsOf: data)
         } catch {
             dataTask.cancel()
-            finish(.failure(error))
+            finish(for: dataTask, .failure(error))
+            return
+        }
+        lock.lock()
+        guard isCurrentLocked(task: dataTask) else {
+            lock.unlock()
             return
         }
         writtenThisChunk += Int64(data.count)
-        onBytes?(Int64(data.count))
+        let callback = onBytes
+        lock.unlock()
+        callback?(Int64(data.count))
     }
 
     func urlSession(_ session: URLSession, task: URLSessionTask, didCompleteWithError error: Error?) {
+        guard isCurrent(task: task) else { return }
+        let result: Result<Void, Error>
         if let error {
             let ns = error as NSError
             if ns.domain == NSURLErrorDomain && ns.code == NSURLErrorCancelled {
-                finish(.failure(CancellationError()))
+                result = .failure(CancellationError())
             } else {
-                finish(.failure(error))
+                result = .failure(error)
             }
-        } else if writtenThisChunk != expectedLength {
+        } else if writtenBytes() != expectedBytes() {
             // SHORT-READ GUARD: a clean completion that didn't deliver the full closed range must NOT
             // be treated as success — otherwise the caller would mark a partial chunk complete and the
             // final file would have a hole. -2 distinguishes it from an HTTP status.
-            finish(.failure(HFDownloader.Failure.http(-2)))
+            result = .failure(HFDownloader.Failure.http(-2))
         } else {
-            finish(.success(()))
+            result = .success(())
         }
+        finish(for: task, result)
     }
 
     /// Resume the current fetch's continuation exactly once.
-    private func finish(_ result: Result<Void, Error>) {
-        guard let c = cont else { return }
+    private func finish(for task: URLSessionTask, _ result: Result<Void, Error>) {
+        lock.lock()
+        guard isCurrentLocked(task: task), let c = cont else {
+            lock.unlock()
+            return
+        }
         cont = nil
+        lock.unlock()
         c.resume(with: result)
+    }
+
+    private func isCurrent(task: URLSessionTask) -> Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        return isCurrentLocked(task: task)
+    }
+
+    private func isCurrentLocked(task: URLSessionTask) -> Bool {
+        activeTaskIdentifier == task.taskIdentifier
+    }
+
+    private func currentRange(for task: URLSessionTask) -> String? {
+        lock.lock()
+        defer { lock.unlock() }
+        guard isCurrentLocked(task: task) else { return nil }
+        return currentRange
+    }
+
+    private func writtenBytes() -> Int64 {
+        lock.lock()
+        defer { lock.unlock() }
+        return writtenThisChunk
+    }
+
+    private func expectedBytes() -> Int64 {
+        lock.lock()
+        defer { lock.unlock() }
+        return expectedLength
     }
 
     /// Total file size from a 206's `Content-Range: bytes a-b/total`, else `Content-Length` plus the

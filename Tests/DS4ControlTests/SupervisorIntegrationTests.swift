@@ -16,6 +16,12 @@ final class SupervisorIntegrationTests: XCTestCase {
             try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: u.path)
         }
     }
+    private func createValidSparseGGUF(at url: URL, quant: Quant) throws {
+        FileManager.default.createFile(atPath: url.path, contents: Data("GGUF".utf8))
+        let handle = try FileHandle(forWritingTo: url)
+        try handle.truncate(atOffset: UInt64(ModelFileValidator.minimumBytes(for: quant)))
+        try handle.close()
+    }
     private func until(_ cond: @escaping () -> Bool) async {
         for _ in 0..<400 {
             if cond() { return }
@@ -73,10 +79,25 @@ final class SupervisorIntegrationTests: XCTestCase {
         let dir = URL(fileURLWithPath: NSTemporaryDirectory()).appendingPathComponent(UUID().uuidString)
         let g = dir.appendingPathComponent("gguf")
         try FileManager.default.createDirectory(at: g, withIntermediateDirectories: true)
-        try Data(count: 10).write(to: g.appendingPathComponent(Quant.proImatrix.ggufFilename))
+        try createValidSparseGGUF(at: g.appendingPathComponent(Quant.proImatrix.ggufFilename), quant: .proImatrix)
         let s = SupervisorService(ds4Dir: dir, runner: RealProcessRunner())
         s.resumeInFlightDownloadIfAny(variant: .pro, flashQuant: .q2q4)
         XCTAssertEqual(s.state, .idle)
+    }
+
+    func testResumeReDownloadsCorruptFinalFile() throws {
+        let dir = URL(fileURLWithPath: NSTemporaryDirectory()).appendingPathComponent(UUID().uuidString)
+        let g = dir.appendingPathComponent("gguf")
+        try FileManager.default.createDirectory(at: g, withIntermediateDirectories: true)
+        try stubDs4(dir)
+        try Data("BAD!".utf8).write(to: g.appendingPathComponent(Quant.proImatrix.ggufFilename))
+        let s = SupervisorService(ds4Dir: dir, runner: RealProcessRunner(), fetchFile: Self.pending)
+
+        s.resumeInFlightDownloadIfAny(variant: .pro, flashQuant: .q2q4)
+
+        XCTAssertEqual(s.state, .downloading)
+        XCTAssertEqual(s.download?.file, Quant.proImatrix.ggufFilename)
+        s.cancelDownload()
     }
 
     func testRetryStartsFreshDownload() throws {
@@ -167,7 +188,7 @@ final class SupervisorIntegrationTests: XCTestCase {
         // file for the quant the test starts with (.q2q4) so the fixture matches.
         let hostQuant = Quant.for(.flash, flashQuant: .q2q4)
         let gg = dir.appendingPathComponent("gguf").appendingPathComponent(hostQuant.ggufFilename)
-        FileManager.default.createFile(atPath: gg.path, contents: Data("gguf".utf8))
+        try createValidSparseGGUF(at: gg, quant: hostQuant)
 
         let s = SupervisorService(ds4Dir: dir, runner: RealProcessRunner())
         s.start(variant: .flash, flashQuant: .q2q4, ctx: 250_000, port: 8137, power: nil)

@@ -18,6 +18,13 @@ private final class FakeRunner: ProcessRunner {
     func crash(_ code: Int32) { isRunning = false; exit?(code) }
 }
 
+private func createValidSparseGGUF(at url: URL, quant: Quant) throws {
+    FileManager.default.createFile(atPath: url.path, contents: Data("GGUF".utf8))
+    let handle = try FileHandle(forWritingTo: url)
+    try handle.truncate(atOffset: UInt64(ModelFileValidator.minimumBytes(for: quant)))
+    try handle.close()
+}
+
 @MainActor
 final class SupervisorStateMachineTests: XCTestCase {
     fileprivate func makeSupervisor(_ runner: FakeRunner) throws -> SupervisorService {
@@ -33,7 +40,7 @@ final class SupervisorStateMachineTests: XCTestCase {
         // file for the quant the tests start with (.q2q4) so the fixture matches.
         let hostQuant = Quant.for(.flash, flashQuant: .q2q4)
         let gg = dir.appendingPathComponent("gguf").appendingPathComponent(hostQuant.ggufFilename)
-        FileManager.default.createFile(atPath: gg.path, contents: Data("gguf".utf8))
+        try createValidSparseGGUF(at: gg, quant: hostQuant)
         return SupervisorService(ds4Dir: dir, runner: runner)
     }
 
@@ -100,6 +107,40 @@ final class SupervisorStateMachineTests: XCTestCase {
         let s = SupervisorService(ds4Dir: dir, runner: FakeRunner())
         s.start(variant: .flash, flashQuant: .q2q4, ctx: 250_000, port: 8000, power: nil)
         if case .error(.modelMissing) = s.state {} else { XCTFail("expected modelMissing, got \(s.state)") }
+    }
+    func testIsDownloadedRejectsCorruptExistingModelFile() throws {
+        let dir = URL(fileURLWithPath: NSTemporaryDirectory()).appendingPathComponent(UUID().uuidString)
+        let ggufDir = dir.appendingPathComponent("gguf")
+        try FileManager.default.createDirectory(at: ggufDir, withIntermediateDirectories: true)
+        for f in ["ds4-server", "download_model.sh"] {
+            let u = dir.appendingPathComponent(f)
+            FileManager.default.createFile(atPath: u.path, contents: Data("#!/bin/sh\n".utf8))
+            try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: u.path)
+        }
+        let model = ggufDir.appendingPathComponent(Quant.q2q4Imatrix.ggufFilename)
+        try Data("BAD!".utf8).write(to: model)
+        let s = SupervisorService(ds4Dir: dir, runner: FakeRunner())
+
+        XCTAssertFalse(s.isDownloaded(.flash, flashQuant: .q2q4))
+    }
+    func testStartRejectsCorruptExistingModelFileWithoutLaunching() throws {
+        let dir = URL(fileURLWithPath: NSTemporaryDirectory()).appendingPathComponent(UUID().uuidString)
+        let ggufDir = dir.appendingPathComponent("gguf")
+        try FileManager.default.createDirectory(at: ggufDir, withIntermediateDirectories: true)
+        for f in ["ds4-server", "download_model.sh"] {
+            let u = dir.appendingPathComponent(f)
+            FileManager.default.createFile(atPath: u.path, contents: Data("#!/bin/sh\n".utf8))
+            try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: u.path)
+        }
+        let model = ggufDir.appendingPathComponent(Quant.q2q4Imatrix.ggufFilename)
+        try Data("GGUF".utf8).write(to: model)
+        let runner = FakeRunner()
+        let s = SupervisorService(ds4Dir: dir, runner: runner)
+
+        s.start(variant: .flash, flashQuant: .q2q4, ctx: 250_000, port: 8000, power: nil)
+
+        if case .error = s.state {} else { XCTFail("expected invalid model error, got \(s.state)") }
+        XCTAssertFalse(runner.isRunning)
     }
     func testDownloadUsesSelectedQuantFile() throws {
         let dir = URL(fileURLWithPath: NSTemporaryDirectory()).appendingPathComponent(UUID().uuidString)

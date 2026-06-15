@@ -3,6 +3,59 @@ import XCTest
 @testable import DS4Control
 
 final class HFDownloaderTests: XCTestCase {
+    override func tearDown() {
+        DownloaderMockURLProtocol.reset()
+        super.tearDown()
+    }
+
+    func testDefaultWorkerCountIsCGNATSafe() {
+        XCTAssertEqual(HFDownloader.workerCount(highPerformance: false), 14)
+        XCTAssertEqual(HFDownloader.workerCount(highPerformance: true), 64)
+    }
+
+    func testDownloadReplacesInvalidExistingFinalFile() async throws {
+        let dir = URL(fileURLWithPath: NSTemporaryDirectory()).appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: dir) }
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+
+        let file = "unit.gguf"
+        try Data("BAD!".utf8).write(to: dir.appendingPathComponent(file))
+        let body = Data("GGUF1234".utf8)
+        let ranges = RequestedRanges()
+        DownloaderMockURLProtocol.setHandler { request, proto in
+            let range = request.value(forHTTPHeaderField: "Range") ?? ""
+            ranges.append(range)
+            let parsed = Self.parseRange(range)
+            let chunk = body.subdata(in: parsed.start..<(parsed.end + 1))
+            proto.respond(
+                status: 206,
+                headers: [
+                    "Content-Range": "bytes \(parsed.start)-\(parsed.end)/\(body.count)",
+                    "Content-Length": "\(chunk.count)",
+                ],
+                body: chunk)
+        }
+
+        let downloader = HFDownloader(
+            repo: "unit/repo", endpoint: "https://unit.test", maxRetries: 0,
+            protocolClasses: [DownloaderMockURLProtocol.self])
+        try await downloader.download(file: file, into: dir, token: nil, highPerformance: false, chunkSize: 4) {
+            _, _ in
+        }
+
+        XCTAssertEqual(try Data(contentsOf: dir.appendingPathComponent(file)), body)
+        XCTAssertTrue(ranges.values.contains("bytes=0-0"), "must probe the remote total before trusting an existing file")
+        XCTAssertTrue(ranges.values.contains("bytes=0-3"))
+        XCTAssertTrue(ranges.values.contains("bytes=4-7"))
+    }
+
+    private static func parseRange(_ range: String) -> (start: Int, end: Int) {
+        let trimmed = range.replacingOccurrences(of: "bytes=", with: "")
+        let pieces = trimmed.split(separator: "-", maxSplits: 1).compactMap { Int($0) }
+        precondition(pieces.count == 2, "unexpected range: \(range)")
+        return (pieces[0], pieces[1])
+    }
+
     /// Real end-to-end network download of a small public GGUF through the native `HFDownloader`:
     /// `/resolve` → cas-bridge/LFS redirect → closed-range chunk(s) → completion → rename, then
     /// verifies the size matches the server's total and the bytes are a valid GGUF.
@@ -163,5 +216,143 @@ final class HFDownloaderTests: XCTestCase {
         try assertCompleteGGUF(dir.appendingPathComponent(file), expectedTotal: progress.total)
         XCTAssertFalse(FileManager.default.fileExists(atPath: sidecar.path), "sidecar dropped on completion")
         XCTAssertFalse(FileManager.default.fileExists(atPath: part.path), ".part renamed away on completion")
+    }
+
+    /// Opt-in full DS4 download check. This writes the real V4 Flash q2-imatrix GGUF to the app's local
+    /// model directory and intentionally is not part of normal test runs.
+    func testDownloadsDeepSeekV4FlashQ2ImatrixLocally() async throws {
+        try XCTSkipUnless(
+            ProcessInfo.processInfo.environment["DS4_DEEPSEEK_FLASH_Q2_DOWNLOAD_TEST"] == "1",
+            "large DS4 download test — set DS4_DEEPSEEK_FLASH_Q2_DOWNLOAD_TEST=1 to run")
+
+        try await downloadDeepSeekV4FlashLocally(
+            file: Quant.q2Imatrix.ggufFilename,
+            quant: .q2Imatrix,
+            label: "DeepSeek V4 Flash q2-imatrix")
+    }
+
+    /// Opt-in full DS4 download check for the smallest Flash file not usually covered by local setup.
+    func testDownloadsDeepSeekV4FlashQ2Q4ImatrixLocally() async throws {
+        try XCTSkipUnless(
+            ProcessInfo.processInfo.environment["DS4_DEEPSEEK_FLASH_Q2Q4_DOWNLOAD_TEST"] == "1",
+            "large DS4 download test — set DS4_DEEPSEEK_FLASH_Q2Q4_DOWNLOAD_TEST=1 to run")
+
+        try await downloadDeepSeekV4FlashLocally(
+            file: Quant.q2q4Imatrix.ggufFilename,
+            quant: .q2q4Imatrix,
+            label: "DeepSeek V4 Flash q2-q4-imatrix")
+    }
+
+    private func downloadDeepSeekV4FlashLocally(file: String, quant: Quant, label: String) async throws {
+        let dir =
+            ProcessInfo.processInfo.environment["DS4_GGUF_DIR"].flatMap { $0.isEmpty ? nil : URL(fileURLWithPath: $0) }
+            ?? ds4AppSupportDir().appendingPathComponent("gguf", isDirectory: true)
+        let progress = LargeDownloadProgress(label: label)
+        let token = resolveHFToken(
+            env: ProcessInfo.processInfo.environment,
+            cacheFile: FileManager.default.homeDirectoryForCurrentUser
+                .appendingPathComponent(".cache/huggingface/token"))
+
+        try await HFDownloader(repo: "antirez/deepseek-v4-gguf").download(
+            file: file, into: dir, token: token, highPerformance: false
+        ) { received, total in
+            progress.report(received: received, total: total)
+        }
+
+        let out = dir.appendingPathComponent(file)
+        XCTAssertTrue(
+            ModelFileValidator.isValidGGUF(
+                at: out, minimumBytes: ModelFileValidator.minimumBytes(for: quant)))
+        let size = try XCTUnwrap(FileManager.default.attributesOfItem(atPath: out.path)[.size] as? NSNumber)
+        XCTAssertGreaterThanOrEqual(size.int64Value, ModelFileValidator.minimumBytes(for: quant))
+    }
+}
+
+private final class LargeDownloadProgress: @unchecked Sendable {
+    private let lock = NSLock()
+    private let label: String
+    private var lastReportedGiB: Int64 = -1
+
+    init(label: String) {
+        self.label = label
+    }
+
+    func report(received: Int64, total: Int64) {
+        let receivedGiB = received / 1_073_741_824
+        lock.lock()
+        guard receivedGiB != lastReportedGiB else {
+            lock.unlock()
+            return
+        }
+        lastReportedGiB = receivedGiB
+        lock.unlock()
+
+        let totalText = total > 0 ? String(format: "%.1f", Double(total) / 1_073_741_824) : "?"
+        let line = "\(label): \(receivedGiB) GiB / \(totalText) GiB\n"
+        FileHandle.standardError.write(Data(line.utf8))
+    }
+}
+
+private final class RequestedRanges: @unchecked Sendable {
+    private let lock = NSLock()
+    private var stored: [String] = []
+
+    var values: [String] {
+        lock.lock()
+        defer { lock.unlock() }
+        return stored
+    }
+
+    func append(_ value: String) {
+        lock.lock()
+        stored.append(value)
+        lock.unlock()
+    }
+}
+
+private final class DownloaderMockURLProtocol: URLProtocol, @unchecked Sendable {
+    typealias Handler = @Sendable (URLRequest, DownloaderMockURLProtocol) -> Void
+
+    private static let lock = NSLock()
+    nonisolated(unsafe)
+    private static var handler: Handler?
+
+    static func setHandler(_ newHandler: @escaping Handler) {
+        lock.lock()
+        handler = newHandler
+        lock.unlock()
+    }
+
+    static func reset() {
+        lock.lock()
+        handler = nil
+        lock.unlock()
+    }
+
+    override class func canInit(with request: URLRequest) -> Bool {
+        request.url?.host == "unit.test"
+    }
+
+    override class func canonicalRequest(for request: URLRequest) -> URLRequest { request }
+
+    override func startLoading() {
+        Self.lock.lock()
+        let h = Self.handler
+        Self.lock.unlock()
+        guard let h else {
+            client?.urlProtocol(self, didFailWithError: URLError(.badServerResponse))
+            return
+        }
+        h(request, self)
+    }
+
+    override func stopLoading() {}
+
+    func respond(status: Int, headers: [String: String], body: Data) {
+        let response = HTTPURLResponse(
+            url: request.url!, statusCode: status, httpVersion: nil, headerFields: headers)!
+        client?.urlProtocol(self, didReceive: response, cacheStoragePolicy: .notAllowed)
+        if !body.isEmpty { client?.urlProtocol(self, didLoad: body) }
+        client?.urlProtocolDidFinishLoading(self)
     }
 }

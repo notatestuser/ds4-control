@@ -15,12 +15,13 @@ import Foundation
 ///
 /// Honours Swift task cancellation: cancelling the surrounding `Task` cancels every in-flight chunk.
 final class HFDownloader: NSObject, @unchecked Sendable {
-    enum Failure: Error, Equatable { case http(Int), incompleteAfterRetries }
+    enum Failure: Error, Equatable { case http(Int), incompleteAfterRetries, invalidFinalFile(String) }
 
     private let repo: String
     private let endpoint: String
     private let revision: String
     private let maxRetries: Int
+    private let protocolClasses: [AnyClass]?
 
     /// Coalesce progress callbacks so the UI isn't spammed (~8 MB granularity).
     private static let progressStep: Int64 = 8 * 1024 * 1024
@@ -30,15 +31,19 @@ final class HFDownloader: NSObject, @unchecked Sendable {
     /// `download` parameter so tests can force many chunks on a small file.
     static let parallelChunkSize: Int64 = 256 * 1024 * 1024
 
-    /// Parallel connection count: a CGNAT-safe 16 by default, an aggressive-but-safe 64 when the
+    /// Parallel connection count: a CGNAT-safe 14 by default, an aggressive-but-safe 64 when the
     /// user opts into High Performance (still under the 256 fd soft-limit, with headroom for HF 429).
-    static func workerCount(highPerformance: Bool) -> Int { highPerformance ? 64 : 16 }
+    static func workerCount(highPerformance: Bool) -> Int { highPerformance ? 64 : 14 }
 
-    init(repo: String, endpoint: String = "https://huggingface.co", revision: String = "main", maxRetries: Int = 8) {
+    init(
+        repo: String, endpoint: String = "https://huggingface.co", revision: String = "main",
+        maxRetries: Int = 8, protocolClasses: [AnyClass]? = nil
+    ) {
         self.repo = repo
         self.endpoint = endpoint
         self.revision = revision
         self.maxRetries = maxRetries
+        self.protocolClasses = protocolClasses
         super.init()
     }
 
@@ -147,7 +152,6 @@ final class HFDownloader: NSObject, @unchecked Sendable {
         onProgress: @escaping @Sendable (Int64, Int64) -> Void
     ) async throws {
         let dest = destDir.appendingPathComponent(file)
-        if FileManager.default.fileExists(atPath: dest.path) { return }
         try FileManager.default.createDirectory(at: destDir, withIntermediateDirectories: true)
         let part = destDir.appendingPathComponent(file + ".part")
         let url = URL(string: "\(endpoint)/\(repo)/resolve/\(revision)/\(file)")!
@@ -160,6 +164,7 @@ final class HFDownloader: NSObject, @unchecked Sendable {
         cfg.timeoutIntervalForRequest = 60
         cfg.waitsForConnectivity = true
         cfg.httpMaximumConnectionsPerHost = workers
+        if let protocolClasses { cfg.protocolClasses = protocolClasses }
         let session = URLSession(configuration: cfg)
         defer { session.invalidateAndCancel() }
 
@@ -171,6 +176,14 @@ final class HFDownloader: NSObject, @unchecked Sendable {
         let total = try await probe.fetch(
             url: url, offset: 0, end: 0, token: token, fileHandle: devNull, onBytes: { _ in })
         guard total > 0 else { throw Failure.http(-1) }
+        if FileManager.default.fileExists(atPath: dest.path) {
+            switch ModelFileValidator.validateGGUF(at: dest, exactBytes: total) {
+            case .success:
+                return
+            case .failure:
+                try? FileManager.default.removeItem(at: dest)
+            }
+        }
 
         // Migration: a legacy *sequential* `.part` (contiguous, no sidecar) has its leading whole
         // chunks already on disk — seed the bitmap so we don't refetch them. If a sidecar already
@@ -217,11 +230,16 @@ final class HFDownloader: NSObject, @unchecked Sendable {
 
         // All chunks durable: fsync the assembled .part, drop the sidecar, atomic rename → final.
         let finalize = try FileHandle(forWritingTo: part)
+        try finalize.truncate(atOffset: UInt64(total))
         try finalize.synchronize()
         try finalize.close()
         bitmap.delete()
         try? FileManager.default.removeItem(at: dest)
         try FileManager.default.moveItem(at: part, to: dest)
+        if case .failure(let error) = ModelFileValidator.validateGGUF(at: dest, exactBytes: total) {
+            try? FileManager.default.removeItem(at: dest)
+            throw Failure.invalidFinalFile(error.description)
+        }
     }
 
     /// One worker: its OWN `ChunkFetcher` + its OWN `FileHandle` on the `.part` (a separate FD, so

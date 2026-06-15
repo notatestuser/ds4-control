@@ -170,6 +170,7 @@ struct PopupView: View {
         switch e {
         case let .ds4DirInvalid(missing): return "ds4 files not found — missing \(missing). Reinstall the app."
         case let .modelMissing(filename): return "Model not downloaded (\(filename)). Use Download first."
+        case let .modelInvalid(filename, detail): return "Model file is invalid (\(filename): \(detail)). Download it again."
         case .startupTimeout: return "ds4-server didn't become ready in time."
         case .unhealthy: return "ds4-server stopped responding."
         case let .crashed(tail): return "ds4-server exited unexpectedly. \(tail.suffix(160))"
