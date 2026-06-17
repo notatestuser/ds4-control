@@ -80,6 +80,21 @@ struct SettingsView: View {
                     Text("Port")
                 }
                 LabeledContent {
+                    TextField("", text: $app.host)
+                        .textFieldStyle(.roundedBorder)
+                        .frame(width: 130)
+                } label: {
+                    Text("Bind host")
+                }
+                Text(
+                    "Binds ds4-server to this address. "
+                        + "The app's built-in chat and Terminal agent still connect through 127.0.0.1. "
+                        + "Use 0.0.0.0 to listen on all network interfaces."
+                )
+                .font(.caption2)
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+                LabeledContent {
                     HStack(spacing: 10) {
                         Slider(value: powerBinding, in: 1...100)
                         Text("\(app.power ?? 100)")
@@ -170,10 +185,11 @@ struct SettingsView: View {
     }
 
     private func restart() {
+        let host = app.normalizeHostForLaunch()
         supervisor.restart(
             variant: app.selectedVariant, flashQuant: app.selectedFlashQuant,
             ctx: app.effectiveCtx(ramGiB: ram),
-            port: app.port, power: app.power,
+            host: host, port: app.port, power: app.power,
             kvDiskDir: app.kvDiskCache ? supervisor.kvDiskCacheURL : nil)
     }
 }

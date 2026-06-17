@@ -3,9 +3,12 @@ import Combine
 
 @MainActor
 final class AppState: ObservableObject {
+    static let defaultHost = "127.0.0.1"
+
     private let d: UserDefaults
 
     @Published var port: Int { didSet { d.set(port, forKey: "port") } }
+    @Published var host: String { didSet { d.set(host, forKey: "host") } }
     @Published var ctxOverride: Int { didSet { d.set(ctxOverride, forKey: "ctxOverride") } }  // 0 = auto
     @Published var power: Int? { didSet { d.set(power ?? 0, forKey: "power") } }
     @Published var kvDiskCache: Bool { didSet { d.set(kvDiskCache, forKey: "kvDiskCache") } }
@@ -30,6 +33,7 @@ final class AppState: ObservableObject {
     init(defaults: UserDefaults = .standard) {
         self.d = defaults
         port = d.object(forKey: "port") as? Int ?? 8000
+        host = d.string(forKey: "host") ?? Self.defaultHost
         ctxOverride = d.integer(forKey: "ctxOverride")
         let p = d.integer(forKey: "power"); power = p > 0 ? p : nil
         kvDiskCache = d.object(forKey: "kvDiskCache") as? Bool ?? true  // default on
@@ -46,5 +50,11 @@ final class AppState: ObservableObject {
         ctxOverride > 0
             ? ctxOverride
             : defaultCtx(ramGiB: ramGiB, variant: selectedVariant, flashQuant: selectedFlashQuant)
+    }
+
+    func normalizeHostForLaunch() -> String {
+        let normalized = host.trimmingCharacters(in: .whitespacesAndNewlines)
+        host = normalized.isEmpty ? Self.defaultHost : normalized
+        return host
     }
 }
