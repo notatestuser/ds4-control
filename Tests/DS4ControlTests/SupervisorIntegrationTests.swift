@@ -170,7 +170,7 @@ final class SupervisorIntegrationTests: XCTestCase {
         FileManager.default.createFile(atPath: gg.path, contents: Data("gguf".utf8))
 
         let s = SupervisorService(ds4Dir: dir, runner: RealProcessRunner())
-        s.start(variant: .flash, flashQuant: .q2q4, ctx: 250_000, port: 8137, power: nil)
+        s.start(variant: .flash, flashQuant: .q2q4, ctx: 250_000, host: "127.0.0.1", port: 8137, power: nil)
         let ready = expectation(description: "ready")
         let token = s.$state.sink { if $0 == .ready { ready.fulfill() } }
         wait(for: [ready], timeout: 10)

@@ -46,10 +46,12 @@ struct ModelRowView: View {
         case .error:
             Button(downloaded ? "Retry" : "Retry download") {
                 if downloaded {
+                    let host = app.normalizeHostForLaunch()
                     supervisor.start(
                         variant: app.selectedVariant, flashQuant: app.selectedFlashQuant,
                         ctx: app.effectiveCtx(ramGiB: ramGiB),
-                        port: app.port, power: app.power)
+                        host: host, port: app.port, power: app.power,
+                        kvDiskDir: app.kvDiskCache ? supervisor.kvDiskCacheURL : nil)
                 } else {
                     supervisor.retryDownload(
                         variant: app.selectedVariant, flashQuant: app.selectedFlashQuant,
@@ -67,10 +69,11 @@ struct ModelRowView: View {
                 .frame(maxWidth: .infinity).disabled(blocked)
             } else {
                 Button("Start") {
+                    let host = app.normalizeHostForLaunch()
                     supervisor.start(
                         variant: app.selectedVariant, flashQuant: app.selectedFlashQuant,
                         ctx: app.effectiveCtx(ramGiB: ramGiB),
-                        port: app.port, power: app.power,
+                        host: host, port: app.port, power: app.power,
                         kvDiskDir: app.kvDiskCache ? supervisor.kvDiskCacheURL : nil)
                 }.frame(maxWidth: .infinity).disabled(blocked)
             }
