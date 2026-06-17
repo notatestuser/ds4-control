@@ -61,7 +61,9 @@ final class SupervisorStateMachineTests: XCTestCase {
     func testStartAddsKvDiskArgsWhenDirProvided() throws {
         let r = FakeRunner(); let s = try makeSupervisor(r)
         let kv = URL(fileURLWithPath: NSTemporaryDirectory()).appendingPathComponent(UUID().uuidString)
-        s.start(variant: .flash, flashQuant: .q2q4, ctx: 250_000, host: "127.0.0.1", port: 8000, power: nil, kvDiskDir: kv)
+        s.start(
+            variant: .flash, flashQuant: .q2q4, ctx: 250_000, host: "127.0.0.1", port: 8000,
+            power: nil, kvDiskDir: kv)
         XCTAssertTrue(r.lastArgs.contains("--kv-disk-dir"))
         XCTAssertTrue(r.lastArgs.contains(kv.path))
         XCTAssertTrue(r.lastArgs.contains("--kv-disk-space-mb"))

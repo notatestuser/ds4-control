@@ -123,7 +123,15 @@ final class SupervisorService: ObservableObject {
         return trimmed.isEmpty ? "127.0.0.1" : trimmed
     }
 
-    func start(variant: Variant, flashQuant: FlashQuant, ctx: Int, host: String, port: Int, power: Int?, kvDiskDir: URL? = nil) {
+    func start(
+        variant: Variant,
+        flashQuant: FlashQuant,
+        ctx: Int,
+        host: String,
+        port: Int,
+        power: Int?,
+        kvDiskDir: URL? = nil
+    ) {
         guard state == .idle || isErrorState else { emitBadState("start"); return }
         if let e = validateDs4Dir() { state = .error(e); return }
         let gguf = ggufURL(for: variant, flashQuant: flashQuant)
@@ -132,14 +140,23 @@ final class SupervisorService: ObservableObject {
         }
         self.port = port; self.ctx = ctx; self.activeModel = variant.modelId
         stderrTail = []; expectingExit = false; serverAttached = false
-        var args = ["-m", gguf.path, "--ctx", "\(ctx)", "--host", Self.normalizedBindHost(host), "--port", "\(port)", "--metal"]
+        var args = [
+            "-m", gguf.path,
+            "--ctx", "\(ctx)",
+            "--host", Self.normalizedBindHost(host),
+            "--port", "\(port)",
+            "--metal",
+        ]
         if let power { args += ["--power", "\(power)"] }
         if let kvDiskDir {
             // Persist compressed KV to disk so repeated/large prefixes (coding agents)
             // skip re-prefill across turns and restarts. README: "KV cache is a
             // first-class disk citizen." Created here so the path always exists.
             try? FileManager.default.createDirectory(at: kvDiskDir, withIntermediateDirectories: true)
-            args += ["--kv-disk-dir", kvDiskDir.path, "--kv-disk-space-mb", "\(Self.kvDiskSpaceMB)"]
+            args += [
+                "--kv-disk-dir", kvDiskDir.path,
+                "--kv-disk-space-mb", "\(Self.kvDiskSpaceMB)",
+            ]
         }
         state = .starting
         do {
@@ -199,7 +216,15 @@ final class SupervisorService: ObservableObject {
     /// running server was owned by us, `stop()` drains asynchronously and the relaunch
     /// is deferred to `handleExit`; an attached orphan stops synchronously and relaunches
     /// at once. No-op unless a server is running.
-    func restart(variant: Variant, flashQuant: FlashQuant, ctx: Int, host: String, port: Int, power: Int?, kvDiskDir: URL? = nil) {
+    func restart(
+        variant: Variant,
+        flashQuant: FlashQuant,
+        ctx: Int,
+        host: String,
+        port: Int,
+        power: Int?,
+        kvDiskDir: URL? = nil
+    ) {
         guard state == .ready || state == .starting else { emitBadState("restart"); return }
         let relaunch: () -> Void = { [weak self] in
             guard let self else { return }
