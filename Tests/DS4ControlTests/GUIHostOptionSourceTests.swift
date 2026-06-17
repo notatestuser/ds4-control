@@ -31,5 +31,6 @@ final class GUIHostOptionSourceTests: XCTestCase {
         XCTAssertTrue(modelRow.contains("let host = app.normalizeHostForLaunch()"))
         XCTAssertTrue(modelRow.contains("supervisor.start("))
         XCTAssertTrue(modelRow.contains("host: host"))
+        XCTAssertEqual(modelRow.components(separatedBy: "kvDiskDir:").count - 1, 2)
     }
 }

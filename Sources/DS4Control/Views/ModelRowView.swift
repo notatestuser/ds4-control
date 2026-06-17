@@ -50,7 +50,8 @@ struct ModelRowView: View {
                     supervisor.start(
                         variant: app.selectedVariant, flashQuant: app.selectedFlashQuant,
                         ctx: app.effectiveCtx(ramGiB: ramGiB),
-                        host: host, port: app.port, power: app.power)
+                        host: host, port: app.port, power: app.power,
+                        kvDiskDir: app.kvDiskCache ? supervisor.kvDiskCacheURL : nil)
                 } else {
                     supervisor.retryDownload(
                         variant: app.selectedVariant, flashQuant: app.selectedFlashQuant,
