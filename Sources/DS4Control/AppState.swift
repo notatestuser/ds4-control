@@ -73,7 +73,7 @@ final class AppState: ObservableObject {
     /// it this returns `.needsCtxBump` WITHOUT changing the mode, so the caller can ask the
     /// user about bumping the context first.
     func requestThinkingMode(_ mode: ThinkingMode, currentCtx: Int) -> ThinkingModeGate {
-        if mode == .max && currentCtx < 393_216 { return .needsCtxBump }
+        if mode == .max && !thinkMax(ctx: currentCtx) { return .needsCtxBump }
         thinkingMode = mode
         return .applied
     }
@@ -81,7 +81,7 @@ final class AppState: ObservableObject {
     /// The user confirmed the context bump: pin the override to ds4's Max Think floor and
     /// enable `.max`. (Restarting a running server is the caller's job.)
     func applyMaxThinkCtxBump() {
-        ctxOverride = 393_216
+        ctxOverride = thinkMaxMinCtx
         thinkingMode = .max
     }
 

@@ -23,7 +23,10 @@ func currentWiredLimitMB() -> Int {
     return value
 }
 
-func thinkMax(ctx: Int) -> Bool { ctx >= 393_216 }
+/// Minimum context ds4 needs to engage Think Max (`DS4_THINK_MAX_MIN_CONTEXT`).
+let thinkMaxMinCtx = 393_216
+
+func thinkMax(ctx: Int) -> Bool { ctx >= thinkMaxMinCtx }
 
 /// Headroom left for macOS and other processes — also the buffer the Metal
 /// wired-limit advisory leaves below total RAM.

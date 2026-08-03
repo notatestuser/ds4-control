@@ -268,9 +268,9 @@ final class SupervisorService: ObservableObject {
         }
         stop()
         if state == .idle {
-            relaunch()  // stopped synchronously (attached, or the runner exited inline)
+            relaunch()  // stopped synchronously (the runner exited inline)
         } else {
-            pendingRestart = relaunch  // owned process draining its grace period
+            pendingRestart = relaunch  // deferred until stop drains (handleExit, or the attached-pid poll)
         }
     }
 
