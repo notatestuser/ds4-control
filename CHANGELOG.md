@@ -1,6 +1,8 @@
 # Changelog
 
 ## Unreleased
+
+## v1.1.0 — 2026-08-03
 - Fix: after an unexpected ds4-server exit (typically a bind conflict with an orphaned server that owns the port), adopt the healthy port-holder as ready instead of dead-ending in an error whose Retry could only fail the same way again.
 - Fix: Apply & Restart on an attached (previously orphaned) server relaunched the moment SIGTERM was *sent*, while the old process was still dying — ds4 refuses a second instance ("another ds4 process is already running") and the new server exited on startup. Attached stops now wait for the old pids to actually exit (SIGKILL after 30 s grace) before going idle and relaunching.
 - Fix: settings/chat windows could open unfocused (greyed controls) after an app restart — activation is now requested inside the menu-bar click's user-event context (deferred activates are dropped for background-launched processes), with a bounded retry-until-key as backstop.
@@ -11,7 +13,7 @@
 - V4 Flash now runs the DeepSeek-V4-Flash-0731 weights (antirez's official `-0731` GGUFs; same q2 / q2-q4 / q4 recipes and sizes, so RAM tiers and context defaults are unchanged). V4 Pro is unchanged — no 0731 Pro release.
 - One-time migration prompt: on first launch the popup offers to delete orphaned pre-0731 Flash GGUFs (~81–165 GiB each), including download partials, behind a confirmation that lists the exact files.
 - Settings: the V4 Flash "Quant" picker is now "Variant", with each option marked by generation (e.g. `0731-q2-q4-imatrix`).
-- Known caveat (upstream, antirez/ds4#635): with 0731 weights, ds4's `reasoning_effort=max` currently injects the prefix DeepSeek labels "high" — the official 0731 "max" prefix ("Reasoning Effort: Beyond maximum…") doesn't exist in ds4 yet. Think Max requests automatically become true 0731-max once ds4 adds it; no app change needed.
+- ds4 think-tier fix (our patch on the fork `notatestuser/ds4`, branch `ds4-control-patches`): THINK_MAX now emits the official 0731 "max" prefix ("Reasoning Effort: Beyond maximum…") instead of the 0731 "high" one, so Max Think is true 0731-max. THINK_HIGH stays prefix-less (DeepSeek's default low tier), so Standard is unchanged. The ds4 submodule points at the fork until antirez lands the same fix upstream (antirez/ds4#635) — then flip `.gitmodules` back or fast-forward the fork.
 
 ## v1.0.0 — 2026-06-02
 - Initial release: DS4 Control — a macOS menu-bar control pane for ds4 (DeepSeek V4 Pro/Flash).
