@@ -36,18 +36,21 @@ enum Quant {
     }
 
     /// Exact GGUF filename the downloader fetches (under $DS4_GGUF_DIR / gguf).
+    /// Flash names are antirez's official `-0731` builds (DeepSeek-V4-Flash-0731,
+    /// antirez/ds4#635) — same quant recipes and byte sizes as the preview builds they
+    /// replace, so `weightsGiB` and the RAM tiers are unchanged.
     var ggufFilename: String {
         switch self {
         case .proImatrix:
             return "DeepSeek-V4-Pro-IQ2XXS-w2Q2K-AProjQ8-SExpQ8-OutQ8-Instruct-imatrix.gguf"
         case .q4Imatrix:
             return
-                "DeepSeek-V4-Flash-Q4KExperts-F16HC-F16Compressor-F16Indexer-Q8Attn-Q8Shared-Q8Out-chat-v2-imatrix.gguf"
+                "DeepSeek-V4-Flash-Q4KExperts-F16HC-F16Compressor-F16Indexer-Q8Attn-Q8Shared-Q8Out-chat-v2-imatrix-0731.gguf"
         case .q2Imatrix:
-            return "DeepSeek-V4-Flash-IQ2XXS-w2Q2K-AProjQ8-SExpQ8-OutQ8-chat-v2-imatrix.gguf"
+            return "DeepSeek-V4-Flash-IQ2XXS-w2Q2K-AProjQ8-SExpQ8-OutQ8-chat-v2-imatrix-0731.gguf"
         case .q2q4Imatrix:
             return
-                "DeepSeek-V4-Flash-Layers37-42Q4KExperts-OtherExpertLayersIQ2XXSGateUp-Q2KDown-AProjQ8-SExpQ8-OutQ8-chat-v2-imatrix-fixed.gguf"
+                "DeepSeek-V4-Flash-Layers37-42Q4KExperts-OtherExpertLayersIQ2XXSGateUp-Q2KDown-AProjQ8-SExpQ8-OutQ8-chat-v2-imatrix-fixed-0731.gguf"
         }
     }
 
