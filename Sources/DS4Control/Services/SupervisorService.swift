@@ -478,6 +478,10 @@ final class SupervisorService: ObservableObject {
     func legacyPreviewGgufBytes() -> Int64 {
         legacyPreviewGgufURLs().reduce(0) { $0 + fileSize($1) }
     }
+    /// Filenames (not paths) of the orphaned files, listed in the delete confirmation.
+    func legacyPreviewGgufNames() -> [String] {
+        legacyPreviewGgufURLs().map(\.lastPathComponent)
+    }
     /// Delete the orphaned pre-0731 files. Gate the call site to idle/error, exactly like
     /// cleanupUnusedFlashQuants. Returns the removed filenames.
     @discardableResult

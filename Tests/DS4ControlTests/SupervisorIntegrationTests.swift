@@ -410,6 +410,8 @@ final class SupervisorIntegrationTests: XCTestCase {
         let before = s.ggufStoreVersion
         XCTAssertEqual(s.legacyPreviewGgufURLs().count, 4)
         XCTAssertEqual(s.legacyPreviewGgufBytes(), 30)
+        XCTAssertEqual(  // confirmation dialog lists exactly these names
+            Set(s.legacyPreviewGgufNames()), [names[0], names[1], names[2] + ".part", names[2] + ".part.dl"])
         let removed = s.removeLegacyPreviewGgufs()
         XCTAssertEqual(Set(removed), [names[0], names[1], names[2] + ".part", names[2] + ".part.dl"])
         XCTAssertEqual(s.legacyPreviewGgufBytes(), 0)
