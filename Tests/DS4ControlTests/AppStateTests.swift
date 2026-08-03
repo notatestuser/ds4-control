@@ -73,7 +73,7 @@ final class AppStateTests: XCTestCase {
     func testThinkingModePersists() {
         let name = "test.\(UUID().uuidString)"
         let a1 = AppState(defaults: UserDefaults(suiteName: name)!)
-        XCTAssertEqual(a1.thinkingMode, .off)  // default
+        XCTAssertEqual(a1.thinkingMode, .standard)  // default for a fresh install
         a1.thinkingMode = .max
         XCTAssertEqual(AppState(defaults: UserDefaults(suiteName: name)!).thinkingMode, .max)
     }
@@ -91,7 +91,7 @@ final class AppStateTests: XCTestCase {
         let app = AppState(defaults: UserDefaults(suiteName: "test.\(UUID().uuidString)")!)
         // Max below the 393,216 floor: gated, mode unchanged.
         XCTAssertEqual(app.requestThinkingMode(.max, currentCtx: 131_072), .needsCtxBump)
-        XCTAssertEqual(app.thinkingMode, .off)
+        XCTAssertEqual(app.thinkingMode, .standard)  // unchanged from the fresh default
         // Standard needs no bump at any context.
         XCTAssertEqual(app.requestThinkingMode(.standard, currentCtx: 131_072), .applied)
         XCTAssertEqual(app.thinkingMode, .standard)

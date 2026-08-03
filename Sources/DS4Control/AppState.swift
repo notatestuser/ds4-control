@@ -44,8 +44,10 @@ final class AppState: ObservableObject {
         kvDiskCache = d.object(forKey: "kvDiskCache") as? Bool ?? true  // default on
         if let storedMode = d.string(forKey: "thinkingMode").flatMap(ThinkingMode.init(rawValue:)) {
             thinkingMode = storedMode
-        } else {
+        } else if d.object(forKey: "thinkMaxChat") != nil {
             thinkingMode = d.bool(forKey: "thinkMaxChat") ? .max : .off  // legacy toggle migration
+        } else {
+            thinkingMode = .standard  // fresh-install default
         }
         highPerformanceDownload = d.bool(forKey: "highPerformanceDownload")  // default off
         legacyWeightsPromptDismissed = d.bool(forKey: "legacyWeightsPromptDismissed0731")  // default false
