@@ -211,19 +211,44 @@ final class SupervisorService: ObservableObject {
         startupTimer?.invalidate(); startupTimer = nil
         if serverAttached {
             // We don't own the process (attached on launch) — terminate the listener.
-            killProcessListening(onPort: port)
+            // SIGTERM lands at once but the process needs time to die, and ds4 refuses a
+            // second instance while the old one lives — so .idle (and any pending restart)
+            // must wait for the pids to actually exit, not just for the signal.
             serverAttached = false
-            state = .idle
+            let pids = pidsListening(onPort: port)
+            for pid in pids { kill(pid, SIGTERM) }
+            finishAttachedStopWhenExited(pids: pids, waited: 0, escalated: false)
         } else {
             runner.terminate(graceSeconds: 30)
         }
     }
 
+    /// Poll until the TERM'd attached-server pids are gone; SIGKILL once after 30 s of
+    /// grace, and give up waiting at 35 s rather than stick in `.stopping` forever.
+    private func finishAttachedStopWhenExited(pids: [pid_t], waited: Double, escalated: Bool) {
+        let alive = pids.filter { kill($0, 0) == 0 }
+        if alive.isEmpty || waited >= 35 { completeAttachedStop(); return }
+        var escalated = escalated
+        if waited >= 30, !escalated {
+            for pid in alive { kill(pid, SIGKILL) }
+            escalated = true
+        }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) { [weak self] in
+            self?.finishAttachedStopWhenExited(pids: pids, waited: waited + 0.1, escalated: escalated)
+        }
+    }
+
+    private func completeAttachedStop() {
+        state = .idle
+        if let relaunch = pendingRestart { pendingRestart = nil; relaunch() }
+    }
+
     /// Apply changed settings to a running server: stop it, then relaunch with the
     /// supplied parameters once it has fully exited (so the port is free). When the
     /// running server was owned by us, `stop()` drains asynchronously and the relaunch
-    /// is deferred to `handleExit`; an attached orphan stops synchronously and relaunches
-    /// at once. No-op unless a server is running.
+    /// is deferred to `handleExit`; an attached orphan's stop completes when its pids
+    /// have actually exited (polled), with the relaunch deferred likewise.
+    /// No-op unless a server is running.
     func restart(
         variant: Variant,
         flashQuant: FlashQuant,
@@ -281,7 +306,9 @@ final class SupervisorService: ObservableObject {
         }
     }
 
-    private func killProcessListening(onPort port: Int) {
+    /// PIDs of processes listening on `port` (via lsof). Used by the attached-server stop:
+    /// we don't own the process object, so its exit is observed by polling, not callback.
+    private func pidsListening(onPort port: Int) -> [pid_t] {
         let lsof = Process()
         lsof.executableURL = URL(fileURLWithPath: "/usr/sbin/lsof")
         lsof.arguments = ["-ti", "tcp:\(port)", "-sTCP:LISTEN"]
@@ -292,12 +319,11 @@ final class SupervisorService: ObservableObject {
             try lsof.run()
             lsof.waitUntilExit()
         } catch {
-            return
+            return []
         }
         let out = String(data: pipe.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8) ?? ""
-        for line in out.split(whereSeparator: { $0 == "\n" }) {
-            if let pid = Int32(line.trimmingCharacters(in: .whitespaces)) { kill(pid, SIGTERM) }
-        }
+        return out.split(whereSeparator: { $0 == "\n" })
+            .compactMap { Int32($0.trimmingCharacters(in: .whitespaces)) }
     }
 
     // MARK: - Download

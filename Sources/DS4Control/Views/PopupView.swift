@@ -117,6 +117,7 @@ struct PopupView: View {
                     if supervisor.state == .downloading {
                         showDownloadHint = true
                     } else {
+                        WindowChrome.willOpenWindow()
                         openWindow(id: "settings")
                     }
                 } label: {
@@ -124,6 +125,7 @@ struct PopupView: View {
                 }.buttonStyle(.plain).help("Settings")
                 Button {
                     if supervisor.state == .ready {
+                        WindowChrome.willOpenWindow()
                         openWindow(id: "chat")
                     } else {
                         showStartHint = true

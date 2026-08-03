@@ -9,6 +9,16 @@ import AppKit
 enum WindowChrome {
     private static var openCount = 0
 
+    /// Activate within the menu-bar click's user-event context, just before `openWindow`.
+    /// A deferred activate (from the window's onAppear) can be dropped outright for a
+    /// background-launched process (e.g. dev runs via nohup) — the window then opens
+    /// visible but non-key, with greyed controls, no matter how often we retry; a request
+    /// issued inside the click is honored.
+    static func willOpenWindow() {
+        NSApplication.shared.setActivationPolicy(.regular)
+        NSApplication.shared.activate(ignoringOtherApps: true)
+    }
+
     /// Call from a window's `.onAppear` (the window exists by then). Sets `.regular`,
     /// foregrounds the app, and makes the named window key. An `activate` request issued
     /// right after launch can be silently dropped while the `.accessory`→`.regular`
