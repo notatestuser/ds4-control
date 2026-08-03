@@ -31,7 +31,7 @@ final class ChatServiceTests: XCTestCase {
             ])
         )
         let collected = try await collectText(
-            service.stream(port: 8000, model: "deepseek-v4-pro", messages: [], thinkMax: false))
+            service.stream(port: 8000, model: "deepseek-v4-pro", messages: [], mode: .off))
         XCTAssertEqual(collected, ["Hel", "lo"])
     }
 
@@ -44,7 +44,7 @@ final class ChatServiceTests: XCTestCase {
                 "data: [DONE]",
             ])
         )
-        let collected = try await collectText(service.stream(port: 8000, model: "m", messages: [], thinkMax: false))
+        let collected = try await collectText(service.stream(port: 8000, model: "m", messages: [], mode: .off))
         XCTAssertEqual(collected, ["x"])
     }
 
@@ -54,7 +54,7 @@ final class ChatServiceTests: XCTestCase {
                 #"data: {"choices":[{"delta":{"content":"a"}}]}"#
             ])
         )
-        let collected = try await collectText(service.stream(port: 8000, model: "m", messages: [], thinkMax: false))
+        let collected = try await collectText(service.stream(port: 8000, model: "m", messages: [], mode: .off))
         XCTAssertEqual(collected, ["a"])
     }
 
@@ -67,7 +67,7 @@ final class ChatServiceTests: XCTestCase {
             ])
         )
         var events: [ChatStreamEvent] = []
-        for try await event in service.stream(port: 8000, model: "m", messages: [], thinkMax: false) {
+        for try await event in service.stream(port: 8000, model: "m", messages: [], mode: .off) {
             events.append(event)
         }
         XCTAssertEqual(events, [.text("hi"), .usage(completionTokens: 2, promptTokens: 10, totalTokens: 12)])
@@ -83,7 +83,7 @@ final class ChatServiceTests: XCTestCase {
         })
         var collected: [String] = []
         do {
-            for try await event in service.stream(port: 8000, model: "m", messages: [], thinkMax: false) {
+            for try await event in service.stream(port: 8000, model: "m", messages: [], mode: .off) {
                 if case .text(let t) = event { collected.append(t) }
             }
             XCTFail("expected error")
@@ -97,7 +97,7 @@ final class ChatServiceTests: XCTestCase {
             port: 9001,
             model: "deepseek-v4-pro",
             messages: [ChatMessage(role: .user, content: "hi")],
-            thinkMax: false
+            mode: .off
         )
         XCTAssertEqual(request.httpMethod, "POST")
         XCTAssertEqual(request.url?.absoluteString, "http://127.0.0.1:9001/v1/chat/completions")
@@ -116,13 +116,23 @@ final class ChatServiceTests: XCTestCase {
         XCTAssertEqual(messages.first?["content"], "hi")
     }
 
-    func testThinkMaxRequestEnablesMaxEffort() throws {
+    func testMaxModeRequestEnablesMaxEffort() throws {
         let request = ChatService.makeRequest(
             port: 9001, model: "deepseek-v4-flash",
-            messages: [ChatMessage(role: .user, content: "hi")], thinkMax: true)
+            messages: [ChatMessage(role: .user, content: "hi")], mode: .max)
         let json = try XCTUnwrap(
             try JSONSerialization.jsonObject(with: XCTUnwrap(request.httpBody)) as? [String: Any])
-        XCTAssertEqual(json["thinking"] as? Bool, true)  // thinking on so Think Max can apply
+        XCTAssertEqual(json["thinking"] as? Bool, true)  // thinking on so Max Think can apply
         XCTAssertEqual(json["reasoning_effort"] as? String, "max")  // ds4 honors only "max"
+    }
+
+    func testStandardModeRequestThinksWithoutEffort() throws {
+        let request = ChatService.makeRequest(
+            port: 9001, model: "deepseek-v4-flash",
+            messages: [ChatMessage(role: .user, content: "hi")], mode: .standard)
+        let json = try XCTUnwrap(
+            try JSONSerialization.jsonObject(with: XCTUnwrap(request.httpBody)) as? [String: Any])
+        XCTAssertEqual(json["thinking"] as? Bool, true)  // thinking on at any context size
+        XCTAssertNil(json["reasoning_effort"])  // no effort prefix — ds4's plain thinking
     }
 }

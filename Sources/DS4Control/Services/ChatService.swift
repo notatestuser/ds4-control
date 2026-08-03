@@ -18,10 +18,10 @@ struct ChatService {
     }
 
     /// Streams assistant content deltas (and a trailing usage event) for the conversation.
-    func stream(port: Int, model: String, messages: [ChatMessage], thinkMax: Bool) -> AsyncThrowingStream<
+    func stream(port: Int, model: String, messages: [ChatMessage], mode: ThinkingMode) -> AsyncThrowingStream<
         ChatStreamEvent, Error
     > {
-        let request = Self.makeRequest(port: port, model: model, messages: messages, thinkMax: thinkMax)
+        let request = Self.makeRequest(port: port, model: model, messages: messages, mode: mode)
         let lines = lineSource(request)
         return AsyncThrowingStream { continuation in
             let task = Task {
@@ -51,23 +51,24 @@ struct ChatService {
         }
     }
 
-    static func makeRequest(port: Int, model: String, messages: [ChatMessage], thinkMax: Bool) -> URLRequest {
+    static func makeRequest(port: Int, model: String, messages: [ChatMessage], mode: ThinkingMode) -> URLRequest {
         var request = URLRequest(url: URL(string: "http://127.0.0.1:\(port)/v1/chat/completions")!)
         request.httpMethod = "POST"
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
         request.setValue("text/event-stream", forHTTPHeaderField: "Accept")
-        // Think Max requires thinking on + reasoning_effort "max" (ds4 honors only "max"); it then
-        // engages when the server --ctx ≥ 393,216. Off keeps the chat's fast non-thinking path.
+        // Off = the fast non-thinking path. Standard = thinking on, no effort prefix (works at
+        // any context size). Max Think adds reasoning_effort "max" (ds4 honors only "max"), which
+        // engages when the server --ctx ≥ 393,216 — the caller bumps the context on confirm.
         var body: [String: Any] = [
             "model": model,
             "messages": messages.map { ["role": $0.role == .user ? "user" : "assistant", "content": $0.content] },
             "temperature": 0.7,
             "max_tokens": 32768,
-            "thinking": thinkMax,
+            "thinking": mode != .off,
             "stream": true,
             "stream_options": ["include_usage": true],
         ]
-        if thinkMax { body["reasoning_effort"] = "max" }
+        if mode == .max { body["reasoning_effort"] = "max" }
         request.httpBody = try? JSONSerialization.data(withJSONObject: body)
         return request
     }
