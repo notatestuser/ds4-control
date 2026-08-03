@@ -14,7 +14,7 @@ set -u
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 DS4="$ROOT/external/ds4"
 GGUF_DIR="$HOME/Library/Application Support/DS4 Control/gguf"
-Q2="$GGUF_DIR/DeepSeek-V4-Flash-IQ2XXS-w2Q2K-AProjQ8-SExpQ8-OutQ8-chat-v2-imatrix.gguf"
+Q2="$GGUF_DIR/DeepSeek-V4-Flash-IQ2XXS-w2Q2K-AProjQ8-SExpQ8-OutQ8-chat-v2-imatrix-0731.gguf"
 PORT=8137
 LIMIT_GIB=96          # hard machine ceiling
 USABLE_GIB=88         # 96 − 8 GiB OS reserve (practical limit)
