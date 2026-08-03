@@ -130,6 +130,7 @@ final class SupervisorService: ObservableObject {
         host: String,
         port: Int,
         power: Int?,
+        sessions: Int = 1,
         kvDiskDir: URL? = nil
     ) {
         guard state == .idle || isErrorState else { emitBadState("start"); return }
@@ -148,6 +149,9 @@ final class SupervisorService: ObservableObject {
             "--metal",
         ]
         if let power { args += ["--power", "\(power)"] }
+        // >1 preallocates N resident KV sessions so that many chats/agents generate at once.
+        // 1 must omit the flag: ds4 treats even `--batched-session 1` as batched mode (MTP off).
+        if sessions > 1 { args += ["--batched-session", "\(sessions)"] }
         if let kvDiskDir {
             // Persist compressed KV to disk so repeated/large prefixes (coding agents)
             // skip re-prefill across turns and restarts. README: "KV cache is a
@@ -223,6 +227,7 @@ final class SupervisorService: ObservableObject {
         host: String,
         port: Int,
         power: Int?,
+        sessions: Int = 1,
         kvDiskDir: URL? = nil
     ) {
         guard state == .ready || state == .starting else { emitBadState("restart"); return }
@@ -230,7 +235,7 @@ final class SupervisorService: ObservableObject {
             guard let self else { return }
             self.start(
                 variant: variant, flashQuant: flashQuant, ctx: ctx, host: host, port: port, power: power,
-                kvDiskDir: kvDiskDir)
+                sessions: sessions, kvDiskDir: kvDiskDir)
         }
         stop()
         if state == .idle {

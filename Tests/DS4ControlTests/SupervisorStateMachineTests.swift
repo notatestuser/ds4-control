@@ -69,6 +69,18 @@ final class SupervisorStateMachineTests: XCTestCase {
         XCTAssertTrue(r.lastArgs.contains("--kv-disk-space-mb"))
         XCTAssertTrue(FileManager.default.fileExists(atPath: kv.path))  // created
     }
+    func testStartAddsBatchedSessionArgOnlyWhenSessionsAboveOne() throws {
+        let r = FakeRunner(); let s = try makeSupervisor(r)
+        s.start(
+            variant: .flash, flashQuant: .q2q4, ctx: 250_000, host: "127.0.0.1", port: 8000,
+            power: nil, sessions: 3)
+        XCTAssertEqual(r.lastArgs[r.lastArgs.firstIndex(of: "--batched-session")! + 1], "3")
+
+        // Default (1) omits the flag: ds4 treats even `--batched-session 1` as batched mode.
+        let r2 = FakeRunner(); let s2 = try makeSupervisor(r2)
+        s2.start(variant: .flash, flashQuant: .q2q4, ctx: 250_000, host: "127.0.0.1", port: 8000, power: nil)
+        XCTAssertFalse(r2.lastArgs.contains("--batched-session"))
+    }
     func testCrashIsError() throws {
         let r = FakeRunner(); let s = try makeSupervisor(r)
         s.start(variant: .flash, flashQuant: .q2q4, ctx: 250_000, host: "127.0.0.1", port: 8000, power: nil)

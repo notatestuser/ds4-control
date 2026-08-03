@@ -51,6 +51,7 @@ struct ModelRowView: View {
                         variant: app.selectedVariant, flashQuant: app.selectedFlashQuant,
                         ctx: app.effectiveCtx(ramGiB: ramGiB),
                         host: host, port: app.port, power: app.power,
+                        sessions: app.concurrentSessions,
                         kvDiskDir: app.kvDiskCache ? supervisor.kvDiskCacheURL : nil)
                 } else {
                     supervisor.retryDownload(
@@ -74,6 +75,7 @@ struct ModelRowView: View {
                         variant: app.selectedVariant, flashQuant: app.selectedFlashQuant,
                         ctx: app.effectiveCtx(ramGiB: ramGiB),
                         host: host, port: app.port, power: app.power,
+                        sessions: app.concurrentSessions,
                         kvDiskDir: app.kvDiskCache ? supervisor.kvDiskCacheURL : nil)
                 }.frame(maxWidth: .infinity).disabled(blocked)
             }

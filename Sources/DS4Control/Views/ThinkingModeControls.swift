@@ -1,7 +1,7 @@
 import AppKit
 import SwiftUI
 
-/// The shared Thinking: segmented picker (Off / Standard / Max Think), used by Settings and
+/// The shared Thinking: segmented picker (Instant / Standard / Max Think), used by Settings and
 /// the chat status bar. Selecting Max Think below ds4's 393,216-context floor does NOT apply
 /// the mode — ThinkingModePrompt first asks whether to bump the context (and restart, when a
 /// server is running). Cancelling leaves the mode untouched.
@@ -57,6 +57,7 @@ enum ThinkingModePrompt {
             variant: app.selectedVariant, flashQuant: app.selectedFlashQuant,
             ctx: app.effectiveCtx(ramGiB: systemRamGiB()),
             host: app.normalizeHostForLaunch(), port: app.port, power: app.power,
+            sessions: app.concurrentSessions,
             kvDiskDir: app.kvDiskCache ? supervisor.kvDiskCacheURL : nil)
     }
 }

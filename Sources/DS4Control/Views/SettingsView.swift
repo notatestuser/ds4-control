@@ -24,30 +24,33 @@ struct SettingsView: View {
     }
     private var flashModelFooter: String {
         let base =
-            "Which V4 Flash quant to download and use. GB sizes are resident memory (RSS) size; "
-            + "options that exceed this machine's RAM are disabled."
+            "Which Flash weights to download and run. Sizes are running memory; "
+            + "options that don't fit this Mac's RAM are unavailable."
         return isBusy
-            ? base + " Stop the server to clean up unused downloads."
-            : base + " Clean up removes other downloaded Flash quants (V4 Pro is always kept)."
+            ? base + " Stop the server to delete unused downloads."
+            : base + " Clean up deletes other downloaded Flash variants (V4 Pro is always kept)."
     }
 
     private var ctxHint: String {
         if app.ctxOverride > 0 {
             return thinkMax(ctx: app.ctxOverride)
-                ? "Max Think active (context ≥ 393,216)." : "Below Max Think."
+                ? "Max Think active (context ≥ 393,216)." : "Too small for Max Think (needs 393,216+)."
         }
         return
-            "Auto: \(defaultCtx(ramGiB: ram, variant: app.selectedVariant, flashQuant: app.selectedFlashQuant).formatted()) tokens for \(Int(ram)) GiB."
+            "Auto: \(defaultCtx(ramGiB: ram, variant: app.selectedVariant, flashQuant: app.selectedFlashQuant).formatted()) tokens (based on \(Int(ram)) GiB RAM)."
     }
 
     private var restartHint: String {
         isRunning
-            ? "Stops and relaunches ds4-server now with these settings."
-            : "Server not running — these settings apply when you next Start it."
+            ? "Restarts ds4-server with these settings."
+            : "Server not running — settings apply on next Start."
     }
 
     private var powerBinding: Binding<Double> {
         Binding(get: { Double(app.power ?? 100) }, set: { app.power = Int($0.rounded()) })
+    }
+    private var sessionsBinding: Binding<Double> {
+        Binding(get: { Double(app.concurrentSessions) }, set: { app.concurrentSessions = Int($0.rounded()) })
     }
     /// Context-size field as text. Always shows the active window: the override if set, else the
     /// tiered default — so the box is never blank. Backspacing it away stores 0 (auto), which the
@@ -87,13 +90,24 @@ struct SettingsView: View {
                     Text("Bind host")
                 }
                 Text(
-                    "Binds ds4-server to this address. "
-                        + "The app's built-in chat and Terminal agent still connect through 127.0.0.1. "
-                        + "Use 0.0.0.0 to listen on all network interfaces."
+                    "The address ds4-server listens on. "
+                        + "Chat and agents on this Mac always use 127.0.0.1. "
+                        + "Enter 0.0.0.0 to let other devices connect."
                 )
                 .font(.caption2)
                 .foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
+                LabeledContent {
+                    HStack(spacing: 10) {
+                        Slider(value: sessionsBinding, in: 1...16, step: 1)
+                        Text("\(app.concurrentSessions)")
+                            .monospacedDigit().foregroundStyle(.secondary)
+                            .frame(width: 30, alignment: .trailing)
+                    }
+                    .frame(width: 230)
+                } label: {
+                    Text("Concurrent sessions")
+                }
                 LabeledContent {
                     HStack(spacing: 10) {
                         Slider(value: powerBinding, in: 1...100)
@@ -112,8 +126,11 @@ struct SettingsView: View {
                 VStack(alignment: .leading, spacing: 4) {
                     Text(ctxHint)
                     Text(
-                        "Disk KV cache persists the cache so repeated or large prompts skip re-prefill "
-                            + "— applied on next Start.")
+                        "Concurrent sessions run that many chats or coding agents at the same time. "
+                            + "Memory use grows with sessions × context size. Applies on next Start.")
+                    Text(
+                        "Disk KV cache keeps the prompt cache on disk so repeated prompts start "
+                            + "faster. Applies on next Start.")
                 }
             }
 
@@ -130,9 +147,8 @@ struct SettingsView: View {
                 Text("Chat")
             } footer: {
                 Text(
-                    "Standard thinks at any context size. Max Think needs a context of at least 393,216 — "
-                        + "you'll be asked to bump it. Coding-agent CLIs set their own level, "
-                        + "so this affects only the chat.")
+                    "Max Think needs a context of at least 393,216 — you'll be asked to raise it. "
+                        + "Coding agents set their own level; this only affects the built-in chat.")
             }
 
             Section {
@@ -163,7 +179,7 @@ struct SettingsView: View {
                 }
                 Button("Cancel", role: .cancel) {}
             } message: {
-                Text("Keeps the selected quant and V4 Pro. Cannot be undone — removed quants must be re-downloaded.")
+                Text("Keeps the selected variant and V4 Pro. Deleted weights must be downloaded again.")
             }
 
             Section {
@@ -172,8 +188,8 @@ struct SettingsView: View {
                 Text("Downloads")
             } footer: {
                 Text(
-                    "Maximises speed with 64 parallel connections (default 8). Leave off behind CGNAT or strict NAT — "
-                        + "the connection storm can exhaust the session table and knock you offline."
+                    "Downloads use 64 connections instead of 8. Leave off behind CGNAT or strict NAT — "
+                        + "it can overload your router and knock you offline."
                 )
             }
 
@@ -190,6 +206,7 @@ struct SettingsView: View {
             variant: app.selectedVariant, flashQuant: app.selectedFlashQuant,
             ctx: app.effectiveCtx(ramGiB: ram),
             host: host, port: app.port, power: app.power,
+            sessions: app.concurrentSessions,
             kvDiskDir: app.kvDiskCache ? supervisor.kvDiskCacheURL : nil)
     }
 }

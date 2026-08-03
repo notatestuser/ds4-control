@@ -11,6 +11,9 @@ final class AppState: ObservableObject {
     @Published var host: String { didSet { d.set(host, forKey: "host") } }
     @Published var ctxOverride: Int { didSet { d.set(ctxOverride, forKey: "ctxOverride") } }  // 0 = auto
     @Published var power: Int? { didSet { d.set(power ?? 0, forKey: "power") } }
+    /// Resident KV sessions ds4-server preallocates (`--batched-session N`). 1 omits the flag,
+    /// keeping the original single-session path. Memory grows with sessions × context.
+    @Published var concurrentSessions: Int { didSet { d.set(concurrentSessions, forKey: "concurrentSessions") } }
     @Published var kvDiskCache: Bool { didSet { d.set(kvDiskCache, forKey: "kvDiskCache") } }
     /// The chat's thinking level (Off / Standard / Max Think). Coding-agent CLIs set their
     /// own per-request level, so this affects only the built-in chat.
@@ -41,6 +44,8 @@ final class AppState: ObservableObject {
         host = d.string(forKey: "host") ?? Self.defaultHost
         ctxOverride = d.integer(forKey: "ctxOverride")
         let p = d.integer(forKey: "power"); power = p > 0 ? p : nil
+        let sessions = d.integer(forKey: "concurrentSessions")
+        concurrentSessions = sessions >= 1 ? min(sessions, 16) : 1  // default 1, clamp 1...16
         kvDiskCache = d.object(forKey: "kvDiskCache") as? Bool ?? true  // default on
         if let storedMode = d.string(forKey: "thinkingMode").flatMap(ThinkingMode.init(rawValue:)) {
             thinkingMode = storedMode
