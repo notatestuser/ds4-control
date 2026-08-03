@@ -4,7 +4,7 @@
 
 A macOS **menu-bar control pane** for **DeepSeek V4** running locally on Apple Silicon via
 [antirez/ds4](https://github.com/antirez/ds4). It launches, supervises, and monitors a local
-`ds4-server` child process; lets you pick **V4 Pro** or **V4 Flash**; downloads GGUF weights;
+`ds4-server` child process; lets you pick **V4 Pro** or **V4 Flash** (0731 weights); downloads GGUF weights;
 shows live unified-memory / GPU / CPU / power widgets; provides a built-in chat; and can open a
 coding agent (pi or claude) in Terminal pointed at the local server.
 
