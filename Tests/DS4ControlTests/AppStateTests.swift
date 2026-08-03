@@ -57,4 +57,12 @@ final class AppStateTests: XCTestCase {
         let a2 = AppState(defaults: UserDefaults(suiteName: name)!)
         XCTAssertFalse(a2.kvDiskCache)  // persisted
     }
+
+    func testLegacyWeightsPromptDismissedPersists() {
+        let name = "test.\(UUID().uuidString)"
+        let a1 = AppState(defaults: UserDefaults(suiteName: name)!)
+        XCTAssertFalse(a1.legacyWeightsPromptDismissed)  // default false → prompt shows
+        a1.legacyWeightsPromptDismissed = true
+        XCTAssertTrue(AppState(defaults: UserDefaults(suiteName: name)!).legacyWeightsPromptDismissed)
+    }
 }

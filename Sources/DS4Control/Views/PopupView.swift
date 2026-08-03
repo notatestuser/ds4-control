@@ -15,6 +15,7 @@ struct PopupView: View {
             header
             Divider()
             ModelRowView(supervisor: supervisor, ramGiB: ram)
+            legacyWeightsBanner
             if supervisor.state == .downloading, let d = supervisor.download {
                 ProgressView(value: d.pct, total: 100) {
                     HStack(spacing: 6) {
@@ -163,6 +164,41 @@ struct PopupView: View {
         HStack(alignment: .top, spacing: 6) {
             Image(systemName: "exclamationmark.triangle.fill").foregroundStyle(.red)
             Text(errorMessage(e)).font(.caption2).foregroundStyle(.red).fixedSize(horizontal: false, vertical: true)
+        }
+    }
+
+    /// One-time banner for the pre-0731 weights migration. Only while idle/error — a
+    /// running or downloading model is never touched (same gating as Settings cleanup).
+    private var showLegacyWeightsBanner: Bool {
+        if app.legacyWeightsPromptDismissed { return false }
+        switch supervisor.state {
+        case .idle, .error: break
+        default: return false
+        }
+        return supervisor.legacyPreviewGgufBytes() > 0
+    }
+
+    @ViewBuilder private var legacyWeightsBanner: some View {
+        if showLegacyWeightsBanner {
+            HStack(alignment: .top, spacing: 6) {
+                Image(systemName: "externaldrive.badge.exclamationmark").foregroundStyle(.orange)
+                VStack(alignment: .leading, spacing: 4) {
+                    Text(
+                        "Old V4 Flash preview weights found"
+                            + " (~\(supervisor.legacyPreviewGgufBytes() / 1_073_741_824) GiB). "
+                            + "The 0731 models replaced them — they can no longer be started."
+                    )
+                    .font(.caption2).foregroundStyle(.orange).fixedSize(horizontal: false, vertical: true)
+                    HStack(spacing: 12) {
+                        Button("Delete old weights") {
+                            supervisor.removeLegacyPreviewGgufs()
+                            app.legacyWeightsPromptDismissed = true
+                        }
+                        Button("Not now") { app.legacyWeightsPromptDismissed = true }
+                    }
+                    .font(.caption2)
+                }
+            }
         }
     }
 

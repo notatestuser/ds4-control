@@ -21,6 +21,12 @@ final class AppState: ObservableObject {
     @Published var highPerformanceDownload: Bool {
         didSet { d.set(highPerformanceDownload, forKey: "highPerformanceDownload") }
     }
+    /// One-time migration: the 0731 Flash weights orphaned the preview GGUFs. Until the
+    /// user answers the popup banner, they get a delete-and-reclaim offer. The key is
+    /// generation-versioned so a future weights refresh re-prompts.
+    @Published var legacyWeightsPromptDismissed: Bool {
+        didSet { d.set(legacyWeightsPromptDismissed, forKey: "legacyWeightsPromptDismissed0731") }
+    }
     @Published var selectedVariant: Variant {
         didSet { d.set(selectedVariant.rawValue, forKey: "selectedVariant") }
     }
@@ -39,6 +45,7 @@ final class AppState: ObservableObject {
         kvDiskCache = d.object(forKey: "kvDiskCache") as? Bool ?? true  // default on
         thinkMaxChat = d.bool(forKey: "thinkMaxChat")  // default off
         highPerformanceDownload = d.bool(forKey: "highPerformanceDownload")  // default off
+        legacyWeightsPromptDismissed = d.bool(forKey: "legacyWeightsPromptDismissed0731")  // default false
         let ram = systemRamGiB()
         let stored = d.string(forKey: "selectedVariant").flatMap(Variant.init(rawValue:))
         selectedVariant = stored ?? (ram >= 512 ? .pro : .flash)  // default Pro on ≥512 GiB
