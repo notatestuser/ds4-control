@@ -51,7 +51,7 @@ Entry point `DS4ControlApp.swift` (`@main`) builds one `AppState`, one `Supervis
 
 | Area | Files | Role |
 |---|---|---|
-| State | `AppState.swift` | Persisted user prefs (port, ctxOverride, variant, flashQuant, kvDiskCache, thinkMaxChat). Pattern: `@Published var X { didSet { d.set(X, forKey:) } }` + read-back in `init`. |
+| State | `AppState.swift` | Persisted user prefs (port, ctxOverride, variant, flashQuant, kvDiskCache, thinkingMode). Pattern: `@Published var X { didSet { d.set(X, forKey:) } }` + read-back in `init`. |
 | Supervisor | `Services/SupervisorService.swift`, `ProcessRunner.swift`, `ReadinessMatcher.swift`, `HFDownloader.swift`, `ChunkFetcher.swift`, `ChunkBitmap.swift`, `DownloadProbe.swift` | Spawns/monitors `ds4-server` (stderr readiness, health poll, graceful stop, crash detect); downloads GGUF weights with a native parallel chunked downloader (offset writes + an on-disk bitmap sidecar for resume-across-restarts); owns the on-disk KV cache dir. |
 | Models | `Model/Variant.swift`, `Feasibility.swift`, `ServerState.swift` | `Variant` (pro/flash: layers, kvBytesPerToken, ctxCeiling, modelId, quants). `Feasibility` = RAM gate, `defaultCtx` (RAM-tiered), `defaultFlashQuant`, `thinkMax` threshold (393,216). |
 | Metrics | `Metrics/*` | IOReport/IOKit sampling (memory/GPU/CPU/power) on a 2 s timer; `MetricsManager` + per-collector files + `SparklineView` history. |

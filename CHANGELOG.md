@@ -1,6 +1,7 @@
 # Changelog
 
 ## Unreleased
+- Thinking is now a three-mode **Thinking:** control (Off / Standard / Max Think) shared by Settings and the chat status bar. Standard thinks at any context size; choosing Max Think below a 393,216 context prompts to bump the context — and restarts a running server so it takes effect immediately. (Migrates the old Max Think toggle: off → Off, on → Max Think.)
 - ds4 submodule bumped 477c0e8 → 54b36ed: Metal prefill/decode kernel optimizations, native Metal session batching, SSD-streaming and server JSON fixes (113 commits).
 - V4 Flash now runs the DeepSeek-V4-Flash-0731 weights (antirez's official `-0731` GGUFs; same q2 / q2-q4 / q4 recipes and sizes, so RAM tiers and context defaults are unchanged). V4 Pro is unchanged — no 0731 Pro release.
 - One-time migration prompt: on first launch the popup offers to delete orphaned pre-0731 Flash GGUFs (~81–165 GiB each), including download partials, behind a confirmation that lists the exact files.
