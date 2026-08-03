@@ -394,4 +394,38 @@ final class SupervisorIntegrationTests: XCTestCase {
                 atPath: g.appendingPathComponent(Quant.proImatrix.ggufFilename).path))
         XCTAssertEqual(s.ggufStoreVersion, before + 1)
     }
+
+    func testLegacyPreviewDetectionBytesAndRemoval() throws {
+        let dir = URL(fileURLWithPath: NSTemporaryDirectory()).appendingPathComponent(UUID().uuidString)
+        let g = dir.appendingPathComponent("gguf")
+        try FileManager.default.createDirectory(at: g, withIntermediateDirectories: true)
+        let names = Quant.legacyPreviewFilenames
+        try Data(count: 4).write(to: g.appendingPathComponent(names[0]))
+        try Data(count: 8).write(to: g.appendingPathComponent(names[1]))
+        try Data(count: 16).write(to: g.appendingPathComponent(names[2] + ".part"))  // orphaned partial
+        try Data(count: 2).write(to: g.appendingPathComponent(names[2] + ".part.dl"))  // its bitmap sidecar
+        // Current-generation file must be untouched.
+        try Data(count: 32).write(to: g.appendingPathComponent(Quant.q2Imatrix.ggufFilename))
+        let s = SupervisorService(ds4Dir: dir, runner: RealProcessRunner())
+        let before = s.ggufStoreVersion
+        XCTAssertEqual(s.legacyPreviewGgufURLs().count, 4)
+        XCTAssertEqual(s.legacyPreviewGgufBytes(), 30)
+        let removed = s.removeLegacyPreviewGgufs()
+        XCTAssertEqual(Set(removed), [names[0], names[1], names[2] + ".part", names[2] + ".part.dl"])
+        XCTAssertEqual(s.legacyPreviewGgufBytes(), 0)
+        XCTAssertEqual(s.ggufStoreVersion, before + 1)
+        XCTAssertTrue(
+            FileManager.default.fileExists(atPath: g.appendingPathComponent(Quant.q2Imatrix.ggufFilename).path))
+    }
+
+    func testLegacyPreviewRemovalNoOpWhenNone() throws {
+        let dir = URL(fileURLWithPath: NSTemporaryDirectory()).appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(
+            at: dir.appendingPathComponent("gguf"), withIntermediateDirectories: true)
+        let s = SupervisorService(ds4Dir: dir, runner: RealProcessRunner())
+        let before = s.ggufStoreVersion
+        XCTAssertEqual(s.legacyPreviewGgufBytes(), 0)
+        XCTAssertEqual(s.removeLegacyPreviewGgufs(), [])
+        XCTAssertEqual(s.ggufStoreVersion, before)  // no bump when nothing was removed
+    }
 }

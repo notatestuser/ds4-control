@@ -31,6 +31,12 @@ final class VariantTests: XCTestCase {
             "DeepSeek-V4-Flash-Layers37-42Q4KExperts-OtherExpertLayersIQ2XXSGateUp-Q2KDown-AProjQ8-SExpQ8-OutQ8-chat-v2-imatrix-fixed-0731.gguf"
         )
     }
+    func testLegacyPreviewFilenames() {
+        XCTAssertEqual(Quant.legacyPreviewFilenames.count, 3)
+        for q in [Quant.q2Imatrix, .q2q4Imatrix, .q4Imatrix] {
+            XCTAssertFalse(Quant.legacyPreviewFilenames.contains(q.ggufFilename))  // no overlap with 0731 names
+        }
+    }
     func testWeights() {
         XCTAssertEqual(Quant.for(.pro, flashQuant: .q2q4).weightsGiB, 432, accuracy: 1)
         XCTAssertEqual(Quant.for(.flash, flashQuant: .q4).weightsGiB, 153, accuracy: 1)

@@ -78,7 +78,7 @@ func resolveHFToken(env: [String: String], cacheFile: URL) -> String? {
     return nil
 }
 
-private func fileSize(_ url: URL) -> Int64 {
+func fileSize(_ url: URL) -> Int64 {
     let values = try? url.resourceValues(forKeys: [.fileSizeKey])
     return Int64(values?.fileSize ?? 0)
 }

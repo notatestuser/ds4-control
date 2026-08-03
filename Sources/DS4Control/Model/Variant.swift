@@ -63,6 +63,14 @@ enum Quant {
         case .q2q4Imatrix: return 91
         }
     }
+
+    /// Pre-0731 ("preview") Flash GGUF filenames this app used to download. Referenced only
+    /// by the one-time migration cleanup; Pro never had a preview build.
+    static let legacyPreviewFilenames = [
+        "DeepSeek-V4-Flash-IQ2XXS-w2Q2K-AProjQ8-SExpQ8-OutQ8-chat-v2-imatrix.gguf",
+        "DeepSeek-V4-Flash-Layers37-42Q4KExperts-OtherExpertLayersIQ2XXSGateUp-Q2KDown-AProjQ8-SExpQ8-OutQ8-chat-v2-imatrix-fixed.gguf",
+        "DeepSeek-V4-Flash-Q4KExperts-F16HC-F16Compressor-F16Indexer-Q8Attn-Q8Shared-Q8Out-chat-v2-imatrix.gguf",
+    ]
 }
 
 /// User-selectable V4 Flash quant (Settings). Maps to a concrete `Quant`; V4 Pro is always

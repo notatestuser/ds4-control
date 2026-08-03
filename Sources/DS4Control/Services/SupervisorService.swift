@@ -463,6 +463,31 @@ final class SupervisorService: ObservableObject {
         return removed
     }
 
+    // MARK: - Legacy preview weights (pre-0731)
+    /// Pre-0731 Flash GGUFs + their download partials still on disk. The 0731 switch
+    /// orphaned them: nothing in the app references these names anymore.
+    func legacyPreviewGgufURLs() -> [URL] {
+        let base = ggufBaseDir()
+        return Quant.legacyPreviewFilenames.flatMap { name in
+            [name, name + ".part", name + ".part.dl"]
+                .map { base.appendingPathComponent($0) }
+                .filter { FileManager.default.fileExists(atPath: $0.path) }
+        }
+    }
+    /// Total size of the orphaned files, for the migration banner label.
+    func legacyPreviewGgufBytes() -> Int64 {
+        legacyPreviewGgufURLs().reduce(0) { $0 + fileSize($1) }
+    }
+    /// Delete the orphaned pre-0731 files. Gate the call site to idle/error, exactly like
+    /// cleanupUnusedFlashQuants. Returns the removed filenames.
+    @discardableResult
+    func removeLegacyPreviewGgufs() -> [String] {
+        let urls = legacyPreviewGgufURLs()
+        for u in urls { try? FileManager.default.removeItem(at: u) }
+        if !urls.isEmpty { ggufStoreVersion += 1 }
+        return urls.map(\.lastPathComponent)
+    }
+
     // MARK: - Health
     private func startHealthPolling() {
         pollHealth()
