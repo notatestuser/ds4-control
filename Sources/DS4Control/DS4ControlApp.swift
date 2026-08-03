@@ -36,9 +36,7 @@ struct DS4ControlApp: App {
                 .environmentObject(app).environmentObject(metrics).environmentObject(supervisor)
                 .onAppear { startMenuBarServicesIfNeeded() }
         } label: {
-            Image(systemName: iconName(for: supervisor.state))
-                .renderingMode(.template)
-                .foregroundStyle(iconColor(for: supervisor.state))
+            MenuBarLabelView(state: supervisor.state)
         }
         .menuBarExtraStyle(.window)
 
@@ -49,23 +47,6 @@ struct DS4ControlApp: App {
 
         Window("DS4 Chat", id: "chat") {
             ChatView(viewModel: chat).environmentObject(app).environmentObject(supervisor)
-        }
-    }
-
-    private func iconName(for s: ServerState) -> String {
-        if case .error = s { return "exclamationmark.triangle.fill" }
-        switch s {
-        case .ready: return "bolt.fill";
-        case .starting, .downloading: return "bolt.badge.clock";
-        default: return "bolt.slash"
-        }
-    }
-    private func iconColor(for s: ServerState) -> Color {
-        switch s {
-        case .ready: return .green;
-        case .starting, .downloading: return .orange;
-        case .error: return .red;
-        default: return .secondary
         }
     }
 

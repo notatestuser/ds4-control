@@ -22,6 +22,9 @@ let package = Package(
                 .product(name: "MarkdownParser", package: "MarkdownView"),
             ],
             path: "Sources/DS4Control",
+            resources: [
+                .copy("Resources/MenuBarDS.svg")
+            ],
             linkerSettings: [
                 .linkedFramework("IOKit"),
                 .linkedLibrary("IOReport"),  // private dyld-cache lib for power/freq (Apple Silicon)
