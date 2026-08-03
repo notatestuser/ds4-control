@@ -24,7 +24,7 @@ struct SettingsView: View {
     }
     private var flashModelFooter: String {
         let base =
-            "Which V4 Flash quant to download and run. Larger quants need more memory; "
+            "Which V4 Flash quant to download and use. GB sizes are resident memory (RSS) size; "
             + "options that exceed this machine's RAM are disabled."
         return isBusy
             ? base + " Stop the server to clean up unused downloads."
