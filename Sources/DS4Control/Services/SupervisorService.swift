@@ -53,7 +53,7 @@ final class SupervisorService: ObservableObject {
 
     /// The pluggable file fetch — defaults to the native parallel `HFDownloader`. Tests inject a fake
     /// that simulates progress/completion/failure without touching the network. `highPerformance`
-    /// selects the worker count (12 vs 64).
+    /// selects the worker count (6 vs 64).
     typealias FetchFile =
         @Sendable (
             _ file: String, _ destDir: URL, _ token: String?, _ highPerformance: Bool,

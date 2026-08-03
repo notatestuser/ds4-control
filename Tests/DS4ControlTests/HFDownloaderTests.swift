@@ -3,6 +3,11 @@ import XCTest
 @testable import DS4Control
 
 final class HFDownloaderTests: XCTestCase {
+    func testWorkerCountTiers() {
+        XCTAssertEqual(HFDownloader.workerCount(highPerformance: false), 6)  // CGNAT-safe default
+        XCTAssertEqual(HFDownloader.workerCount(highPerformance: true), 64)  // opt-in aggressive
+    }
+
     /// Real end-to-end network download of a small public GGUF through the native `HFDownloader`:
     /// `/resolve` → cas-bridge/LFS redirect → closed-range chunk(s) → completion → rename, then
     /// verifies the size matches the server's total and the bytes are a valid GGUF.
