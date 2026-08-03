@@ -33,6 +33,7 @@ enum WindowChrome {
 
     private static func activateAndFocus(title: String, attemptsLeft: Int) {
         DispatchQueue.main.async {
+            guard openCount > 0 else { return }  // the window was closed before a retry could fire
             NSApplication.shared.activate(ignoringOtherApps: true)
             if let window = NSApplication.shared.windows.first(where: { $0.title == title }) {
                 window.makeKeyAndOrderFront(nil)

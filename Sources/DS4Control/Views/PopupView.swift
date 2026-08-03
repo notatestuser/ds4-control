@@ -237,7 +237,9 @@ struct PopupView: View {
         WindowChrome.windowClosed()
         if response == .alertFirstButtonReturn {
             supervisor.removeLegacyPreviewGgufs()
-            app.legacyWeightsPromptDismissed = true
+            // Dismiss only when nothing is left: a failed deletion keeps the banner up so the
+            // user can retry ("Not now" remains the deliberate opt-out).
+            app.legacyWeightsPromptDismissed = supervisor.legacyPreviewGgufURLs().isEmpty
         }
     }
 
