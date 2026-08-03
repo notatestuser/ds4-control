@@ -50,7 +50,7 @@ final class VariantTests: XCTestCase {
         XCTAssertEqual(FlashQuant.q2.quant, .q2Imatrix)
         XCTAssertEqual(FlashQuant.q2q4.quant, .q2q4Imatrix)
         XCTAssertEqual(FlashQuant.q4.quant, .q4Imatrix)
-        XCTAssertEqual(FlashQuant.q2q4.label, "q2-q4-imatrix · ~91 GiB")  // resident size
+        XCTAssertEqual(FlashQuant.q2q4.label, "0731-q2-q4-imatrix · ~91 GiB")  // 0731 generation + resident size
     }
     func testFlashQuantFitAndDefault() {
         XCTAssertEqual(defaultFlashQuant(ramGiB: 512), .q2q4)  // requested default fits

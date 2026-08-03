@@ -87,6 +87,7 @@ enum FlashQuant: String, CaseIterable, Identifiable, Codable {
         case .q4: return .q4Imatrix
         }
     }
-    /// Picker label: internal key + approximate resident size, e.g. "q2-q4-imatrix · ~91 GiB".
-    var label: String { "\(rawValue) · ~\(Int(quant.weightsGiB)) GiB" }
+    /// Picker label: weights generation + internal key + approximate resident size,
+    /// e.g. "0731-q2-q4-imatrix · ~91 GiB". All Flash quants are the 0731 builds.
+    var label: String { "0731-\(rawValue) · ~\(Int(quant.weightsGiB)) GiB" }
 }
