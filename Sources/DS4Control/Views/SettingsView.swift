@@ -33,8 +33,7 @@ struct SettingsView: View {
 
     private var ctxHint: String {
         if app.ctxOverride > 0 {
-            return thinkMax(ctx: app.ctxOverride)
-                ? "Max Think active (context ≥ 393,216)." : "Too small for Max Think (needs 393,216+)."
+            return "Max Think is available when context ≥ 393,216."
         }
         return
             "Auto: \(defaultCtx(ramGiB: ram, variant: app.selectedVariant, flashQuant: app.selectedFlashQuant).formatted()) tokens (based on \(Int(ram)) GiB RAM)."
