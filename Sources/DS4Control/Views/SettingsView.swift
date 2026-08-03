@@ -34,7 +34,7 @@ struct SettingsView: View {
     private var ctxHint: String {
         if app.ctxOverride > 0 {
             return thinkMax(ctx: app.ctxOverride)
-                ? "Think-Max active (context ≥ 393,216)." : "Below Think-Max."
+                ? "Max Think active (context ≥ 393,216)." : "Below Max Think."
         }
         return
             "Auto: \(defaultCtx(ramGiB: ram, variant: app.selectedVariant, flashQuant: app.selectedFlashQuant).formatted()) tokens for \(Int(ram)) GiB."
@@ -125,12 +125,12 @@ struct SettingsView: View {
             }
 
             Section {
-                Toggle("Enable Think Max in chat", isOn: $app.thinkMaxChat)
+                Toggle("Enable Max Think in chat", isOn: $app.thinkMaxChat)
             } header: {
                 Text("Chat")
             } footer: {
                 Text(
-                    "Sends reasoning_effort=max so the built-in chat runs DeepSeek's Think Max. "
+                    "Sends reasoning_effort=max so the built-in chat runs DeepSeek's Max Think. "
                         + "Off uses the fast non-thinking path. Coding-agent CLIs set their own "
                         + "thinking level, so this affects only the chat.")
             }
