@@ -1,4 +1,5 @@
 import XCTest
+import Combine
 @testable import DS4Control
 
 private final class FakeRunner: ProcessRunner {
@@ -20,7 +21,11 @@ private final class FakeRunner: ProcessRunner {
 
 @MainActor
 final class SupervisorStateMachineTests: XCTestCase {
-    fileprivate func makeSupervisor(_ runner: FakeRunner) throws -> SupervisorService {
+    // `probe` defaults to a hermetic "no server" — an unexpected exit now triggers an
+    // adoption probe, and the real default would hit a live ds4-server on the dev machine.
+    fileprivate func makeSupervisor(
+        _ runner: FakeRunner, probe: @escaping (Int) async -> Data? = { _ in nil }
+    ) throws -> SupervisorService {
         let dir = URL(fileURLWithPath: NSTemporaryDirectory()).appendingPathComponent(UUID().uuidString)
         try FileManager.default.createDirectory(
             at: dir.appendingPathComponent("gguf"), withIntermediateDirectories: true)
@@ -34,7 +39,7 @@ final class SupervisorStateMachineTests: XCTestCase {
         let hostQuant = Quant.for(.flash, flashQuant: .q2q4)
         let gg = dir.appendingPathComponent("gguf").appendingPathComponent(hostQuant.ggufFilename)
         FileManager.default.createFile(atPath: gg.path, contents: Data("gguf".utf8))
-        return SupervisorService(ds4Dir: dir, runner: runner)
+        return SupervisorService(ds4Dir: dir, runner: runner, serverProbe: probe)
     }
 
     func testStartReachesReady() throws {
@@ -86,6 +91,23 @@ final class SupervisorStateMachineTests: XCTestCase {
         s.start(variant: .flash, flashQuant: .q2q4, ctx: 250_000, host: "127.0.0.1", port: 8000, power: nil)
         r.emit("some log line"); r.crash(1)
         if case .error(.crashed) = s.state {} else { XCTFail("expected crashed, got \(s.state)") }
+    }
+    func testCrashAdoptsHealthyServerOnPort() throws {
+        // The spawned server died (e.g. bind conflict with an orphaned ds4-server that owns
+        // the port). If that port-holder answers the probe, adopt it as .ready instead of
+        // dead-ending in .error with a Retry button that can only fail the same way again.
+        let body = Data(
+            #"{"object":"list","data":[{"id":"deepseek-v4-flash","name":"DeepSeek V4 Flash","context_length":1000000}]}"#
+                .utf8)
+        let r = FakeRunner(); let s = try makeSupervisor(r, probe: { _ in body })
+        s.start(variant: .flash, flashQuant: .q2q4, ctx: 250_000, host: "127.0.0.1", port: 8000, power: nil)
+        r.crash(1)
+        let ready = expectation(description: "adopted as ready")
+        let token = s.$state.sink { if $0 == .ready { ready.fulfill() } }
+        wait(for: [ready], timeout: 5)
+        token.cancel()
+        XCTAssertEqual(s.activeModel, "DeepSeek V4 Flash")
+        XCTAssertEqual(s.ctx, 1_000_000)  // adopted server's context, not the start-time 250_000
     }
     func testStop() throws {
         let r = FakeRunner(); let s = try makeSupervisor(r)

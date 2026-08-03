@@ -196,6 +196,10 @@ final class SupervisorService: ObservableObject {
         }
         pendingRestart = nil
         state = .error(.crashed(tail: stderrTail.suffix(10).joined(separator: "\n")))
+        // A common cause is a bind conflict with a healthy ds4-server we don't own
+        // (orphaned by a force-quit, still loading at launch-probe time). If one answers
+        // the probe, adopt it instead of dead-ending in .error with an occupied port.
+        adoptHealthyServerIfPresent()
     }
 
     // MARK: - Stop
@@ -250,11 +254,21 @@ final class SupervisorService: ObservableObject {
     /// new one — avoids a port conflict and a second multi-hundred-GB load.
     func resumeRunningServerIfAny(port: Int) {
         guard state == .idle else { return }
+        adoptHealthyServerIfPresent(port: port)
+    }
+
+    /// Attach to a ds4-server already answering on `port` (default: the configured port) as
+    /// `.ready`. Runs at launch and after an unexpected exit (the typical cause is a bind
+    /// conflict with a healthy server we don't own). Applies only while idle/errored, so a
+    /// slow probe can never clobber a newer start/stop.
+    private func adoptHealthyServerIfPresent(port: Int? = nil) {
+        let port = port ?? self.port
+        guard state == .idle || isErrorState else { return }
         Task { [weak self] in
             guard let probe = self?.serverProbe else { return }
             let data = await probe(port)
             await MainActor.run {
-                guard let self, self.state == .idle, let data else { return }
+                guard let self, let data, self.state == .idle || self.isErrorState else { return }
                 self.serverAttached = true
                 self.port = port
                 self.activeModel = loadedModelName(from: data) ?? "ds4-server"

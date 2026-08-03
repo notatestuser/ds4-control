@@ -1,6 +1,8 @@
 # Changelog
 
 ## Unreleased
+- Fix: after an unexpected ds4-server exit (typically a bind conflict with an orphaned server that owns the port), adopt the healthy port-holder as ready instead of dead-ending in an error whose Retry could only fail the same way again.
+- Fix: settings/chat windows could open unfocused (greyed controls) right after an app restart — the one-shot activate was dropped while the activation-policy transition was in flight; window opening now retries activation until the window is key (bounded ~1 s).
 - Settings: new "Concurrent sessions" slider (1–16, default 1) above "GPU power duty". Above 1 it passes ds4's `--batched-session N`, so that many chats/coding agents can generate at the same time; ds4 preallocates one resident KV session per slot at launch, so memory grows with sessions × context size. 1 omits the flag entirely, keeping the original single-session path.
 - Settings copy pass: every footer/help text rewritten for clarity and plain wording (bind host, context hint, Disk KV cache, restart, thinking, Flash variant, downloads, cleanup dialog).
 - Thinking is now a three-mode **Thinking:** control (Instant / Standard / Max Think, default Standard) shared by Settings and the chat status bar. Instant answers with no thinking; Standard thinks at any context size; choosing Max Think below a 393,216 context prompts to bump the context — and restarts a running server so it takes effect immediately. (Migrates the old Max Think toggle: off → Instant, on → Max Think.)
