@@ -67,7 +67,7 @@ final class AppStateTests: XCTestCase {
     }
 
     func testThinkingModeLabels() {
-        XCTAssertEqual(ThinkingMode.allCases.map(\.label), ["Off", "Standard", "Max Think"])
+        XCTAssertEqual(ThinkingMode.allCases.map(\.label), ["Instant", "Standard", "Max Think"])
     }
 
     func testThinkingModePersists() {

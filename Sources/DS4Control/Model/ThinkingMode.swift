@@ -1,16 +1,16 @@
 import Foundation
 
 /// The chat's thinking level. ds4 collapses every OpenAI-style effort name to three real
-/// modes, so the control has three honest rungs: `.off` (no thinking), `.standard`
-/// (thinking on, no effort prefix — works at any context size), `.max` (thinking on +
-/// `reasoning_effort: "max"`, which ds4 honors only at context ≥ 393,216).
+/// modes, so the control has three honest rungs: `.off` ("Instant" — no thinking),
+/// `.standard` (thinking on, no effort prefix — works at any context size), `.max`
+/// (thinking on + `reasoning_effort: "max"`, which ds4 honors only at context ≥ 393,216).
 enum ThinkingMode: String, CaseIterable, Identifiable, Codable {
     case off, standard, max
     var id: String { rawValue }
     /// Segment label for the Thinking: picker.
     var label: String {
         switch self {
-        case .off: return "Off"
+        case .off: return "Instant"
         case .standard: return "Standard"
         case .max: return "Max Think"
         }

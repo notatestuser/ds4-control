@@ -56,7 +56,7 @@ struct ChatService {
         request.httpMethod = "POST"
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
         request.setValue("text/event-stream", forHTTPHeaderField: "Accept")
-        // Off = the fast non-thinking path. Standard = thinking on, no effort prefix (works at
+        // Instant = the fast non-thinking path. Standard = thinking on, no effort prefix (works at
         // any context size). Max Think adds reasoning_effort "max" (ds4 honors only "max"), which
         // engages when the server --ctx ≥ 393,216 — the caller bumps the context on confirm.
         var body: [String: Any] = [
