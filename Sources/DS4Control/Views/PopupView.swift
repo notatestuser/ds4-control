@@ -9,7 +9,6 @@ struct PopupView: View {
     private let ram = systemRamGiB()
     @State private var showStartHint = false
     @State private var showDownloadHint = false
-    @State private var confirmingLegacyDelete = false
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
@@ -184,48 +183,59 @@ struct PopupView: View {
             HStack(alignment: .top, spacing: 6) {
                 Image(systemName: "externaldrive.badge.exclamationmark").foregroundStyle(.orange)
                 VStack(alignment: .leading, spacing: 4) {
-                    if confirmingLegacyDelete {
-                        // Inline confirm, not a modal: a .window MenuBarExtra dismisses when it
-                        // resigns key, so an .alert/.confirmationDialog would collapse the popover.
-                        Text(
-                            "Delete these \(supervisor.legacyPreviewGgufNames().count) file(s)? "
-                                + "This cannot be undone."
-                        )
-                        .font(.caption2).foregroundStyle(.orange).fixedSize(horizontal: false, vertical: true)
-                        ScrollView([.vertical, .horizontal]) {
-                            Text(supervisor.legacyPreviewGgufNames().joined(separator: "\n"))
-                                .font(.caption2.monospaced())
-                                .textSelection(.enabled)
-                                .padding(4)
-                        }
-                        .frame(maxHeight: 88)
-                        .background(
-                            Color(nsColor: .textBackgroundColor).opacity(0.5),
-                            in: RoundedRectangle(cornerRadius: 4))
-                        HStack(spacing: 12) {
-                            Button("Delete", role: .destructive) {
-                                supervisor.removeLegacyPreviewGgufs()
-                                app.legacyWeightsPromptDismissed = true
-                                confirmingLegacyDelete = false
-                            }
-                            Button("Cancel") { confirmingLegacyDelete = false }
-                        }
-                        .font(.caption2)
-                    } else {
-                        Text(
-                            "Old V4 Flash preview weights found"
-                                + " (~\(supervisor.legacyPreviewGgufBytes() / 1_073_741_824) GiB). "
-                                + "The 0731 models replaced them — they can no longer be started."
-                        )
-                        .font(.caption2).foregroundStyle(.orange).fixedSize(horizontal: false, vertical: true)
-                        HStack(spacing: 12) {
-                            Button("Delete old weights") { confirmingLegacyDelete = true }
-                            Button("Not now") { app.legacyWeightsPromptDismissed = true }
-                        }
-                        .font(.caption2)
+                    Text(
+                        "Old V4 Flash preview weights found"
+                            + " (~\(supervisor.legacyPreviewGgufBytes() / 1_073_741_824) GiB). "
+                            + "The 0731 models replaced them — they can no longer be started."
+                    )
+                    .font(.caption2).foregroundStyle(.orange).fixedSize(horizontal: false, vertical: true)
+                    HStack(spacing: 12) {
+                        Button("Delete old weights") { confirmLegacyWeightsDelete() }
+                        Button("Not now") { app.legacyWeightsPromptDismissed = true }
                     }
+                    .font(.caption2)
                 }
             }
+        }
+    }
+
+    /// Real NSAlert (not SwiftUI .alert, which would collapse the .window MenuBarExtra).
+    /// The app promotes to .regular while it's up — the same dance WindowChrome does for
+    /// the chat/settings windows. The accessory view is the textarea listing the files.
+    private func confirmLegacyWeightsDelete() {
+        let paths = supervisor.legacyPreviewGgufURLs().map(\.path)
+        guard !paths.isEmpty else { return }
+        let alert = NSAlert()
+        alert.messageText = "Delete these \(paths.count) file(s)?"
+        alert.informativeText =
+            "Old V4 Flash preview weights"
+            + " (~\(supervisor.legacyPreviewGgufBytes() / 1_073_741_824) GiB). This cannot be undone."
+        alert.alertStyle = .warning
+        alert.addButton(withTitle: "Delete")
+        alert.addButton(withTitle: "Cancel")
+        alert.buttons[0].hasDestructiveAction = true
+        alert.buttons[0].keyEquivalent = ""  // keep Cancel as the Return-key default
+        alert.buttons[1].keyEquivalent = "\r"
+        let scrollView = NSScrollView(frame: NSRect(x: 0, y: 0, width: 380, height: 96))
+        scrollView.hasVerticalScroller = true
+        scrollView.borderType = .lineBorder
+        let textView = NSTextView(frame: scrollView.bounds)
+        textView.isEditable = false
+        textView.font = NSFont.monospacedSystemFont(ofSize: 11, weight: .regular)
+        textView.string = paths.joined(separator: "\n\n")
+        textView.isVerticallyResizable = true
+        textView.isHorizontallyResizable = false
+        textView.textContainer?.widthTracksTextView = true
+        textView.autoresizingMask = [.width]
+        scrollView.documentView = textView
+        alert.accessoryView = scrollView
+        WindowChrome.windowOpened(title: "ds4-legacy-delete-confirmation")  // policy → .regular
+        NSApplication.shared.activate(ignoringOtherApps: true)
+        let response = alert.runModal()
+        WindowChrome.windowClosed()
+        if response == .alertFirstButtonReturn {
+            supervisor.removeLegacyPreviewGgufs()
+            app.legacyWeightsPromptDismissed = true
         }
     }
 
