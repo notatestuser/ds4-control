@@ -4,7 +4,7 @@ import XCTest
 
 final class HFDownloaderTests: XCTestCase {
     func testWorkerCountTiers() {
-        XCTAssertEqual(HFDownloader.workerCount(highPerformance: false), 6)  // CGNAT-safe default
+        XCTAssertEqual(HFDownloader.workerCount(highPerformance: false), 8)  // CGNAT-safe default
         XCTAssertEqual(HFDownloader.workerCount(highPerformance: true), 64)  // opt-in aggressive
     }
 

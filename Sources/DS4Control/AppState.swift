@@ -16,7 +16,7 @@ final class AppState: ObservableObject {
     /// when the server --ctx ≥ 393,216, which the defaults guarantee). Off = the chat's fast
     /// no-think path. Coding-agent CLIs set their own per-request level, so this affects only chat.
     @Published var thinkMaxChat: Bool { didSet { d.set(thinkMaxChat, forKey: "thinkMaxChat") } }
-    /// High-performance downloads (64 parallel connections). Off by default: 6 connections
+    /// High-performance downloads (64 parallel connections). Off by default: 8 connections
     /// keeps the connection count CGNAT-safe. See SupervisorService.download.
     @Published var highPerformanceDownload: Bool {
         didSet { d.set(highPerformanceDownload, forKey: "highPerformanceDownload") }

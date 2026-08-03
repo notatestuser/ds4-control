@@ -172,7 +172,7 @@ struct SettingsView: View {
                 Text("Downloads")
             } footer: {
                 Text(
-                    "Maximises speed with 64 parallel connections (default 6). Leave off behind CGNAT or strict NAT — "
+                    "Maximises speed with 64 parallel connections (default 8). Leave off behind CGNAT or strict NAT — "
                         + "the connection storm can exhaust the session table and knock you offline."
                 )
             }
