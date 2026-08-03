@@ -15,13 +15,6 @@ final class AppState: ObservableObject {
     /// The chat's thinking level (Off / Standard / Max Think). Coding-agent CLIs set their
     /// own per-request level, so this affects only the built-in chat.
     @Published var thinkingMode: ThinkingMode { didSet { d.set(thinkingMode.rawValue, forKey: "thinkingMode") } }
-    /// Legacy two-state accessor for the old Max Think toggle semantics (on = Max, off =
-    /// Off). Kept while call sites migrate to the three-mode control; the persisted form is
-    /// `thinkingMode`.
-    var thinkMaxChat: Bool {
-        get { thinkingMode == .max }
-        set { thinkingMode = newValue ? .max : .off }
-    }
     /// High-performance downloads (64 parallel connections). Off by default: 8 connections
     /// keeps the connection count CGNAT-safe. See SupervisorService.download.
     @Published var highPerformanceDownload: Bool {

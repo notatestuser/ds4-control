@@ -125,14 +125,14 @@ struct SettingsView: View {
             }
 
             Section {
-                Toggle("Enable Max Think in chat", isOn: $app.thinkMaxChat)
+                ThinkingModePicker()
             } header: {
                 Text("Chat")
             } footer: {
                 Text(
-                    "Sends reasoning_effort=max so the built-in chat runs DeepSeek's Max Think. "
-                        + "Off uses the fast non-thinking path. Coding-agent CLIs set their own "
-                        + "thinking level, so this affects only the chat.")
+                    "Standard thinks at any context size. Max Think needs a context of at least 393,216 — "
+                        + "you'll be asked to bump it. Coding-agent CLIs set their own level, "
+                        + "so this affects only the chat.")
             }
 
             Section {

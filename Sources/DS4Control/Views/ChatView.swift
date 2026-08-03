@@ -209,9 +209,9 @@ struct ChatView: View {
                 .foregroundStyle(.secondary)
                 .monospacedDigit()
             Spacer()
-            Toggle("Max Think", isOn: $app.thinkMaxChat)
-                .toggleStyle(.checkbox)
-                .font(.caption)
+            ThinkingModePicker()
+                .labelsHidden()
+                .fixedSize()
         }
         .padding(.horizontal, 16)
         .padding(.vertical, 6)
