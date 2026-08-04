@@ -58,14 +58,6 @@ final class AppStateTests: XCTestCase {
         XCTAssertFalse(a2.kvDiskCache)  // persisted
     }
 
-    func testLaunchAtLoginDefaultsOffAndPersists() {
-        let name = "test.\(UUID().uuidString)"
-        let a1 = AppState(defaults: UserDefaults(suiteName: name)!)
-        XCTAssertFalse(a1.launchAtLogin)  // default off
-        a1.launchAtLogin = true
-        XCTAssertTrue(AppState(defaults: UserDefaults(suiteName: name)!).launchAtLogin)  // persisted
-    }
-
     func testLegacyWeightsPromptDismissedPersists() {
         let name = "test.\(UUID().uuidString)"
         let a1 = AppState(defaults: UserDefaults(suiteName: name)!)

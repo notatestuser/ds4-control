@@ -25,11 +25,10 @@ final class AppState: ObservableObject {
         didSet { d.set(highPerformanceDownload, forKey: "highPerformanceDownload") }
     }
     /// Whether DS4 Control opens automatically when the user logs in. Registered as a macOS
-    /// login item via SMAppService. Defaults to off; the UserDefaults value is the toggle's
-    /// persisted state and `setLaunchAtLogin(_:)` keeps it in sync with the OS.
-    @Published var launchAtLogin: Bool {
-        didSet { d.set(launchAtLogin, forKey: "launchAtLogin") }
-    }
+    /// login item via SMAppService. The OS is the source of truth: this mirrors
+    /// `SMAppService.mainApp.status == .enabled` (see init and `setLaunchAtLogin(_:)`), so it
+    /// stays correct even if the login item is changed from System Settings.
+    @Published var launchAtLogin: Bool
     /// One-time migration: the 0731 Flash weights orphaned the preview GGUFs. Until the
     /// user answers the popup banner, they get a delete-and-reclaim offer. The key is
     /// generation-versioned so a future weights refresh re-prompts.
@@ -62,7 +61,7 @@ final class AppState: ObservableObject {
             thinkingMode = .standard  // fresh-install default
         }
         highPerformanceDownload = d.bool(forKey: "highPerformanceDownload")  // default off
-        launchAtLogin = d.bool(forKey: "launchAtLogin")  // default off
+        launchAtLogin = SMAppService.mainApp.status == .enabled  // OS is the source of truth
         legacyWeightsPromptDismissed = d.bool(forKey: "legacyWeightsPromptDismissed0731")  // default false
         let ram = systemRamGiB()
         let stored = d.string(forKey: "selectedVariant").flatMap(Variant.init(rawValue:))
@@ -101,9 +100,11 @@ final class AppState: ObservableObject {
 
     /// Turn automatic launch-at-login on or off. Registers/unregisters this app as a macOS
     /// login item via SMAppService (the modern, notarization-friendly replacement for the
-    /// deprecated SMLoginItemSetEnabled). If the OS rejects the change — e.g. running
-    /// un-bundled from the build directory, where there's no real .app to register — the
-    /// toggle is reverted to the OS's actual state so the UI never lies.
+    /// deprecated SMLoginItemSetEnabled). The toggle always reflects the OS's actual state:
+    /// if registration needs approval (.requiresApproval) we open the Login Items pane and
+    /// keep the toggle off until it takes effect; if the OS rejects the change (e.g. running
+    /// un-bundled from the build directory, where there's no real .app to register) the
+    /// toggle reverts to off so the UI never lies.
     func setLaunchAtLogin(_ enabled: Bool) {
         do {
             if enabled {
@@ -111,9 +112,16 @@ final class AppState: ObservableObject {
             } else {
                 try SMAppService.mainApp.unregister()
             }
-            launchAtLogin = enabled
         } catch {
-            launchAtLogin = SMAppService.mainApp.status == .enabled
+            // Fall through: reflect the OS's actual state below (e.g. no real .app to
+            // register when running un-bundled from the build directory).
+        }
+        let status = SMAppService.mainApp.status
+        launchAtLogin = status == .enabled
+        if enabled && status == .requiresApproval {
+            // Registration needs the user's approval — surface the Login Items pane so they
+            // can approve, and keep the toggle off until it actually takes effect.
+            SMAppService.openSystemSettingsLoginItems()
         }
     }
 }
