@@ -1,5 +1,6 @@
 import Foundation
 import Combine
+import ServiceManagement
 
 @MainActor
 final class AppState: ObservableObject {
@@ -22,6 +23,12 @@ final class AppState: ObservableObject {
     /// keeps the connection count CGNAT-safe. See SupervisorService.download.
     @Published var highPerformanceDownload: Bool {
         didSet { d.set(highPerformanceDownload, forKey: "highPerformanceDownload") }
+    }
+    /// Whether DS4 Control opens automatically when the user logs in. Registered as a macOS
+    /// login item via SMAppService. Defaults to off; the UserDefaults value is the toggle's
+    /// persisted state and `setLaunchAtLogin(_:)` keeps it in sync with the OS.
+    @Published var launchAtLogin: Bool {
+        didSet { d.set(launchAtLogin, forKey: "launchAtLogin") }
     }
     /// One-time migration: the 0731 Flash weights orphaned the preview GGUFs. Until the
     /// user answers the popup banner, they get a delete-and-reclaim offer. The key is
@@ -55,6 +62,7 @@ final class AppState: ObservableObject {
             thinkingMode = .standard  // fresh-install default
         }
         highPerformanceDownload = d.bool(forKey: "highPerformanceDownload")  // default off
+        launchAtLogin = d.bool(forKey: "launchAtLogin")  // default off
         legacyWeightsPromptDismissed = d.bool(forKey: "legacyWeightsPromptDismissed0731")  // default false
         let ram = systemRamGiB()
         let stored = d.string(forKey: "selectedVariant").flatMap(Variant.init(rawValue:))
@@ -89,5 +97,23 @@ final class AppState: ObservableObject {
         let normalized = host.trimmingCharacters(in: .whitespacesAndNewlines)
         host = normalized.isEmpty ? Self.defaultHost : normalized
         return host
+    }
+
+    /// Turn automatic launch-at-login on or off. Registers/unregisters this app as a macOS
+    /// login item via SMAppService (the modern, notarization-friendly replacement for the
+    /// deprecated SMLoginItemSetEnabled). If the OS rejects the change — e.g. running
+    /// un-bundled from the build directory, where there's no real .app to register — the
+    /// toggle is reverted to the OS's actual state so the UI never lies.
+    func setLaunchAtLogin(_ enabled: Bool) {
+        do {
+            if enabled {
+                try SMAppService.mainApp.register()
+            } else {
+                try SMAppService.mainApp.unregister()
+            }
+            launchAtLogin = enabled
+        } catch {
+            launchAtLogin = SMAppService.mainApp.status == .enabled
+        }
     }
 }

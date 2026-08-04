@@ -44,6 +44,9 @@ struct SettingsView: View {
             ? "Restarts ds4-server with these settings."
             : "Server not running — settings apply on next Start."
     }
+    private var launchAtLoginBinding: Binding<Bool> {
+        Binding(get: { app.launchAtLogin }, set: { app.setLaunchAtLogin($0) })
+    }
 
     private var powerBinding: Binding<Double> {
         Binding(get: { Double(app.power ?? 100) }, set: { app.power = Int($0.rounded()) })
@@ -68,6 +71,14 @@ struct SettingsView: View {
 
     var body: some View {
         Form {
+            Section {
+                Toggle("Open DS4 Control at login", isOn: launchAtLoginBinding)
+            } header: {
+                Text("Startup")
+            } footer: {
+                Text("Launches the menu bar app automatically when you sign in to your Mac.")
+            }
+
             Section {
                 LabeledContent {
                     TextField("Auto", text: ctxText)
