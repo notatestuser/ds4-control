@@ -374,7 +374,7 @@ final class SupervisorIntegrationTests: XCTestCase {
         let dir = URL(fileURLWithPath: NSTemporaryDirectory()).appendingPathComponent(UUID().uuidString)
         let g = dir.appendingPathComponent("gguf")
         try FileManager.default.createDirectory(at: g, withIntermediateDirectories: true)
-        // Seed all three Flash quants + the Pro file on disk.
+        // Seed every Flash quant + the Pro file on disk.
         for q in FlashQuant.allCases {
             try Data(count: 4).write(to: g.appendingPathComponent(q.quant.ggufFilename))
         }
@@ -383,12 +383,18 @@ final class SupervisorIntegrationTests: XCTestCase {
         XCTAssertTrue(FlashQuant.allCases.allSatisfy { s.isFlashQuantDownloaded($0) })
         let before = s.ggufStoreVersion
 
-        let removed = s.cleanupUnusedFlashQuants(keep: .q2q4)
+        let kept = FlashQuant.q2q4
+        let removed = s.cleanupUnusedFlashQuants(keep: kept)
 
-        XCTAssertEqual(Set(removed), [FlashQuant.q2.quant.ggufFilename, FlashQuant.q4.quant.ggufFilename])
-        XCTAssertTrue(s.isFlashQuantDownloaded(.q2q4))  // selected kept
-        XCTAssertFalse(s.isFlashQuantDownloaded(.q2))  // removed
-        XCTAssertFalse(s.isFlashQuantDownloaded(.q4))  // removed
+        // Derived from allCases, not hardcoded, so adding a quant doesn't silently narrow what
+        // this asserts: everything except the kept one goes, and Pro is never touched.
+        let expected = Set(FlashQuant.allCases.filter { $0 != kept }.map(\.quant.ggufFilename))
+        XCTAssertEqual(Set(removed), expected)
+        XCTAssertFalse(expected.isEmpty)
+        XCTAssertTrue(s.isFlashQuantDownloaded(kept))  // selected kept
+        for q in FlashQuant.allCases where q != kept {
+            XCTAssertFalse(s.isFlashQuantDownloaded(q), "\(q.rawValue) should have been removed")
+        }
         XCTAssertTrue(  // V4 Pro always kept
             FileManager.default.fileExists(
                 atPath: g.appendingPathComponent(Quant.proImatrix.ggufFilename).path))

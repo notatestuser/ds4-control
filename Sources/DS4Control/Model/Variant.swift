@@ -16,7 +16,7 @@ enum Variant: String, CaseIterable, Identifiable, Codable {
 }
 
 enum Quant {
-    case proImatrix, q4Imatrix, q2Imatrix, q2q4Imatrix
+    case proImatrix, q4Imatrix, q2Imatrix, q2q4Imatrix, q8Experts
 
     /// Concrete quant for a variant. Pro is always `pro-imatrix`; Flash follows the
     /// user-selected `FlashQuant` (default `q2-q4-imatrix`).
@@ -32,6 +32,9 @@ enum Quant {
         case .q4Imatrix: return "q4-imatrix"
         case .q2Imatrix: return "q2-imatrix"
         case .q2q4Imatrix: return "q2-q4-imatrix"
+        // No upstream download_model.sh target exists for this one — it's built locally by
+        // gguf-tools. `arg` is vestigial anyway (the app uses the native downloader).
+        case .q8Experts: return "q8"
         }
     }
 
@@ -51,6 +54,21 @@ enum Quant {
         case .q2q4Imatrix:
             return
                 "DeepSeek-V4-Flash-Layers37-42Q4KExperts-OtherExpertLayersIQ2XXSGateUp-Q2KDown-AProjQ8-SExpQ8-OutQ8-chat-v2-imatrix-fixed-0731.gguf"
+        // Built locally from the 0731 safetensors with ds4's gguf-tools (`--experts q8_0`), using
+        // the q4-imatrix GGUF as template so every non-expert tensor is carried over unchanged.
+        //
+        // q8_0, NOT q8_K: gguf-tools will happily emit q8_K experts (its README even documents a
+        // "True Q8_K routed experts" recipe), but ds4's own loader rejects the result —
+        // `tensor_is_routed_expert_type` accepts only Q8_0 / IQ2_XXS / Q2_K / Q4_K / Q5_K / Q6_K.
+        // Q8_K in the engine is an *activation* format, not expert storage.
+        //
+        // No `-imatrix` in the name: the Q8_0 path discards the imatrix (quants.c
+        // `(void)imatrix;`), as do the Q8_0/F16 tensors around it — nothing here is
+        // imatrix-influenced. `Q8Experts` matches how the existing names spell q8_0 (Q8Attn,
+        // Q8Shared, Q8Out).
+        case .q8Experts:
+            return
+                "DeepSeek-V4-Flash-Q8Experts-F16HC-F16Compressor-F16Indexer-Q8Attn-Q8Shared-Q8Out-chat-v2-0731.gguf"
         }
     }
 
@@ -61,6 +79,9 @@ enum Quant {
         case .q4Imatrix: return 153
         case .q2Imatrix: return 81
         case .q2q4Imatrix: return 91
+        // 282.33 GiB — the built file is exactly 303,146,197,600 bytes, matching the quantizer's
+        // dry-run plan to the byte.
+        case .q8Experts: return 282.33
         }
     }
 
@@ -79,12 +100,26 @@ enum FlashQuant: String, CaseIterable, Identifiable, Codable {
     case q2 = "q2-imatrix"
     case q2q4 = "q2-q4-imatrix"
     case q4 = "q4-imatrix"
+    /// Q8_0 routed experts, every other tensor as q4-imatrix. The released experts are FP4
+    /// (`expert_dtype` in the model config), so this adds no information — it removes the second
+    /// lossy step q4_K applies, making it the fidelity ceiling for the expert weights.
+    ///
+    /// **Prefer `.q4` for real use.** That second step is measurable at the weight level (5.34%
+    /// relative RMSE, cosine 0.9984, flat across depth) but does NOT show up in output quality:
+    /// scored against the 100 official Flash continuations, no metric reaches significance
+    /// (avg_nll delta 95% CI crosses zero, case wins 52/48, first-token McNemar p=0.22). This
+    /// variant is a reference control for measuring quantization damage, not a daily driver.
+    ///
+    /// Speed is not the objection — 30.96 vs 34.85 tok/s on an M3 Ultra, ~11%, because the MoE is
+    /// sparse (6 of 256 experts per token). The cost is the 282 GiB footprint.
+    case q8 = "q8"
     var id: String { rawValue }
     var quant: Quant {
         switch self {
         case .q2: return .q2Imatrix
         case .q2q4: return .q2q4Imatrix
         case .q4: return .q4Imatrix
+        case .q8: return .q8Experts
         }
     }
     /// Picker label: weights generation + internal key + approximate resident size,

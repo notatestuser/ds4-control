@@ -66,6 +66,7 @@ DeepSeek V4 is memory-hungry so DS4 Control gates feasibility before launching.
 | V4 Pro | pro-imatrix | **≥ 512 GiB required** | Anything below is blocked. |
 | V4 Flash (0731) | q4-imatrix | ≥ 256 GiB | Standard. |
 | V4 Flash (0731) | q2-imatrix | 96 GiB minimum | 96–127 GiB requires raising the Metal wired limit (see below). |
+| V4 Flash (0731) | q8 | ≥ 291 GiB | Q8_0 routed experts, ~282 GiB. Reference fidelity, not added precision — see below. |
 
 On **96–127 GiB** machines you must raise the Metal wired limit so the GPU working set fits, e.g.:
 
@@ -74,6 +75,18 @@ sudo sysctl iogpu.wired_limit_mb=<~0.9 × RAM_MB>
 ```
 
 DS4 Control shows the advisory value for your machine when this applies.
+
+The **q8** option is built locally rather than downloaded from antirez's repo (`gguf-tools/deepseek4-quantize --experts q8_0`, using the q4-imatrix GGUF as template so every non-expert tensor carries over unchanged). DeepSeek ships Flash with `expert_dtype: fp4`, so 8-bit experts add no information — they remove the *second* lossy step that q4_K's re-quantization introduces, making this the fidelity ceiling for the released expert weights. It has no `-imatrix` suffix because the q8_0 path discards the imatrix.
+
+Measured on an M3 Ultra (400-token greedy completion, `--ctx 32768`): **30.96 tok/s vs q4-imatrix's 34.85**, i.e. ~11% slower for 1.85× the size. The near-parity is because the MoE is sparse — `num_experts_per_tok` is 6 of 256, so doubling expert precision adds only ~75 MB per token (~0.09 ms at M3 Ultra bandwidth) against a ~29 ms per-token budget. Attention, KV and the dense paths are byte-identical between the two builds.
+
+**Prefer q4-imatrix for real use.** q4_K's extra re-quantization step is measurable at the weight level — 5.34% relative RMSE against the q8 build, cosine 0.9984, and flat across depth (0.73 pp spread from layer 0 to 42) — but it does not reach the output. Scored against the 100 tracked official Flash continuations (`gguf-tools/quality-testing`), no metric is significant: avg_nll delta's 95% CI crosses zero, case wins are 52/48, greedy-LCP and first-token differences fail their tests (McNemar p=0.22). The CI bounds any q8 advantage below ~1.6% relative NLL. q8's honest role is a reference control for quantization experiments, not a daily driver. Reproduce with `scripts/expert-error.py` and `make -C gguf-tools quality-score`.
+
+That flat depth profile is also why there is no mixed q4/q8 per-layer build: with error uniform across layers and the two endpoints statistically indistinguishable, any interpolation between them is indistinguishable too.
+
+Related dead end, recorded so it isn't re-investigated: **q5_K and q6_K cannot be built for V4 Flash.** They appear in ds4's `tensor_is_routed_expert_type`, but that accept-list is shared across model families and those entries are for GLM 5.2 — the shader helpers are named `ds4_glm_q5_K_value`/`ds4_glm_q6_K_value`, there is no V4 `mul_mv_id` kernel for them, and `gguf-tools/quants.c` has `can_quantize = false` for both with no block structs at all.
+
+Note `q8_0`, not `q8_K`: gguf-tools can emit q8_K routed experts (its README documents such a recipe), but ds4's loader rejects them — `tensor_is_routed_expert_type` accepts only Q8_0, IQ2_XXS, Q2_K, Q4_K, Q5_K and Q6_K. In the engine, Q8_K is an activation format, not expert storage.
 
 **Default context** scales with RAM: `1,000,000` on ≥ 512 GiB (Pro's full model context), up to `393216` ("Think-Max") on Flash with ≥ 128 GiB, and stepped down through a snap set (`393216 → 250000 → 131072 → 65536 → 32768`) for lower-RAM machines based on a weights-plus-KV memory budget. You can override the context in Settings.
 

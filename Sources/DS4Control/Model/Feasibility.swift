@@ -46,10 +46,22 @@ func defaultCtx(ramGiB: Double, variant: Variant, flashQuant: FlashQuant) -> Int
     return ramGiB >= 128 ? variant.ctxCeiling : 393_216  // Flash: 1M on ≥128 GiB, else 393K
 }
 
-/// Whether a Flash quant's resident weights fit this machine (weights + OS reserve ≤ RAM).
-/// Drives which options the Settings quant picker offers.
+/// KV-cache size in GiB at a given context. `kvBytesPerToken` is the measured per-token cost
+/// (see `Variant`, from scripts/flash-mem-harness.sh).
+func kvGiB(variant: Variant, ctx: Int) -> Double {
+    Double(variant.kvBytesPerToken) * Double(ctx) / 1_073_741_824
+}
+
+/// Whether a Flash quant's working set fits this machine: weights + the KV cache it will actually
+/// be launched with + the OS reserve. Drives which options the Settings quant picker offers.
+///
+/// The KV term is load-bearing, not decoration. Checking weights alone let a quant pass the gate
+/// and then fail to run, because `defaultCtx` hands Flash the full 1M window on any machine ≥128
+/// GiB — for q8 that is 15.66 GiB of KV, so a 291–305 GiB machine looked fine at 290.33 and needed
+/// 306. No circularity: `defaultCtx` keys on RAM, not on the quant.
 func flashQuantFits(_ q: FlashQuant, ramGiB: Double) -> Bool {
-    q.quant.weightsGiB + osReserveGiB <= ramGiB
+    let ctx = defaultCtx(ramGiB: ramGiB, variant: .flash, flashQuant: q)
+    return q.quant.weightsGiB + kvGiB(variant: .flash, ctx: ctx) + osReserveGiB <= ramGiB
 }
 
 /// Default Flash quant: q2-q4 on ≥128 GiB (room for the 1M window all-resident), else q2
