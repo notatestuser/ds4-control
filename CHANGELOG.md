@@ -1,6 +1,13 @@
 # Changelog
 
 ## Unreleased
+- ds4 submodule bumped 54b36ed → upstream `84cc882` (118 commits), with our THINK_MAX patch rebased on top (`ds4-control-patches-v2`). Highlights:
+  - **Correctness, and it applied to us.** `metal: fix long-context prefill and decode correctness` fixes a missing device-memory barrier in the RoPE helper (`mem_threadgroup` → `mem_device_and_threadgroup`; it writes device memory other lanes read, so a threadgroup-only fence left a race), and disables a non-reproducible streaming top-k selector whose trigger — `top_k == 512 && n_comp > 1024 && n_tokens >= 32` — is exactly V4 Flash's `index_topk: 512` on long-context prefill.
+  - **Decode is measurably faster on Apple Silicon.** Upstream's "exact" fusion campaign (bit-identical A/B verified across 134.6M F32 logits) reports M3 Ultra 41.08 → 44.18 tok/s. Measured here on q4-imatrix with an identical 400-token greedy prompt: **34.85 → 40.07 tok/s (+15%)**.
+  - **MXFP4 routed experts are now supported** (`DS4_TENSOR_MXFP4` in `tensor_is_routed_expert_type`, 179 mentions in `metal/moe.metal`), so upstream's `ds4f-mxfp4` build (~156 GB) becomes runnable. Not yet offered in the app.
+  - Prefill acceleration (routed MoE, indexed, Metal 4 Q4 attention output, Q-head norm + RoPE fusion), streamed-expert mlock pinning restored, and ~8 DSpark commits including `Restore greedy identity after DSpark acceptance` and `Make DSpark scheduling deterministic by default`.
+  - `download_model.sh` gains the renamed `ds4f-*` targets (`ds4f-q2`, `ds4f-q2-q4`, `ds4f-q4`, `ds4f-mxfp4`, `ds4f-dspark`). These resolve to the *same* `-0731` files the app already downloads natively, so nothing in the app changes.
+  - Note: ds4's default DSpark confidence threshold moved from 0.9 to Metal 0.6 / CUDA-ROCm 0.7.
 
 ## v1.1.0 — 2026-08-03
 - Fix: after an unexpected ds4-server exit (typically a bind conflict with an orphaned server that owns the port), adopt the healthy port-holder as ready instead of dead-ending in an error whose Retry could only fail the same way again.
