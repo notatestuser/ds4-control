@@ -208,6 +208,23 @@ struct ChatView: View {
                 .font(.caption)
                 .foregroundStyle(.secondary)
                 .monospacedDigit()
+            if app.greedyChat {
+                // Deterministic replies are surprising unless labelled.
+                Text("Greedy")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .help(
+                        "Chat replies use greedy decoding (temperature 0), so the same prompt gives "
+                            + "the same answer. Required for DSpark to speed up the chat.")
+            }
+            if supervisor.dsparkActive {
+                Text("DSpark")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .help(
+                        "The running server was started with DSpark speculative decoding. It only "
+                            + "engages on requests sent at temperature 0.")
+            }
             Spacer()
             ThinkingModePicker()
                 .labelsHidden()

@@ -66,6 +66,29 @@ final class AppStateTests: XCTestCase {
         XCTAssertTrue(AppState(defaults: UserDefaults(suiteName: name)!).legacyWeightsPromptDismissed)
     }
 
+    func testDsparkSpeculationDefaultsOffAndPersists() {
+        let name = "test.\(UUID().uuidString)"
+        let a1 = AppState(defaults: UserDefaults(suiteName: name)!)
+        XCTAssertFalse(a1.dsparkSpeculation)  // opt-in: it needs a separate ~5.6 GiB download
+        a1.dsparkSpeculation = true
+        XCTAssertTrue(AppState(defaults: UserDefaults(suiteName: name)!).dsparkSpeculation)
+    }
+
+    /// Greedy chat is a SEPARATE opt-in from DSpark. Enabling DSpark must not silently drop the
+    /// chat below DeepSeek's recommended sampling — the two settings are independent.
+    func testGreedyChatDefaultsOffAndIsIndependentOfDspark() {
+        let name = "test.\(UUID().uuidString)"
+        let a1 = AppState(defaults: UserDefaults(suiteName: name)!)
+        XCTAssertFalse(a1.greedyChat)
+        a1.dsparkSpeculation = true
+        XCTAssertFalse(a1.greedyChat, "turning DSpark on must not imply greedy chat")
+        a1.greedyChat = true
+        let a2 = AppState(defaults: UserDefaults(suiteName: name)!)
+        XCTAssertTrue(a2.greedyChat)  // persists
+        a2.dsparkSpeculation = false
+        XCTAssertTrue(a2.greedyChat, "turning DSpark off must not silently revert the choice")
+    }
+
     func testThinkingModeLabels() {
         XCTAssertEqual(ThinkingMode.allCases.map(\.label), ["Instant", "Standard", "Max Think"])
     }

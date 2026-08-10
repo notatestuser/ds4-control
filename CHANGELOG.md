@@ -1,6 +1,10 @@
 # Changelog
 
 ## Unreleased
+- Settings: new **Speculative decoding** section with a **DSpark** toggle (off by default). DSpark is DeepSeek's auxiliary draft model for V4 Flash — it proposes up to five tokens ahead and Flash verifies them, committing only the accepted prefix. Turning it on downloads the ~5.6 GiB support GGUF (`DeepSeek-V4-Flash-DSpark-support-0731.gguf`, upstream's `ds4f-dspark`) with progress shown in Settings, then passes `--mtp <file> --dspark` on the next server start. A "Remove download" button reclaims the space.
+  - The download runs on its own track and deliberately does **not** enter `ServerState.downloading`, so Start/Stop and the popup stay usable while an accessory model downloads. It parks itself if a main model download starts and re-arms when that finishes, so the two never split bandwidth.
+  - The flags are only passed when ds4 can actually use them: V4 Flash only (PRO is unsupported upstream), and Concurrent sessions must be 1 — `--batched-session` disables speculative decoding outright. Settings explains which condition is blocking it rather than silently doing nothing.
+- Settings: new **Greedy replies** toggle under Chat (off by default), sending `temperature: 0`. Deliberately independent of DSpark: ds4's speculative path is greedy-only, so this is what lets DSpark speed up the built-in chat — but DeepSeek's V4 model card recommends temperature 1.0 (which ds4 implements as its own default), and greedy decoding on a thinking model risks repetition. Coupling the two would have traded recommended sampling for an upstream-experimental speedup without asking, so it stays an explicit choice. The chat status bar labels both `Greedy` and `DSpark` when active.
 
 ## v1.1.0 — 2026-08-03
 - Fix: after an unexpected ds4-server exit (typically a bind conflict with an orphaned server that owns the port), adopt the healthy port-holder as ready instead of dead-ending in an error whose Retry could only fail the same way again.

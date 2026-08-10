@@ -24,6 +24,17 @@ final class AppState: ObservableObject {
     @Published var highPerformanceDownload: Bool {
         didSet { d.set(highPerformanceDownload, forKey: "highPerformanceDownload") }
     }
+    /// DSpark speculative decoding (`--mtp <support gguf> --dspark`). Off by default: it needs a
+    /// separate ~5.6 GiB download, is experimental upstream, and applies to V4 Flash only. See
+    /// `dsparkApplies(enabled:variant:sessions:)` for when it actually reaches ds4-server.
+    @Published var dsparkSpeculation: Bool { didSet { d.set(dsparkSpeculation, forKey: "dsparkSpeculation") } }
+    /// Send `temperature: 0` from the built-in chat. Deliberately independent of
+    /// `dsparkSpeculation`: ds4 only speculates at temperature ≤ 0, so this is what lets DSpark
+    /// speed up the chat — but DeepSeek's V4 model card recommends temperature 1.0 (which ds4
+    /// implements as its own default), and greedy decoding on a thinking model carries a
+    /// repetition risk. Coupling the two would silently trade recommended sampling for an
+    /// upstream-experimental speedup, so the user opts in separately and knowingly.
+    @Published var greedyChat: Bool { didSet { d.set(greedyChat, forKey: "greedyChat") } }
     /// Whether DS4 Control opens automatically when the user logs in. Registered as a macOS
     /// login item via SMAppService. This is a snapshot of the OS state —
     /// `SMAppService.mainApp.status == .enabled` — refreshed on init, after each
@@ -65,6 +76,8 @@ final class AppState: ObservableObject {
             thinkingMode = .standard  // fresh-install default
         }
         highPerformanceDownload = d.bool(forKey: "highPerformanceDownload")  // default off
+        dsparkSpeculation = d.bool(forKey: "dsparkSpeculation")  // default off
+        greedyChat = d.bool(forKey: "greedyChat")  // default off — keep the model card's sampling
         launchAtLogin = SMAppService.mainApp.status == .enabled  // OS is the source of truth
         legacyWeightsPromptDismissed = d.bool(forKey: "legacyWeightsPromptDismissed0731")  // default false
         let ram = systemRamGiB()

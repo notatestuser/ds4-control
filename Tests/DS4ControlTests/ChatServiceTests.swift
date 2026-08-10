@@ -135,4 +135,25 @@ final class ChatServiceTests: XCTestCase {
         XCTAssertEqual(json["thinking"] as? Bool, true)  // thinking on at any context size
         XCTAssertNil(json["reasoning_effort"])  // no effort prefix — ds4's plain thinking
     }
+
+    /// ds4-server's decode loop only speculates when `temperature <= 0`, so a DSpark-enabled server
+    /// needs greedy requests or the feature silently does nothing.
+    func testGreedyRequestSendsZeroTemperature() throws {
+        let request = ChatService.makeRequest(
+            port: 9001, model: "deepseek-v4-flash",
+            messages: [ChatMessage(role: .user, content: "hi")], mode: .standard, greedy: true)
+        let json = try XCTUnwrap(
+            try JSONSerialization.jsonObject(with: XCTUnwrap(request.httpBody)) as? [String: Any])
+        XCTAssertEqual(json["temperature"] as? Double, 0)
+    }
+
+    /// Determinism is the cost of DSpark, so it must not leak into ordinary runs.
+    func testNonGreedyRequestKeepsSampling() throws {
+        let request = ChatService.makeRequest(
+            port: 9001, model: "deepseek-v4-flash",
+            messages: [ChatMessage(role: .user, content: "hi")], mode: .standard)
+        let json = try XCTUnwrap(
+            try JSONSerialization.jsonObject(with: XCTUnwrap(request.httpBody)) as? [String: Any])
+        XCTAssertEqual(json["temperature"] as? Double, 0.7)
+    }
 }

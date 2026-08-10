@@ -24,7 +24,12 @@ struct DS4ControlApp: App {
                 model: app.selectedVariant.modelId,
                 port: { [weak supervisor] in supervisor?.port ?? app.port },
                 streamProvider: { port, model, messages in
-                    service.stream(port: port, model: model, messages: messages, mode: app.thinkingMode)
+                    // Greedy is its own opt-in, NOT implied by DSpark: ds4 needs temperature 0 to
+                    // speculate, but DeepSeek's V4 card recommends 1.0, so the trade is the user's
+                    // to make explicitly.
+                    service.stream(
+                        port: port, model: model, messages: messages, mode: app.thinkingMode,
+                        greedy: app.greedyChat)
                 }
             )
         )
@@ -59,6 +64,11 @@ struct DS4ControlApp: App {
             supervisor.resumeInFlightDownloadIfAny(
                 variant: app.selectedVariant, flashQuant: app.selectedFlashQuant,
                 highPerformance: app.highPerformanceDownload)
+            // Same for a DSpark support download interrupted by a quit. It parks itself if the
+            // model download above claimed the pipe, and re-arms when that one ends.
+            if app.dsparkSpeculation {
+                supervisor.resumeInFlightSupportDownloadIfAny(highPerformance: app.highPerformanceDownload)
+            }
         }
     }
 }

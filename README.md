@@ -32,6 +32,7 @@ A macOS menu bar pane for **DeepSeek V4** via [`ds4`](https://github.com/antirez
 - **Launch Chat** to talk to the model.
 - **Launch Claude Code or Pi** to plan, write, maintain or refactor code.
 - **1M Context** configurable in settings.
+- **DSpark speculative decoding** (optional, V4 Flash only): downloads DeepSeek's ~5.6 GiB draft model and runs `ds4-server` with `--mtp … --dspark`, so accepted proposals advance several tokens per verification pass. Off by default and experimental upstream. ds4 only applies it to requests at temperature 0 and disables it entirely when Concurrent sessions > 1, so Settings shows which condition is blocking it.
 
 What it is **not**:
 

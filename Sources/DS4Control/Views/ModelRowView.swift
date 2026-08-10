@@ -46,13 +46,7 @@ struct ModelRowView: View {
         case .error:
             Button(downloaded ? "Retry" : "Retry download") {
                 if downloaded {
-                    let host = app.normalizeHostForLaunch()
-                    supervisor.start(
-                        variant: app.selectedVariant, flashQuant: app.selectedFlashQuant,
-                        ctx: app.effectiveCtx(ramGiB: ramGiB),
-                        host: host, port: app.port, power: app.power,
-                        sessions: app.concurrentSessions,
-                        kvDiskDir: app.kvDiskCache ? supervisor.kvDiskCacheURL : nil)
+                    startServer()
                 } else {
                     supervisor.retryDownload(
                         variant: app.selectedVariant, flashQuant: app.selectedFlashQuant,
@@ -69,17 +63,25 @@ struct ModelRowView: View {
                 }
                 .frame(maxWidth: .infinity).disabled(blocked)
             } else {
-                Button("Start") {
-                    let host = app.normalizeHostForLaunch()
-                    supervisor.start(
-                        variant: app.selectedVariant, flashQuant: app.selectedFlashQuant,
-                        ctx: app.effectiveCtx(ramGiB: ramGiB),
-                        host: host, port: app.port, power: app.power,
-                        sessions: app.concurrentSessions,
-                        kvDiskDir: app.kvDiskCache ? supervisor.kvDiskCacheURL : nil)
-                }.frame(maxWidth: .infinity).disabled(blocked)
+                Button("Start", action: startServer).frame(maxWidth: .infinity).disabled(blocked)
             }
         }
+    }
+
+    /// Launch ds4-server with every current setting. Shared by Start and the error-state Retry so
+    /// the two can't drift — notably over `dsparkSupport`, which is nil unless DSpark is on, the
+    /// configuration supports it, and the support GGUF is downloaded.
+    private func startServer() {
+        let host = app.normalizeHostForLaunch()
+        supervisor.start(
+            variant: app.selectedVariant, flashQuant: app.selectedFlashQuant,
+            ctx: app.effectiveCtx(ramGiB: ramGiB),
+            host: host, port: app.port, power: app.power,
+            sessions: app.concurrentSessions,
+            kvDiskDir: app.kvDiskCache ? supervisor.kvDiskCacheURL : nil,
+            dsparkSupport: supervisor.dsparkSupportArg(
+                enabled: app.dsparkSpeculation, variant: app.selectedVariant,
+                sessions: app.concurrentSessions))
     }
 
     @ViewBuilder private func feasibilityNote(_ feas: Feasibility) -> some View {

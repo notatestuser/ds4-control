@@ -21,6 +21,21 @@ final class SupervisorService: ObservableObject {
     /// resumed from a prior session) one found via pgrep. Drives the live spinner; refreshed
     /// every poll tick so it clears within ~1s of the process stopping or being killed.
     @Published private(set) var downloadProcessLive = false
+    /// Progress of the DSpark support-model download, or nil when it isn't running. A *separate*
+    /// track from `download`: the support GGUF is a ~5.6 GiB accessory, so fetching it must not put
+    /// the app into `.downloading` and block Start. Rendered in Settings, not the popup.
+    @Published private(set) var supportDownload: DownloadProgress?
+    /// True while the support download task is in flight — drives the Settings spinner.
+    @Published private(set) var supportDownloadLive = false
+    /// Last support-download failure, for the Settings error line. Cleared on the next attempt.
+    @Published private(set) var supportDownloadError: String?
+    /// True while the support download is parked behind an in-flight model download — the two
+    /// never run at once, so they don't split bandwidth or double the connection count.
+    @Published private(set) var supportDownloadDeferred = false
+    /// Whether the RUNNING server was launched with `--mtp … --dspark`. The chat reads this to pick
+    /// greedy decoding, so behaviour tracks the live process rather than a setting that may not have
+    /// been applied yet (or an adopted orphan whose flags we never saw).
+    @Published private(set) var dsparkActive = false
     @Published private(set) var recentLog: [String] = []
     /// Bumped whenever the on-disk gguf set changes via cleanup, so SwiftUI views that read
     /// `isFlashQuantDownloaded` (the Settings picker) re-render.
@@ -38,8 +53,8 @@ final class SupervisorService: ObservableObject {
     private var expectingExit = false
     private var healthTimer: Timer?
     private var startupTimer: Timer?
-    /// Last (bytes, time) sample from the download progress callback, for the transfer-rate delta.
-    private var lastDownloadSample: (bytes: Int64, time: Date)?
+    /// Rolling transfer-rate reading for the model download's progress callbacks.
+    private var downloadRate = TransferRateMeter()
     /// True when attached to a ds4-server started by a previous session (we don't
     /// own the process; Stop terminates it by port — see resumeRunningServerIfAny).
     private var serverAttached = false
@@ -131,7 +146,8 @@ final class SupervisorService: ObservableObject {
         port: Int,
         power: Int?,
         sessions: Int = 1,
-        kvDiskDir: URL? = nil
+        kvDiskDir: URL? = nil,
+        dsparkSupport: URL? = nil
     ) {
         guard state == .idle || isErrorState else { emitBadState("start"); return }
         if let e = validateDs4Dir() { state = .error(e); return }
@@ -141,6 +157,7 @@ final class SupervisorService: ObservableObject {
         }
         self.port = port; self.ctx = ctx; self.activeModel = variant.modelId
         stderrTail = []; expectingExit = false; serverAttached = false
+        dsparkActive = dsparkSupport != nil
         var args = [
             "-m", gguf.path,
             "--ctx", "\(ctx)",
@@ -152,6 +169,10 @@ final class SupervisorService: ObservableObject {
         // >1 preallocates N resident KV sessions so that many chats/agents generate at once.
         // 1 must omit the flag: ds4 treats even `--batched-session 1` as batched mode (MTP off).
         if sessions > 1 { args += ["--batched-session", "\(sessions)"] }
+        // DSpark speculative decoding: `--mtp` supplies the support GGUF, `--dspark` selects the
+        // runtime (`--dspark` without `--mtp FILE` is a hard engine-open failure). The caller has
+        // already checked `dsparkApplies` + on-disk presence via `dsparkSupportArg`.
+        if let dsparkSupport { args += ["--mtp", dsparkSupport.path, "--dspark"] }
         if let kvDiskDir {
             // Persist compressed KV to disk so repeated/large prefixes (coding agents)
             // skip re-prefill across turns and restarts. README: "KV cache is a
@@ -189,6 +210,7 @@ final class SupervisorService: ObservableObject {
 
     private func handleExit(_ code: Int32) {
         healthTimer?.invalidate(); healthTimer = nil; startupTimer?.invalidate(); startupTimer = nil
+        dsparkActive = false  // no live server → the chat goes back to sampled decoding
         if expectingExit {
             state = .idle
             if let relaunch = pendingRestart { pendingRestart = nil; relaunch() }
@@ -240,6 +262,7 @@ final class SupervisorService: ObservableObject {
 
     private func completeAttachedStop() {
         state = .idle
+        dsparkActive = false
         if let relaunch = pendingRestart { pendingRestart = nil; relaunch() }
     }
 
@@ -257,14 +280,15 @@ final class SupervisorService: ObservableObject {
         port: Int,
         power: Int?,
         sessions: Int = 1,
-        kvDiskDir: URL? = nil
+        kvDiskDir: URL? = nil,
+        dsparkSupport: URL? = nil
     ) {
         guard state == .ready || state == .starting else { emitBadState("restart"); return }
         let relaunch: () -> Void = { [weak self] in
             guard let self else { return }
             self.start(
                 variant: variant, flashQuant: flashQuant, ctx: ctx, host: host, port: port, power: power,
-                sessions: sessions, kvDiskDir: kvDiskDir)
+                sessions: sessions, kvDiskDir: kvDiskDir, dsparkSupport: dsparkSupport)
         }
         stop()
         if state == .idle {
@@ -296,6 +320,9 @@ final class SupervisorService: ObservableObject {
                 guard let self, let data, self.state == .idle || self.isErrorState else { return }
                 self.serverAttached = true
                 self.port = port
+                // We didn't launch it, so its flags are unknown — assume no DSpark rather than
+                // silently making the chat deterministic on a guess.
+                self.dsparkActive = false
                 self.activeModel = loadedModelName(from: data) ?? "ds4-server"
                 // Adopted server: take its real context window from /v1/models so the chat
                 // meter reflects the running `--ctx`, not the start-time default.
@@ -343,9 +370,10 @@ final class SupervisorService: ObservableObject {
         let q = Quant.for(variant, flashQuant: flashQuant)
         let baseDir = ggufBaseDir()
         let expectedBytes = Int64(q.weightsGiB * 1_073_741_824)
+        parkSupportDownloadForModelDownload()  // the two never share the pipe — see the support track
         download = DownloadProgress(pct: 0, file: q.ggufFilename, receivedBytes: 0, totalBytes: expectedBytes)
         state = .downloading
-        lastDownloadSample = nil
+        downloadRate.reset()
         downloadGeneration += 1
         let gen = downloadGeneration
         let token = resolveHFToken(
@@ -378,25 +406,12 @@ final class SupervisorService: ObservableObject {
     }
 
     /// Turn a downloader `onProgress(received, total)` tick into a published `DownloadProgress`:
-    /// compute pct, and a transfer rate from the delta against the last sample (the rate logic moved
-    /// here from the old on-disk poll). Generation-guarded so a superseded download's late callback
-    /// can't clobber the current bar. `Date()` is fine in app code.
+    /// compute pct, and a transfer rate from `TransferRateMeter` (the rate logic moved off the old
+    /// on-disk poll). Generation-guarded so a superseded download's late callback can't clobber the
+    /// current bar.
     private func updateDownloadProgress(gen: Int, file: String, received: Int64, total: Int64) {
         guard downloadGeneration == gen, state == .downloading else { return }
-        let now = Date()
-        // Rate over a fixed ~0.5 s window: advance the anchor only when the window elapses, so the
-        // reading is (bytes over the window) / (window). Sampling per-callback instead pins it to
-        // progressStep / main-actor-batch-gap and under-reports ~8x at high throughput.
-        var rate = download?.rate  // hold the last reading between window boundaries
-        if let anchor = lastDownloadSample {
-            let dt = now.timeIntervalSince(anchor.time)
-            if dt >= 0.5 {
-                if received > anchor.bytes { rate = formatRate(Double(received - anchor.bytes) / dt) }
-                lastDownloadSample = (received, now)
-            }
-        } else {
-            lastDownloadSample = (received, now)
-        }
+        let rate = downloadRate.sample(received: received)  // `Date()` is fine in app code
         let pct = total > 0 ? min(100, Double(received) / Double(total) * 100) : 0
         download = DownloadProgress(
             pct: pct, file: file, receivedBytes: received, totalBytes: total > 0 ? total : nil,
@@ -408,18 +423,24 @@ final class SupervisorService: ObservableObject {
         endDownloadActivity()
         download = DownloadProgress(pct: 100, file: filename, receivedBytes: 0, totalBytes: nil)
         state = .idle
+        resumeDeferredSupportDownloadIfAny()
     }
 
     private func failDownload(gen: Int, error: Error) {
         guard downloadGeneration == gen else { return }
         endDownloadActivity()
-        let detail: String
+        state = .error(.downloadFailed(detail: Self.failureDetail(error)))
+        // The model download is over either way — let a parked support download proceed.
+        resumeDeferredSupportDownloadIfAny()
+    }
+
+    /// Human-readable cause for a failed fetch, shared by both download tracks.
+    private static func failureDetail(_ error: Error) -> String {
         switch error {
-        case HFDownloader.Failure.http(let code): detail = "HTTP \(code)"
-        case HFDownloader.Failure.incompleteAfterRetries: detail = "download interrupted (retries exhausted)"
-        default: detail = (error as NSError).localizedDescription
+        case HFDownloader.Failure.http(let code): return "HTTP \(code)"
+        case HFDownloader.Failure.incompleteAfterRetries: return "download interrupted (retries exhausted)"
+        default: return (error as NSError).localizedDescription
         }
-        state = .error(.downloadFailed(detail: detail))
     }
 
     private func endDownloadActivity() {
@@ -433,7 +454,7 @@ final class SupervisorService: ObservableObject {
     func retryDownload(variant: Variant, flashQuant: FlashQuant, highPerformance: Bool = false) {
         downloadTask?.cancel()
         downloadTask = nil
-        lastDownloadSample = nil
+        downloadRate.reset()
         download = nil
         state = .idle
         download(variant: variant, flashQuant: flashQuant, highPerformance: highPerformance)
@@ -455,9 +476,10 @@ final class SupervisorService: ObservableObject {
             try? FileManager.default.removeItem(at: base.appendingPathComponent(f + ".part.dl"))
         }
         downloadProcessLive = false
-        lastDownloadSample = nil
+        downloadRate.reset()
         download = nil
         state = .idle
+        resumeDeferredSupportDownloadIfAny()
     }
 
     /// If a partial download was left by a prior session (the app quit mid-download) and we're idle,
@@ -482,6 +504,174 @@ final class SupervisorService: ObservableObject {
     /// True when the selected variant's gguf exists on disk.
     func isDownloaded(_ variant: Variant, flashQuant: FlashQuant) -> Bool {
         FileManager.default.fileExists(atPath: ggufURL(for: variant, flashQuant: flashQuant).path)
+    }
+
+    // MARK: - DSpark support download
+    // A SECOND, independent download track for the ~5.6 GiB DSpark support GGUF. It deliberately
+    // never touches `state`: the support model is an accessory, so fetching it must leave Start,
+    // Stop and the popup fully usable (unlike a 81–432 GiB model download, which owns the app).
+    // Everything else mirrors the model track — same injected `fetchFile`, same generation guard
+    // against stale completions, same `.part`/`.part.dl` resume semantics.
+    //
+    // The one coupling is bandwidth: the two never run at once. A model download parks a live
+    // support download (keeping its partial); the support download re-arms when the model download
+    // ends, whatever the outcome.
+    private var supportDownloadGeneration = 0
+    private var supportDownloadTask: Task<Void, Never>?
+    private var supportRate = TransferRateMeter()
+    /// Worker-count preference captured when the download was requested, so a re-armed (previously
+    /// parked) download uses the same setting without the caller having to pass it again.
+    private var supportHighPerformance = false
+
+    var dsparkSupportURL: URL { ggufBaseDir().appendingPathComponent(DSparkSupport.ggufFilename) }
+
+    func isDSparkSupportDownloaded() -> Bool {
+        FileManager.default.fileExists(atPath: dsparkSupportURL.path)
+    }
+
+    /// The `--mtp` path to hand `start`/`restart`, or nil when DSpark can't apply — the single
+    /// gate every launch site uses. nil whenever the toggle is off, the configuration rules it out
+    /// (`dsparkApplies`: V4 Pro, or Concurrent sessions > 1), or the support GGUF isn't downloaded
+    /// yet. A missing file must never reach ds4-server: `--dspark` without a readable `--mtp FILE`
+    /// fails engine open, which would surface as a crash instead of a silently-skipped speedup.
+    func dsparkSupportArg(enabled: Bool, variant: Variant, sessions: Int) -> URL? {
+        guard dsparkApplies(enabled: enabled, variant: variant, sessions: sessions),
+            isDSparkSupportDownloaded()
+        else { return nil }
+        return dsparkSupportURL
+    }
+
+    /// Start (or resume) the DSpark support download. No-ops when the file is already on disk or a
+    /// download is already in flight; parks itself when a model download owns the pipe.
+    func downloadDSparkSupport(highPerformance: Bool = false) {
+        supportHighPerformance = highPerformance
+        guard !isDSparkSupportDownloaded(), !supportDownloadLive else { return }
+        guard state != .downloading else {
+            supportDownloadDeferred = true  // re-armed when the model download ends
+            return
+        }
+        supportDownloadDeferred = false
+        supportDownloadError = nil
+        supportRate.reset()
+        supportDownloadGeneration += 1
+        let gen = supportDownloadGeneration
+        let filename = DSparkSupport.ggufFilename
+        let baseDir = ggufBaseDir()
+        let token = resolveHFToken(
+            env: ProcessInfo.processInfo.environment,
+            cacheFile: FileManager.default.homeDirectoryForCurrentUser
+                .appendingPathComponent(".cache/huggingface/token"))
+        // The exact Hub size is known, so the bar is accurate from the first tick rather than
+        // waiting for the downloader's own total to arrive.
+        supportDownload = DownloadProgress(
+            pct: 0, file: filename, receivedBytes: 0, totalBytes: DSparkSupport.bytes)
+        supportDownloadLive = true
+        let fetch = fetchFile
+        supportDownloadTask?.cancel()
+        supportDownloadTask = Task { [weak self] in
+            do {
+                try await fetch(filename, baseDir, token, highPerformance) { received, total in
+                    Self.onMain { self?.updateSupportProgress(gen: gen, received: received, total: total) }
+                }
+                Self.onMain { self?.completeSupportDownload(gen: gen) }
+            } catch is CancellationError {
+                // cancelDSparkSupportDownload() / the model-download park own the resulting state.
+            } catch {
+                Self.onMain { self?.failSupportDownload(gen: gen, error: error) }
+            }
+        }
+    }
+
+    private func updateSupportProgress(gen: Int, received: Int64, total: Int64) {
+        guard supportDownloadGeneration == gen, supportDownloadLive else { return }
+        let pct = total > 0 ? min(100, Double(received) / Double(total) * 100) : 0
+        supportDownload = DownloadProgress(
+            pct: pct, file: DSparkSupport.ggufFilename, receivedBytes: received,
+            totalBytes: total > 0 ? total : nil, rate: supportRate.sample(received: received))
+    }
+
+    private func completeSupportDownload(gen: Int) {
+        guard supportDownloadGeneration == gen else { return }
+        supportDownloadTask = nil
+        supportDownloadLive = false
+        supportDownload = nil  // the Settings row switches to the "Downloaded" state
+        supportDownloadError = nil
+        ggufStoreVersion += 1  // re-render views reading isDSparkSupportDownloaded()
+    }
+
+    private func failSupportDownload(gen: Int, error: Error) {
+        guard supportDownloadGeneration == gen else { return }
+        supportDownloadTask = nil
+        supportDownloadLive = false
+        supportDownload = nil
+        supportDownloadError = Self.failureDetail(error)
+    }
+
+    /// Cancel an in-progress support download and discard its partial — the deliberate stop, mirroring
+    /// `cancelDownload()`. Quitting mid-download instead keeps `.part`/`.part.dl` so the next launch
+    /// resumes from the bitmap.
+    func cancelDSparkSupportDownload() {
+        supportDownloadGeneration += 1
+        supportDownloadTask?.cancel()
+        supportDownloadTask = nil
+        supportDownloadLive = false
+        supportDownloadDeferred = false
+        supportDownloadError = nil
+        supportRate.reset()
+        supportDownload = nil
+        removeSupportPartials()
+    }
+
+    /// Pause a live support download because a model download is starting: cancel the task but KEEP
+    /// the partial, and remember to re-arm. Bumping the generation makes the cancelled task's late
+    /// callbacks stale.
+    private func parkSupportDownloadForModelDownload() {
+        guard supportDownloadLive else { return }
+        supportDownloadGeneration += 1
+        supportDownloadTask?.cancel()
+        supportDownloadTask = nil
+        supportDownloadLive = false
+        supportRate.reset()
+        supportDownload = nil
+        supportDownloadDeferred = true
+    }
+
+    /// Re-arm a parked support download once the model download has ended (completed, failed or
+    /// cancelled). It resumes from the `.part.dl` bitmap, so no bytes are refetched.
+    private func resumeDeferredSupportDownloadIfAny() {
+        guard supportDownloadDeferred else { return }
+        supportDownloadDeferred = false
+        downloadDSparkSupport(highPerformance: supportHighPerformance)
+    }
+
+    /// If a prior session quit mid-download, resume the support GGUF at launch — same contract as
+    /// `resumeInFlightDownloadIfAny`, keyed on the bitmap sidecar (or a legacy contiguous partial).
+    func resumeInFlightSupportDownloadIfAny(highPerformance: Bool = false) {
+        guard !isDSparkSupportDownloaded(), !supportDownloadLive else { return }
+        let base = ggufBaseDir()
+        let resumable = resumableBytes(ggufDir: base, filename: DSparkSupport.ggufFilename) > 0
+        let legacy = downloadedBytes(ggufDir: base, filename: DSparkSupport.ggufFilename) > 0
+        guard resumable || legacy else { return }
+        downloadDSparkSupport(highPerformance: highPerformance)
+    }
+
+    /// Delete the downloaded support GGUF (and any partials) to reclaim ~5.6 GiB. Gate the call site
+    /// to idle/error like the Flash cleanup, so a file the running server has mapped is never removed.
+    @discardableResult
+    func removeDSparkSupport() -> Bool {
+        let existed = isDSparkSupportDownloaded()
+        try? FileManager.default.removeItem(at: dsparkSupportURL)
+        removeSupportPartials()
+        if existed { ggufStoreVersion += 1 }
+        return existed
+    }
+
+    private func removeSupportPartials() {
+        let base = ggufBaseDir()
+        for suffix in [".part", ".part.dl"] {
+            try? FileManager.default.removeItem(
+                at: base.appendingPathComponent(DSparkSupport.ggufFilename + suffix))
+        }
     }
 
     // MARK: - Flash quant store (Settings: download markers + cleanup)

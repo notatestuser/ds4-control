@@ -18,10 +18,13 @@ struct ChatService {
     }
 
     /// Streams assistant content deltas (and a trailing usage event) for the conversation.
-    func stream(port: Int, model: String, messages: [ChatMessage], mode: ThinkingMode) -> AsyncThrowingStream<
-        ChatStreamEvent, Error
-    > {
-        let request = Self.makeRequest(port: port, model: model, messages: messages, mode: mode)
+    /// `greedy` drops the sampling temperature to 0 — see `makeRequest`.
+    func stream(port: Int, model: String, messages: [ChatMessage], mode: ThinkingMode, greedy: Bool = false)
+        -> AsyncThrowingStream<
+            ChatStreamEvent, Error
+        >
+    {
+        let request = Self.makeRequest(port: port, model: model, messages: messages, mode: mode, greedy: greedy)
         let lines = lineSource(request)
         return AsyncThrowingStream { continuation in
             let task = Task {
@@ -51,7 +54,13 @@ struct ChatService {
         }
     }
 
-    static func makeRequest(port: Int, model: String, messages: [ChatMessage], mode: ThinkingMode) -> URLRequest {
+    /// Builds the `/v1/chat/completions` body. `greedy` requests temperature 0, which ds4-server
+    /// requires before it will use DSpark speculative decoding — its decode loop only speculates
+    /// when `temperature <= 0`. The trade-off is deterministic replies, so callers pass it only
+    /// while a DSpark-enabled server is actually running.
+    static func makeRequest(
+        port: Int, model: String, messages: [ChatMessage], mode: ThinkingMode, greedy: Bool = false
+    ) -> URLRequest {
         var request = URLRequest(url: URL(string: "http://127.0.0.1:\(port)/v1/chat/completions")!)
         request.httpMethod = "POST"
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
@@ -62,7 +71,7 @@ struct ChatService {
         var body: [String: Any] = [
             "model": model,
             "messages": messages.map { ["role": $0.role == .user ? "user" : "assistant", "content": $0.content] },
-            "temperature": 0.7,
+            "temperature": greedy ? 0 : 0.7,
             "max_tokens": 32768,
             "thinking": mode != .off,
             "stream": true,

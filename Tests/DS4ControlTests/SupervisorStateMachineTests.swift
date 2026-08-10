@@ -86,6 +86,32 @@ final class SupervisorStateMachineTests: XCTestCase {
         s2.start(variant: .flash, flashQuant: .q2q4, ctx: 250_000, host: "127.0.0.1", port: 8000, power: nil)
         XCTAssertFalse(r2.lastArgs.contains("--batched-session"))
     }
+    /// DSpark reaches ds4-server as `--mtp <support gguf> --dspark`, and `dsparkActive` records that
+    /// the RUNNING server has it (the chat reads that flag to pick greedy decoding).
+    func testStartAddsDSparkArgsWhenSupportProvided() throws {
+        let r = FakeRunner(); let s = try makeSupervisor(r)
+        let support = URL(fileURLWithPath: "/tmp/DeepSeek-V4-Flash-DSpark-support-0731.gguf")
+        s.start(
+            variant: .flash, flashQuant: .q2q4, ctx: 250_000, host: "127.0.0.1", port: 8000,
+            power: nil, dsparkSupport: support)
+        XCTAssertEqual(r.lastArgs[r.lastArgs.firstIndex(of: "--mtp")! + 1], support.path)
+        XCTAssertTrue(r.lastArgs.contains("--dspark"))
+        XCTAssertTrue(s.dsparkActive)
+        r.emit("ds4-server: listening on http://127.0.0.1:8000")
+        r.crash(1)
+        XCTAssertFalse(s.dsparkActive, "no live server → the chat goes back to sampled decoding")
+    }
+
+    /// Omitted entirely by default. `--dspark` without `--mtp FILE` is a hard engine-open failure,
+    /// so the two flags must only ever appear together.
+    func testStartOmitsDSparkArgsByDefault() throws {
+        let r = FakeRunner(); let s = try makeSupervisor(r)
+        s.start(variant: .flash, flashQuant: .q2q4, ctx: 250_000, host: "127.0.0.1", port: 8000, power: nil)
+        XCTAssertFalse(r.lastArgs.contains("--mtp"))
+        XCTAssertFalse(r.lastArgs.contains("--dspark"))
+        XCTAssertFalse(s.dsparkActive)
+    }
+
     func testCrashIsError() throws {
         let r = FakeRunner(); let s = try makeSupervisor(r)
         s.start(variant: .flash, flashQuant: .q2q4, ctx: 250_000, host: "127.0.0.1", port: 8000, power: nil)

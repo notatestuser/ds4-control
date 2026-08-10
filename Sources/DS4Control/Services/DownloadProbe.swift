@@ -56,6 +56,43 @@ private func readInt64LE(_ data: Data, at offset: Int) -> Int64 {
     return Int64(littleEndian: le)
 }
 
+/// Rolling transfer-rate reading over a fixed window, shared by every download track.
+///
+/// The anchor advances only once the window has elapsed, so a reading is always
+/// (bytes over the window) / (window). Sampling on every callback instead would pin the reading to
+/// the downloader's progress step / the main-actor batch gap and under-report ~8x at high
+/// throughput. Between window boundaries the previous reading is held, so the label doesn't blink.
+struct TransferRateMeter {
+    /// Window length. 0.5 s is short enough to feel live, long enough to average out the
+    /// coalesced ~8 MB progress callbacks.
+    static let window: TimeInterval = 0.5
+
+    private var anchor: (bytes: Int64, time: Date)?
+    private var lastRate: String?
+
+    /// Fold in a download's monotonic `received` count and return the rate string to display —
+    /// nil until the first window completes. `now` is injectable so tests don't depend on wall time.
+    mutating func sample(received: Int64, now: Date = Date()) -> String? {
+        guard let anchor else {
+            self.anchor = (received, now)
+            return lastRate
+        }
+        let dt = now.timeIntervalSince(anchor.time)
+        if dt >= Self.window {
+            if received > anchor.bytes { lastRate = formatRate(Double(received - anchor.bytes) / dt) }
+            self.anchor = (received, now)
+        }
+        return lastRate
+    }
+
+    /// Forget the current window. Called when a download is started, retried, or cancelled so a
+    /// stale anchor can't produce a bogus first reading for the next one.
+    mutating func reset() {
+        anchor = nil
+        lastRate = nil
+    }
+}
+
 /// Format a bytes/second rate as a short human string (decimal units, e.g. "213 MB/s").
 func formatRate(_ bytesPerSec: Double) -> String {
     let r = max(0, bytesPerSec)

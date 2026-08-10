@@ -5,6 +5,8 @@ struct SettingsView: View {
     @EnvironmentObject var supervisor: SupervisorService
     private let ram = systemRamGiB()
     @State private var confirmingCleanup = false
+    @State private var confirmingDSparkEnable = false
+    @State private var confirmingDSparkRemove = false
 
     private var isRunning: Bool { supervisor.state == .ready || supervisor.state == .starting }
     /// Busy = a server is running/starting/stopping or a download is in flight; cleanup is
@@ -46,6 +48,61 @@ struct SettingsView: View {
     }
     private var launchAtLoginBinding: Binding<Bool> {
         Binding(get: { app.launchAtLogin }, set: { app.setLaunchAtLogin($0) })
+    }
+
+    // MARK: - DSpark
+
+    /// Turning DSpark ON routes through a confirmation first — it starts a ~5.6 GiB download and
+    /// makes chat replies deterministic, neither of which should happen from a silent tap. Turning
+    /// it OFF is immediate and never deletes the downloaded file.
+    private var dsparkBinding: Binding<Bool> {
+        Binding(
+            get: { app.dsparkSpeculation },
+            set: { on in
+                if on {
+                    confirmingDSparkEnable = true
+                } else {
+                    app.dsparkSpeculation = false
+                }
+            })
+    }
+    /// Why an enabled DSpark won't reach ds4-server with the current settings, or nil when it will.
+    /// Mirrors `dsparkApplies` — both gates come from ds4's own decode path.
+    private var dsparkSkipReason: String? {
+        guard app.dsparkSpeculation else { return nil }
+        if app.selectedVariant != .flash {
+            return "DSpark supports V4 Flash only — it will be skipped while V4 Pro is selected."
+        }
+        if app.concurrentSessions > 1 {
+            return
+                "Concurrent sessions above 1 turns on batched mode, which disables speculative "
+                + "decoding — DSpark will be skipped."
+        }
+        return nil
+    }
+    private var dsparkSizeLabel: String { String(format: "%.1f GiB", DSparkSupport.giB) }
+    /// Explains the trade both ways: greedy is what lets DSpark help the chat, but it is below
+    /// DeepSeek's recommended sampling, so it stays the user's explicit choice.
+    private var greedyChatFooter: String {
+        let base =
+            "Greedy replies send temperature 0, so the same prompt always gives the same answer. "
+            + "DeepSeek recommends 1.0 for V4, so leave this off unless you want determinism — "
+            + "or unless you want DSpark below to speed up the chat, which only works at temperature 0."
+        return app.dsparkSpeculation && !app.greedyChat
+            ? base + " DSpark is on but the chat is still sampling, so DSpark will not speed it up."
+            : base
+    }
+    /// Spelled out at the moment the user flips the toggle on: what gets downloaded, and that chat
+    /// replies become deterministic. Built here rather than inline so the type checker doesn't have
+    /// to solve a long concatenation inside the view builder.
+    private var dsparkEnableMessage: String {
+        let already = supervisor.isDSparkSupportDownloaded() ? " (already downloaded)." : "."
+        let size = "Downloads a \(dsparkSizeLabel) support model for V4 Flash" + already
+        let applies =
+            "\n\nds4 only uses DSpark for requests sent at temperature 0. Coding agents choose "
+            + "their own; for the built-in chat, turn on \"Greedy replies\" under Chat. "
+            + "It takes effect the next time the server starts."
+        return size + applies
     }
 
     private var powerBinding: Binding<Double> {
@@ -160,12 +217,16 @@ struct SettingsView: View {
 
             Section {
                 ThinkingModePicker()
+                Toggle("Greedy replies", isOn: $app.greedyChat)
             } header: {
                 Text("Chat")
             } footer: {
-                Text(
-                    "Max Think needs a context of at least 393,216 — you'll be asked to raise it. "
-                        + "Coding agents set their own level; this only affects the built-in chat.")
+                VStack(alignment: .leading, spacing: 4) {
+                    Text(
+                        "Max Think needs a context of at least 393,216 — you'll be asked to raise it. "
+                            + "Coding agents set their own level; this only affects the built-in chat.")
+                    Text(greedyChatFooter)
+                }
             }
 
             Section {
@@ -199,6 +260,8 @@ struct SettingsView: View {
                 Text("Keeps the selected variant and V4 Pro. Deleted weights must be downloaded again.")
             }
 
+            dsparkSection
+
             Section {
                 Toggle("High performance mode", isOn: $app.highPerformanceDownload)
             } header: {
@@ -225,6 +288,110 @@ struct SettingsView: View {
         .onDisappear { WindowChrome.windowClosed() }
     }
 
+    // MARK: - DSpark section
+
+    @ViewBuilder private var dsparkSection: some View {
+        Section {
+            Toggle("DSpark speculative decoding", isOn: dsparkBinding)
+            dsparkStatusRow
+            if let reason = dsparkSkipReason {
+                Text(reason)
+                    .font(.caption2).foregroundStyle(.orange)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+        } header: {
+            Text("Speculative decoding")
+        } footer: {
+            VStack(alignment: .leading, spacing: 4) {
+                Text(
+                    "DSpark is DeepSeek's draft model for V4 Flash: it proposes several tokens ahead "
+                        + "and Flash verifies them, so generation can advance faster. Downloading it once "
+                        + "takes about \(dsparkSizeLabel). Experimental — predictable text like code gains "
+                        + "the most, and some prompts see no speedup at all.")
+                Text(
+                    "ds4 only applies it to requests sent at temperature 0 — its speculative path is "
+                        + "greedy-only. The built-in chat qualifies only with \"Greedy replies\" on; "
+                        + "coding agents send their own temperature.")
+                Text("Applies on next server start or restart.")
+            }
+        }
+        .confirmationDialog(
+            "Enable DSpark speculative decoding?", isPresented: $confirmingDSparkEnable,
+            titleVisibility: .visible
+        ) {
+            Button("Download & Enable") {
+                app.dsparkSpeculation = true
+                supervisor.downloadDSparkSupport(highPerformance: app.highPerformanceDownload)
+            }
+            Button("Cancel", role: .cancel) {}
+        } message: {
+            Text(dsparkEnableMessage)
+        }
+        .confirmationDialog(
+            "Delete the DSpark support model?", isPresented: $confirmingDSparkRemove,
+            titleVisibility: .visible
+        ) {
+            Button("Delete · \(dsparkSizeLabel)", role: .destructive) { supervisor.removeDSparkSupport() }
+            Button("Cancel", role: .cancel) {}
+        } message: {
+            Text("Turning DSpark back on will download it again.")
+        }
+    }
+
+    /// One row under the toggle, showing whichever of the four states applies: downloading (bar +
+    /// Cancel), parked behind a model download, failed (+ Retry), or on disk (+ Remove).
+    @ViewBuilder private var dsparkStatusRow: some View {
+        if let d = supervisor.supportDownload {
+            ProgressView(value: d.pct, total: 100) {
+                HStack(spacing: 6) {
+                    if supervisor.supportDownloadLive {
+                        ProgressView().progressViewStyle(.circular).controlSize(.small)
+                    }
+                    Text(d.file).font(.caption2).lineLimit(1).truncationMode(.middle)
+                    Spacer()
+                    Button("Cancel", role: .destructive) { supervisor.cancelDSparkSupportDownload() }
+                        .font(.caption2)
+                }
+            } currentValueLabel: {
+                Text(supportDownloadLabel(d)).font(.caption2)
+            }
+        } else if supervisor.supportDownloadDeferred {
+            Text("Waiting for the model download to finish…")
+                .font(.caption2).foregroundStyle(.secondary)
+        } else if let err = supervisor.supportDownloadError {
+            HStack(spacing: 8) {
+                Text("Download failed (\(err)).")
+                    .font(.caption2).foregroundStyle(.red)
+                    .fixedSize(horizontal: false, vertical: true)
+                Button("Retry") { supervisor.downloadDSparkSupport(highPerformance: app.highPerformanceDownload) }
+                    .font(.caption2)
+            }
+        } else if supervisor.isDSparkSupportDownloaded() {
+            HStack(spacing: 8) {
+                Text("Downloaded · \(dsparkSizeLabel)").font(.caption2).foregroundStyle(.secondary)
+                Spacer()
+                // Only offered while DSpark is off and nothing is running — same gating as the
+                // Flash cleanup, so a mapped or in-use support model is never deleted.
+                if !app.dsparkSpeculation && !isBusy {
+                    Button("Remove download") { confirmingDSparkRemove = true }
+                        .font(.caption2)
+                }
+            }
+        }
+    }
+
+    /// "58% · 3.2/6.0 GB · 190 MB/s". One decimal, unlike the popup's whole-GB model bar — at
+    /// ~6 GB the coarse format would read "3/6 GB" and look stuck.
+    private func supportDownloadLabel(_ d: DownloadProgress) -> String {
+        var parts = [String(format: "%.0f%%", d.pct)]
+        if let total = d.totalBytes, total > 0 {
+            parts.append(
+                String(format: "%.1f/%.1f GB", Double(d.receivedBytes) / 1e9, Double(total) / 1e9))
+        }
+        if let rate = d.rate { parts.append(rate) }
+        return parts.joined(separator: " · ")
+    }
+
     private func restart() {
         let host = app.normalizeHostForLaunch()
         supervisor.restart(
@@ -232,6 +399,9 @@ struct SettingsView: View {
             ctx: app.effectiveCtx(ramGiB: ram),
             host: host, port: app.port, power: app.power,
             sessions: app.concurrentSessions,
-            kvDiskDir: app.kvDiskCache ? supervisor.kvDiskCacheURL : nil)
+            kvDiskDir: app.kvDiskCache ? supervisor.kvDiskCacheURL : nil,
+            dsparkSupport: supervisor.dsparkSupportArg(
+                enabled: app.dsparkSpeculation, variant: app.selectedVariant,
+                sessions: app.concurrentSessions))
     }
 }

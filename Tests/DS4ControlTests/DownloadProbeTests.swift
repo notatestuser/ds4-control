@@ -2,6 +2,44 @@ import XCTest
 
 @testable import DS4Control
 
+/// The rate window shared by both download tracks. `now` is injected so these don't sleep.
+final class TransferRateMeterTests: XCTestCase {
+    private let t0 = Date(timeIntervalSince1970: 1_000_000)
+
+    /// No reading until a full window has elapsed — otherwise the first sample would divide by a
+    /// near-zero interval and print a wild number.
+    func testNoReadingBeforeWindowElapses() {
+        var meter = TransferRateMeter()
+        XCTAssertNil(meter.sample(received: 0, now: t0))
+        XCTAssertNil(meter.sample(received: 50_000_000, now: t0.addingTimeInterval(0.2)))
+    }
+
+    /// The reading is (bytes over the window) / (window), not per-callback — which is what keeps it
+    /// from under-reporting when the downloader coalesces progress callbacks.
+    func testReadingIsBytesOverTheWindow() {
+        var meter = TransferRateMeter()
+        _ = meter.sample(received: 0, now: t0)
+        XCTAssertEqual(meter.sample(received: 100_000_000, now: t0.addingTimeInterval(0.5)), "200 MB/s")
+    }
+
+    /// Between window boundaries the previous reading is held, so the label doesn't blink to nil.
+    func testHoldsLastReadingBetweenWindows() {
+        var meter = TransferRateMeter()
+        _ = meter.sample(received: 0, now: t0)
+        _ = meter.sample(received: 100_000_000, now: t0.addingTimeInterval(0.5))
+        XCTAssertEqual(meter.sample(received: 110_000_000, now: t0.addingTimeInterval(0.6)), "200 MB/s")
+    }
+
+    /// Reset forgets the anchor so a restarted download can't inherit a stale window.
+    func testResetClearsAnchorAndReading() {
+        var meter = TransferRateMeter()
+        _ = meter.sample(received: 0, now: t0)
+        _ = meter.sample(received: 100_000_000, now: t0.addingTimeInterval(0.5))
+        meter.reset()
+        XCTAssertNil(meter.sample(received: 500_000_000, now: t0.addingTimeInterval(0.6)))
+    }
+}
+
 final class DownloadProbeTests: XCTestCase {
     func testFormatRate() {
         XCTAssertEqual(formatRate(213_000_000), "213 MB/s")

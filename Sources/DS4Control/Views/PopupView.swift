@@ -281,6 +281,7 @@ struct PopupView: View {
         case .ready:
             return "\(supervisor.activeModel ?? "") · :\(supervisor.port)"
                 + (supervisor.thinkMaxActive ? " · Think-Max" : "")
+                + (supervisor.dsparkActive ? " · DSpark" : "")
         case .stopping: return "Stopping"
         case .error: return "Error"
         }
