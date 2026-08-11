@@ -45,6 +45,11 @@ struct DS4ControlApp: App {
         }
         .windowResizability(.contentSize)
 
+        Window("DS4 Metal Wired Limit Help", id: "wiredhelp") {
+            WiredLimitHelpView().environmentObject(app)
+        }
+        .windowResizability(.contentSize)
+
         Window("DS4 Chat", id: "chat") {
             ChatView(viewModel: chat).environmentObject(app).environmentObject(supervisor)
         }

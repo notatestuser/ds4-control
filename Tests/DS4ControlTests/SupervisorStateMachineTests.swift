@@ -39,7 +39,9 @@ final class SupervisorStateMachineTests: XCTestCase {
         let hostQuant = Quant.for(.flash, flashQuant: .q2q4)
         let gg = dir.appendingPathComponent("gguf").appendingPathComponent(hostQuant.ggufFilename)
         FileManager.default.createFile(atPath: gg.path, contents: Data("gguf".utf8))
-        return SupervisorService(ds4Dir: dir, runner: runner, serverProbe: probe)
+        return SupervisorService(
+            ds4Dir: dir, runner: runner, serverProbe: probe,
+            wiredLimitGate: { _, _, _, _ in true })  // tests are host-independent: skip the RAM/sysctl gate
     }
 
     func testStartReachesReady() throws {

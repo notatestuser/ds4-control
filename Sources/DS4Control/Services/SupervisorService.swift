@@ -61,15 +61,33 @@ final class SupervisorService: ObservableObject {
         ) async throws -> Void
     private let fetchFile: FetchFile
 
+    /// Returns true when the launch config's GPU-wired working set fits the machine's
+    /// effective Metal wired limit. Injectable so tests don't depend on the host's
+    /// RAM/sysctl state (CI runners are far smaller than any supported machine).
+    typealias WiredLimitGate = (_ variant: Variant, _ flashQuant: FlashQuant, _ ctx: Int, _ kvDiskCache: Bool) -> Bool
+    static let defaultWiredLimitGate: WiredLimitGate = { variant, flashQuant, ctx, kvDiskCache in
+        let ram = systemRamGiB()
+        if case .wiredLimitTooLow = feasibility(
+            ramGiB: ram, variant: variant, flashQuant: flashQuant, ctx: ctx,
+            wiredLimitMB: effectiveWiredLimitMB(ramGiB: ram), kvDiskCache: kvDiskCache)
+        {
+            return false
+        }
+        return true
+    }
+    private let wiredLimitGate: WiredLimitGate
+
     init(
         ds4Dir: URL, runner: ProcessRunner, serverProbe: ((Int) async -> Data?)? = nil,
-        ggufBaseURL: URL? = nil, downloadRunner: ProcessRunner? = nil, fetchFile: FetchFile? = nil
+        ggufBaseURL: URL? = nil, downloadRunner: ProcessRunner? = nil, fetchFile: FetchFile? = nil,
+        wiredLimitGate: WiredLimitGate? = nil
     ) {
         self.ds4Dir = ds4Dir
         self.runner = runner
         self.serverProbe = serverProbe ?? SupervisorService.defaultServerProbe
         self.ggufBaseOverride = ggufBaseURL
         self.downloadRunner = downloadRunner ?? RealProcessRunner()
+        self.wiredLimitGate = wiredLimitGate ?? Self.defaultWiredLimitGate
         self.fetchFile =
             fetchFile ?? { file, dir, token, highPerformance, prog in
                 try await HFDownloader(repo: SupervisorService.ggufRepo).download(
@@ -131,10 +149,21 @@ final class SupervisorService: ObservableObject {
         port: Int,
         power: Int?,
         sessions: Int = 1,
-        kvDiskDir: URL? = nil
+        kvDiskDir: URL? = nil,
+        overrideWiredLimitGate: Bool = false
     ) {
         guard state == .idle || isErrorState else { emitBadState("start"); return }
         if let e = validateDs4Dir() { state = .error(e); return }
+        // Defense-in-depth for the popup gate: refuse configs whose GPU-wired working set
+        // exceeds the effective Metal wired limit (starting anyway pages the model and
+        // hangs the machine). The UI's confirmed "Start anyway" passes the override.
+        if !overrideWiredLimitGate && !wiredLimitGate(variant, flashQuant, ctx, kvDiskDir != nil) {
+            let ram = systemRamGiB()
+            let required = requiredWiredMB(
+                variant: variant, flashQuant: flashQuant, ctx: ctx, kvDiskCache: kvDiskDir != nil)
+            state = .error(.wiredLimitTooLow(requiredMB: required, advisoryMB: wiredLimitAdvisoryMB(ramGiB: ram)))
+            return
+        }
         let gguf = ggufURL(for: variant, flashQuant: flashQuant)
         guard FileManager.default.fileExists(atPath: gguf.path) else {
             state = .error(.modelMissing(filename: gguf.lastPathComponent)); return
@@ -257,14 +286,21 @@ final class SupervisorService: ObservableObject {
         port: Int,
         power: Int?,
         sessions: Int = 1,
-        kvDiskDir: URL? = nil
+        kvDiskDir: URL? = nil,
+        overrideWiredLimitGate: Bool = false
     ) {
         guard state == .ready || state == .starting else { emitBadState("restart"); return }
+        // Gate BEFORE stopping: a refused restart keeps the healthy running server instead
+        // of tearing it down into an error state.
+        if !overrideWiredLimitGate && !wiredLimitGate(variant, flashQuant, ctx, kvDiskDir != nil) {
+            recentLog.append("ignored 'restart': Metal wired limit below the new config's working set")
+            return
+        }
         let relaunch: () -> Void = { [weak self] in
             guard let self else { return }
             self.start(
                 variant: variant, flashQuant: flashQuant, ctx: ctx, host: host, port: port, power: power,
-                sessions: sessions, kvDiskDir: kvDiskDir)
+                sessions: sessions, kvDiskDir: kvDiskDir, overrideWiredLimitGate: overrideWiredLimitGate)
         }
         stop()
         if state == .idle {

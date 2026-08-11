@@ -169,13 +169,58 @@ final class SupervisorIntegrationTests: XCTestCase {
         let gg = dir.appendingPathComponent("gguf").appendingPathComponent(hostQuant.ggufFilename)
         FileManager.default.createFile(atPath: gg.path, contents: Data("gguf".utf8))
 
-        let s = SupervisorService(ds4Dir: dir, runner: RealProcessRunner())
+        let s = SupervisorService(
+            ds4Dir: dir, runner: RealProcessRunner(),
+            wiredLimitGate: { _, _, _, _ in true })  // host-independent: skip the RAM/sysctl gate
         s.start(variant: .flash, flashQuant: .q2q4, ctx: 250_000, host: "127.0.0.1", port: 8137, power: nil)
         let ready = expectation(description: "ready")
         let token = s.$state.sink { if $0 == .ready { ready.fulfill() } }
         wait(for: [ready], timeout: 10)
         token.cancel()
         s.stop()
+    }
+
+    /// The wired-limit gate refuses start() when the working set exceeds the effective Metal
+    /// limit — unless the explicit override is passed (the popup's confirmed "Start anyway").
+    func testStartRefusedWhenWiredLimitTooLow() throws {
+        let dir = URL(fileURLWithPath: NSTemporaryDirectory()).appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(
+            at: dir.appendingPathComponent("gguf"), withIntermediateDirectories: true)
+        try stubDs4(dir)
+        let gg = dir.appendingPathComponent("gguf").appendingPathComponent(Quant.q2Imatrix.ggufFilename)
+        FileManager.default.createFile(atPath: gg.path, contents: Data("gguf".utf8))
+
+        let s = SupervisorService(ds4Dir: dir, runner: RealProcessRunner(), wiredLimitGate: { _, _, _, _ in false })
+        s.start(variant: .flash, flashQuant: .q2, ctx: 393_216, host: "127.0.0.1", port: 8137, power: nil)
+        guard case let .error(.wiredLimitTooLow(required, advisory)) = s.state else {
+            return XCTFail("expected .wiredLimitTooLow, got \(s.state)")
+        }
+        XCTAssertEqual(required, requiredWiredMB(variant: .flash, flashQuant: .q2, ctx: 393_216))
+        XCTAssertEqual(advisory, wiredLimitAdvisoryMB(ramGiB: systemRamGiB()))
+
+        // The override (confirmed "Start anyway") gets past the gate to launch.
+        s.start(
+            variant: .flash, flashQuant: .q2, ctx: 393_216, host: "127.0.0.1", port: 8137, power: nil,
+            overrideWiredLimitGate: true)
+        XCTAssertNotEqual(s.state, .error(.wiredLimitTooLow(requiredMB: required, advisoryMB: advisory)))
+    }
+
+    /// restart() gates BEFORE stopping: a refused restart keeps the healthy running server.
+    func testRestartRefusedKeepsRunningServer() throws {
+        let dir = URL(fileURLWithPath: NSTemporaryDirectory()).appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(
+            at: dir.appendingPathComponent("gguf"), withIntermediateDirectories: true)
+        try stubDs4(dir)
+        let gg = dir.appendingPathComponent("gguf").appendingPathComponent(Quant.q2Imatrix.ggufFilename)
+        FileManager.default.createFile(atPath: gg.path, contents: Data("gguf".utf8))
+
+        var gateOpen = true
+        let s = SupervisorService(ds4Dir: dir, runner: RealProcessRunner(), wiredLimitGate: { _, _, _, _ in gateOpen })
+        s.start(variant: .flash, flashQuant: .q2, ctx: 393_216, host: "127.0.0.1", port: 8137, power: nil)
+        guard case .starting = s.state else { return XCTFail("expected .starting, got \(s.state)") }
+        gateOpen = false
+        s.restart(variant: .flash, flashQuant: .q2, ctx: 1_000_000, host: "127.0.0.1", port: 8137, power: nil)
+        XCTAssertEqual(s.state, .starting, "a refused restart must keep the running server untouched")
     }
 
     func testDownloadCompletesToIdle() async throws {

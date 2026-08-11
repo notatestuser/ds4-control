@@ -146,6 +146,12 @@ struct PopupView: View {
                 } label: {
                     Image(systemName: "terminal").font(.system(size: 28))
                 }.buttonStyle(.plain).help("Open a coding agent in Terminal")
+                Button {
+                    WindowChrome.willOpenWindow()
+                    openWindow(id: "wiredhelp")
+                } label: {
+                    Image(systemName: "questionmark.circle").font(.system(size: 28))
+                }.buttonStyle(.plain).help("Metal wired memory limit help")
                 Spacer()
                 Button("Quit") { NSApplication.shared.terminate(nil) }.buttonStyle(.plain).foregroundStyle(.secondary)
             }
@@ -252,6 +258,10 @@ struct PopupView: View {
         case let .crashed(tail): return "ds4-server exited unexpectedly. \(tail.suffix(160))"
         case let .downloadFailed(detail): return "Download failed (\(detail))."
         case let .badState(message): return message
+        case let .wiredLimitTooLow(requiredMB, _):
+            return
+                "Metal wired limit is below this config's ~\(requiredMB / 1024) GiB working set. "
+                + "Use \"Metal wired limit help…\" under Start to fix it."
         }
     }
 

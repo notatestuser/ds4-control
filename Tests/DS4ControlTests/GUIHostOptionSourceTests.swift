@@ -33,6 +33,8 @@ final class GUIHostOptionSourceTests: XCTestCase {
         XCTAssertTrue(modelRow.contains("let host = app.normalizeHostForLaunch()"))
         XCTAssertTrue(modelRow.contains("supervisor.start("))
         XCTAssertTrue(modelRow.contains("host: host"))
-        XCTAssertEqual(modelRow.components(separatedBy: "kvDiskDir:").count - 1, 2)
+        // Both start paths (Retry and Start) route through one startServer() helper now,
+        // so the kvDiskDir argument appears exactly once.
+        XCTAssertEqual(modelRow.components(separatedBy: "kvDiskDir:").count - 1, 1)
     }
 }

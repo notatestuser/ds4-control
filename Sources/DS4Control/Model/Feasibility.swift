@@ -1,8 +1,13 @@
 import Foundation
+import Metal
 
 enum Feasibility: Equatable {
     case standard
-    case warnWiredLimit(advisoryMB: Int)  // 96–127 GiB Flash
+    /// The launch config's GPU-wired working set (weights + KV) exceeds the machine's
+    /// effective Metal wired limit. Starting anyway pages the model and hangs the machine,
+    /// so Start is gated until the limit is raised (an explicit "Start anyway" override
+    /// remains). `advisoryMB` is the sysctl value that makes this config fit.
+    case wiredLimitTooLow(requiredMB: Int, advisoryMB: Int)
     case blocked(reason: String)  // cannot run on this machine
 }
 
@@ -23,6 +28,43 @@ func currentWiredLimitMB() -> Int {
     return value
 }
 
+/// The OS's default GPU wired ceiling in MB, as advertised by Metal. This is NOT a
+/// constant fraction of RAM (~75% on most Macs, ~84% on newer macOS), so it is queried,
+/// never assumed. Cached: it only changes once `iogpu.wired_limit_mb` is set, and then
+/// the live sysctl read wins anyway (see `effectiveWiredLimitMB`).
+private let metalDefaultWiredLimitMB: Int = {
+    guard let device = MTLCreateSystemDefaultDevice() else { return 0 }
+    return Int(device.recommendedMaxWorkingSetSize / (1024 * 1024))
+}()
+
+/// The OS-default GPU wired ceiling for this machine (MB): Metal's advertised
+/// `recommendedMaxWorkingSetSize`, falling back to a conservative 75% of RAM when Metal
+/// can't report a device. Clamped to total RAM.
+func defaultWiredLimitMB(ramGiB: Double) -> Int {
+    let metal = metalDefaultWiredLimitMB
+    guard metal > 0 else { return Int(ramGiB * 1024 * 0.75) }
+    return min(metal, Int(ramGiB * 1024))
+}
+
+/// Test/dev override: when `DS4_EMULATE_WIRED_LIMIT_MB` is a positive integer, the
+/// effective limit reports that instead of the machine's real one — so the gated-Start
+/// notice can be exercised without touching the sysctl (no sudo needed).
+func emulatedWiredLimitMB() -> Int? {
+    guard let raw = ProcessInfo.processInfo.environment["DS4_EMULATE_WIRED_LIMIT_MB"],
+        let mb = Int(raw), mb > 0
+    else { return nil }
+    return mb
+}
+
+/// Effective GPU wired ceiling right now (MB): the user's `iogpu.wired_limit_mb` when
+/// raised — read live, so running the sysctl in Terminal un-gates the popup within a
+/// metrics tick — else the OS default.
+func effectiveWiredLimitMB(ramGiB: Double) -> Int {
+    if let emulated = emulatedWiredLimitMB() { return emulated }
+    let set = currentWiredLimitMB()
+    return set > 0 ? set : defaultWiredLimitMB(ramGiB: ramGiB)
+}
+
 /// Minimum context ds4 needs to engage Think Max (`DS4_THINK_MAX_MIN_CONTEXT`).
 let thinkMaxMinCtx = 393_216
 
@@ -35,7 +77,17 @@ private let osReserveGiB = 8.0
 /// Suggested `iogpu.wired_limit_mb`: total RAM minus the OS reserve, so the GPU-wired
 /// working set (weights + KV) fits. A percentage heuristic under-shoots the largest
 /// models (e.g. 0.9·512 GiB ≈ 460 GiB < Pro's ~471 GiB working set).
-private func wiredLimitAdvisoryMB(ramGiB: Double) -> Int { Int((ramGiB - osReserveGiB) * 1024) }
+func wiredLimitAdvisoryMB(ramGiB: Double) -> Int { Int((ramGiB - osReserveGiB) * 1024) }
+
+/// The GPU-wired working set ds4 needs for this launch config (MB): resident weights plus
+/// KV cache at the launch context (KV excluded when the disk KV cache is on). Grounded in
+/// scripts/flash-mem-harness.sh, where q2 @1M ≈ 96 GiB resident ≈ weights + KV.
+func requiredWiredMB(variant: Variant, flashQuant: FlashQuant, ctx: Int, kvDiskCache: Bool = false) -> Int {
+    let quant = Quant.for(variant, flashQuant: flashQuant)
+    let weightsMB = Int(quant.weightsGiB * 1024)
+    let kvMB = kvDiskCache ? 0 : (variant.kvBytesPerToken * ctx) / (1024 * 1024)
+    return weightsMB + kvMB
+}
 
 /// Default context, tiered by machine memory (measured via scripts/flash-mem-harness.sh,
 /// where q2 @1M ≈ 96 GiB resident): V4 Pro and ≥128 GiB Flash (q2-q4 quant) run the full 1M
@@ -58,22 +110,28 @@ func defaultFlashQuant(ramGiB: Double) -> FlashQuant {
     ramGiB >= 128 ? .q2q4 : .q2
 }
 
-/// Feasibility gate (spec §5.2). ds4 itself enforces no floor, so the app does.
-func feasibility(ramGiB: Double, variant: Variant) -> Feasibility {
+/// Feasibility gate (spec §5.2). ds4 itself enforces no floor, so the app does. The RAM
+/// tiers block outright; the Metal wired-limit check then gates the launch config's
+/// weights-plus-KV working set against the machine's effective ceiling (`wiredLimitMB` —
+/// inject `effectiveWiredLimitMB(ramGiB:)` at the call site).
+func feasibility(
+    ramGiB: Double, variant: Variant, flashQuant: FlashQuant,
+    ctx: Int, wiredLimitMB: Int, kvDiskCache: Bool
+) -> Feasibility {
     switch variant {
     case .pro:
         guard ramGiB >= 512 else { return .blocked(reason: "V4 Pro needs ≥ 512 GiB unified memory.") }
-        // Pro's ~432 GiB weights + KV exceed the default Metal wired limit even on a
-        // 512 GiB machine, so always advise raising it.
-        return .warnWiredLimit(advisoryMB: wiredLimitAdvisoryMB(ramGiB: ramGiB))
     case .flash:
-        if ramGiB >= 128 { return .standard }  // ≥128 GiB: q2-q4 quant, 1M context
-        if ramGiB >= 96 {  // 96–127 GiB: q2 quant, 393K context
-            return .warnWiredLimit(advisoryMB: wiredLimitAdvisoryMB(ramGiB: ramGiB))
+        if ramGiB < 96 {
+            return .blocked(
+                reason:
+                    "V4 Flash needs ≥ 96 GiB unified memory. Below that, the ~81 GiB model plus its KV cache exceed RAM, so it can't run."
+            )
         }
-        return .blocked(
-            reason:
-                "V4 Flash needs ≥ 96 GiB unified memory. Below that, the ~81 GiB model plus its KV cache exceed RAM, so it can't run."
-        )
     }
+    let required = requiredWiredMB(variant: variant, flashQuant: flashQuant, ctx: ctx, kvDiskCache: kvDiskCache)
+    if wiredLimitMB < required {
+        return .wiredLimitTooLow(requiredMB: required, advisoryMB: wiredLimitAdvisoryMB(ramGiB: ramGiB))
+    }
+    return .standard
 }
