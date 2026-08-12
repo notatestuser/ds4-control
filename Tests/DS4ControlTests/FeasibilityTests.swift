@@ -32,7 +32,8 @@ final class FeasibilityTests: XCTestCase {
         // q2 weights (81 GiB) + KV at 393K ctx (43 layers × 391 B/tok). KV always counts:
         // the disk store checkpoints the already-resident session tensors rather than replacing them
         // (the harness measures the context buffers with --kv-disk-dir enabled).
-        let kvMB = (43 * 391 * 393_216) / (1024 * 1024)
+        let kvBytes = 43 * 391 * 393_216
+        let kvMB = kvBytes / (1024 * 1024) + (kvBytes % (1024 * 1024) == 0 ? 0 : 1)
         XCTAssertEqual(
             requiredWiredMB(variant: .flash, flashQuant: .q2, ctx: 393_216),
             Int(Quant.q2Imatrix.weightsGiB * 1024) + kvMB)
@@ -44,10 +45,23 @@ final class FeasibilityTests: XCTestCase {
 
     func testRequiredWiredMBScalesResidentKVBySessions() {
         let weightsMB = Int(Quant.q2Imatrix.weightsGiB * 1024)
-        let kvMB = (43 * 391 * 393_216 * 3) / (1024 * 1024)
+        let kvBytes = 43 * 391 * 393_216 * 3
+        let kvMB = kvBytes / (1024 * 1024) + (kvBytes % (1024 * 1024) == 0 ? 0 : 1)
         XCTAssertEqual(
             requiredWiredMB(variant: .flash, flashQuant: .q2, ctx: 393_216, sessions: 3),
             weightsMB + kvMB)
+    }
+
+    func testWiredLimitRejectsFractionalKVOverage() {
+        let weightsMB = Int(Quant.q2Imatrix.weightsGiB * 1024)
+        let kvBytes = 43 * 391 * 393_216
+        let truncatedRequiredMB = weightsMB + kvBytes / (1024 * 1024)
+        guard
+            case let .wiredLimitTooLow(requiredMB, _) = feasibility(
+                ramGiB: 96, variant: .flash, flashQuant: .q2, ctx: 393_216,
+                wiredLimitMB: truncatedRequiredMB)
+        else { return XCTFail("a limit below the full fractional KV allocation must be rejected") }
+        XCTAssertEqual(requiredMB, truncatedRequiredMB + 1)
     }
 
     func testRequiredWiredMBSaturatesOnOverflow() {

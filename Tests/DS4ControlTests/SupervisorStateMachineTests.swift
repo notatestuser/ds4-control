@@ -188,7 +188,9 @@ final class SupervisorStateMachineTests: XCTestCase {
             FileManager.default.createFile(atPath: u.path, contents: Data("#!/bin/sh\n".utf8))
             try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: u.path)
         }
-        let s = SupervisorService(ds4Dir: dir, runner: FakeRunner())
+        let s = SupervisorService(
+            ds4Dir: dir, runner: FakeRunner(),
+            wiredLimitGate: { _, _, _, _ in .standard })
         s.start(variant: .flash, flashQuant: .q2q4, ctx: 250_000, host: "127.0.0.1", port: 8000, power: nil)
         if case .error(.modelMissing) = s.state {} else { XCTFail("expected modelMissing, got \(s.state)") }
     }

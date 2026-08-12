@@ -93,7 +93,10 @@ func requiredWiredMB(variant: Variant, flashQuant: FlashQuant, ctx: Int, session
     let (sessionBytes, contextOverflow) = variant.kvBytesPerToken.multipliedReportingOverflow(by: ctx)
     let (kvBytes, sessionOverflow) = sessionBytes.multipliedReportingOverflow(by: max(sessions, 1))
     guard !contextOverflow, !sessionOverflow else { return Int.max }
-    let kvMB = kvBytes / (1024 * 1024)
+    let bytesPerMiB = 1024 * 1024
+    let (kvMB, roundingOverflow) = (kvBytes / bytesPerMiB).addingReportingOverflow(
+        kvBytes % bytesPerMiB == 0 ? 0 : 1)
+    guard !roundingOverflow else { return Int.max }
     let (requiredMB, totalOverflow) = weightsMB.addingReportingOverflow(kvMB)
     return totalOverflow ? Int.max : requiredMB
 }
