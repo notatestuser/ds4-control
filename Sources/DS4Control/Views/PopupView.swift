@@ -146,12 +146,16 @@ struct PopupView: View {
                 } label: {
                     Image(systemName: "terminal").font(.system(size: 28))
                 }.buttonStyle(.plain).help("Open a coding agent in Terminal")
-                Button {
-                    WindowChrome.willOpenWindow()
-                    openWindow(id: "wiredhelp")
-                } label: {
-                    Image(systemName: "questionmark.circle").font(.system(size: 28))
-                }.buttonStyle(.plain).help("Metal wired memory limit help")
+                // Dev/test-only shortcut: production users reach the help window from
+                // the gated-Start notice instead.
+                if emulatedWiredLimitMB() != nil || isDevBuild() {
+                    Button {
+                        WindowChrome.willOpenWindow()
+                        openWindow(id: "wiredhelp")
+                    } label: {
+                        Image(systemName: "questionmark.circle").font(.system(size: 28))
+                    }.buttonStyle(.plain).help("Metal wired memory limit help")
+                }
                 Spacer()
                 Button("Quit") { NSApplication.shared.terminate(nil) }.buttonStyle(.plain).foregroundStyle(.secondary)
             }

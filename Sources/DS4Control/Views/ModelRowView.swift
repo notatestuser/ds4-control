@@ -130,9 +130,11 @@ struct ModelRowView: View {
                 Text("sudo sysctl iogpu.wired_limit_mb=\(advisoryMB)")
                     .font(.system(.caption2, design: .monospaced))
                     .textSelection(.enabled)
-                Button("Metal wired limit help…") {
+                Button {
                     WindowChrome.willOpenWindow()
                     openWindow(id: "wiredhelp")
+                } label: {
+                    Label("Metal wired limit help…", systemImage: "questionmark.circle")
                 }
                 .buttonStyle(.link).font(.caption2)
             }

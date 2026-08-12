@@ -22,3 +22,9 @@ func bundledDS4Dir() -> URL {
     let resources = Bundle.main.resourceURL ?? Bundle.main.bundleURL
     return resources.appendingPathComponent("ds4", isDirectory: true)
 }
+
+/// True when running unbundled (no packaged Info.plist — e.g. `swift run`). Gates
+/// dev/test-only UI, like the wired-limit help shortcut in the popup footer.
+func isDevBuild() -> Bool {
+    Bundle.main.infoDictionary?["CFBundleShortVersionString"] == nil
+}
