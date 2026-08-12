@@ -23,7 +23,7 @@ final class ChatThinkMaxToggleTests: XCTestCase {
 
     func testSettingsChatSectionComesAfterApplyRestartSection() throws {
         let settings = try source("Sources/DS4Control/Views/SettingsView.swift")
-        let applyIndex = try XCTUnwrap(settings.range(of: #"Button("Apply & Restart Server", action: restart)"#))
+        let applyIndex = try XCTUnwrap(settings.range(of: #"Button("Apply & Restart Server") { restart() }"#))
         let chatIndex = try XCTUnwrap(settings.range(of: "ThinkingModePicker()"))
 
         XCTAssertLessThan(applyIndex.lowerBound, chatIndex.lowerBound)

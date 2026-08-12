@@ -25,6 +25,11 @@ final class GUIHostOptionSourceTests: XCTestCase {
         XCTAssertTrue(settings.contains("let host = app.normalizeHostForLaunch()"))
         XCTAssertTrue(settings.contains("supervisor.restart("))
         XCTAssertTrue(settings.contains("host: host"))
+        XCTAssertTrue(settings.contains("if case let .rejected(feasibility) = result"))
+        XCTAssertTrue(settings.contains("Restart Anyway"))
+        XCTAssertTrue(settings.contains("openWindow(id: \"wiredhelp\")"))
+        XCTAssertTrue(settings.contains("overrideWiredLimitGate: overrideWiredLimitGate"))
+        XCTAssertTrue(settings.contains("min(Int(digits) ?? app.selectedVariant.ctxCeiling"))
     }
 
     func testModelRowViewNormalizesBeforeStart() throws {

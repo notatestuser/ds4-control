@@ -262,6 +262,7 @@ struct PopupView: View {
         case let .crashed(tail): return "ds4-server exited unexpectedly. \(tail.suffix(160))"
         case let .downloadFailed(detail): return "Download failed (\(detail))."
         case let .badState(message): return message
+        case let .configurationBlocked(reason): return reason
         case let .wiredLimitTooLow(requiredMB, _):
             return
                 "Metal wired limit is below this config's ~\(requiredMB / 1024) GiB working set. "

@@ -13,6 +13,8 @@ final class AppStateTests: XCTestCase {
             defaultCtx(ramGiB: 128, variant: .flash, flashQuant: app.selectedFlashQuant))
         app.ctxOverride = 50_000
         XCTAssertEqual(app.effectiveCtx(ramGiB: 128), 50_000)
+        app.ctxOverride = Int.max
+        XCTAssertEqual(app.effectiveCtx(ramGiB: 128), app.selectedVariant.ctxCeiling)
     }
     func testPersistence() {
         let name = "test.\(UUID().uuidString)"

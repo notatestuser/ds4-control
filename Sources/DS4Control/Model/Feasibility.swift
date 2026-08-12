@@ -73,6 +73,7 @@ func thinkMax(ctx: Int) -> Bool { ctx >= thinkMaxMinCtx }
 /// Headroom left for macOS and other processes — also the buffer the Metal
 /// wired-limit advisory leaves below total RAM.
 private let osReserveGiB = 8.0
+let maxConcurrentSessions = 16
 
 /// Suggested `iogpu.wired_limit_mb`: total RAM minus the OS reserve, so the GPU-wired
 /// working set (weights + KV) fits. A percentage heuristic under-shoots the largest
@@ -88,8 +89,23 @@ func wiredLimitAdvisoryMB(ramGiB: Double) -> Int { Int((ramGiB - osReserveGiB) *
 func requiredWiredMB(variant: Variant, flashQuant: FlashQuant, ctx: Int, sessions: Int = 1) -> Int {
     let quant = Quant.for(variant, flashQuant: flashQuant)
     let weightsMB = Int(quant.weightsGiB * 1024)
-    let kvMB = (variant.kvBytesPerToken * ctx * max(sessions, 1)) / (1024 * 1024)
-    return weightsMB + kvMB
+    guard ctx >= 0 else { return Int.max }
+    let (sessionBytes, contextOverflow) = variant.kvBytesPerToken.multipliedReportingOverflow(by: ctx)
+    let (kvBytes, sessionOverflow) = sessionBytes.multipliedReportingOverflow(by: max(sessions, 1))
+    guard !contextOverflow, !sessionOverflow else { return Int.max }
+    let kvMB = kvBytes / (1024 * 1024)
+    let (requiredMB, totalOverflow) = weightsMB.addingReportingOverflow(kvMB)
+    return totalOverflow ? Int.max : requiredMB
+}
+
+func launchBoundsError(variant: Variant, ctx: Int, sessions: Int) -> String? {
+    guard (1...variant.ctxCeiling).contains(ctx) else {
+        return "Context size must be between 1 and \(variant.ctxCeiling) tokens."
+    }
+    guard (1...maxConcurrentSessions).contains(sessions) else {
+        return "Concurrent sessions must be between 1 and \(maxConcurrentSessions)."
+    }
+    return nil
 }
 
 /// Default context, tiered by machine memory (measured via scripts/flash-mem-harness.sh,
@@ -121,6 +137,9 @@ func feasibility(
     ramGiB: Double, variant: Variant, flashQuant: FlashQuant,
     ctx: Int, wiredLimitMB: Int, sessions: Int = 1
 ) -> Feasibility {
+    if let reason = launchBoundsError(variant: variant, ctx: ctx, sessions: sessions) {
+        return .blocked(reason: reason)
+    }
     switch variant {
     case .pro:
         guard ramGiB >= 512 else { return .blocked(reason: "V4 Pro needs ≥ 512 GiB unified memory.") }
@@ -134,6 +153,12 @@ func feasibility(
     }
     let required = requiredWiredMB(
         variant: variant, flashQuant: flashQuant, ctx: ctx, sessions: sessions)
+    if Double(required) > ramGiB * 1024 {
+        return .blocked(
+            reason:
+                "This setup needs ~\(required / 1024) GiB unified memory, but this Mac has ~\(Int(ramGiB)) GiB. Reduce context or concurrent sessions."
+        )
+    }
     if wiredLimitMB < required {
         let advisory = max(required, wiredLimitAdvisoryMB(ramGiB: ramGiB))
         return .wiredLimitTooLow(requiredMB: required, advisoryMB: advisory)

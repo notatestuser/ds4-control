@@ -8,6 +8,12 @@ private final class DownloadStderrBuffer: @unchecked Sendable {
     var text = ""
 }
 
+enum RestartResult: Equatable {
+    case accepted
+    case rejected(Feasibility)
+    case ignored
+}
+
 @MainActor
 final class SupervisorService: ObservableObject {
     @Published private(set) var state: ServerState = .idle
@@ -61,20 +67,15 @@ final class SupervisorService: ObservableObject {
         ) async throws -> Void
     private let fetchFile: FetchFile
 
-    /// Returns true when the launch config's GPU-wired working set fits the machine's
-    /// effective Metal wired limit. Injectable so tests don't depend on the host's
-    /// RAM/sysctl state (CI runners are far smaller than any supported machine).
+    /// Returns the launch config's feasibility. Injectable so tests don't depend on the
+    /// host's RAM/sysctl state (CI runners are far smaller than any supported machine).
     typealias WiredLimitGate =
-        (_ variant: Variant, _ flashQuant: FlashQuant, _ ctx: Int, _ sessions: Int) -> Bool
+        (_ variant: Variant, _ flashQuant: FlashQuant, _ ctx: Int, _ sessions: Int) -> Feasibility
     static let defaultWiredLimitGate: WiredLimitGate = { variant, flashQuant, ctx, sessions in
         let ram = systemRamGiB()
-        if case .wiredLimitTooLow = feasibility(
+        return feasibility(
             ramGiB: ram, variant: variant, flashQuant: flashQuant, ctx: ctx,
             wiredLimitMB: effectiveWiredLimitMB(ramGiB: ram), sessions: sessions)
-        {
-            return false
-        }
-        return true
     }
     private let wiredLimitGate: WiredLimitGate
 
@@ -155,16 +156,22 @@ final class SupervisorService: ObservableObject {
     ) {
         guard state == .idle || isErrorState else { emitBadState("start"); return }
         if let e = validateDs4Dir() { state = .error(e); return }
+        if let reason = launchBoundsError(variant: variant, ctx: ctx, sessions: sessions) {
+            state = .error(.configurationBlocked(reason: reason))
+            return
+        }
         // Defense-in-depth for the popup gate: refuse configs whose GPU-wired working set
         // exceeds the effective Metal wired limit (starting anyway pages the model and
         // hangs the machine). The UI's confirmed "Start anyway" passes the override.
-        if !overrideWiredLimitGate && !wiredLimitGate(variant, flashQuant, ctx, sessions) {
-            let ram = systemRamGiB()
-            let required = requiredWiredMB(
-                variant: variant, flashQuant: flashQuant, ctx: ctx, sessions: sessions)
-            let advisory = max(required, wiredLimitAdvisoryMB(ramGiB: ram))
+        switch wiredLimitGate(variant, flashQuant, ctx, sessions) {
+        case let .blocked(reason):
+            state = .error(.configurationBlocked(reason: reason))
+            return
+        case let .wiredLimitTooLow(required, advisory) where !overrideWiredLimitGate:
             state = .error(.wiredLimitTooLow(requiredMB: required, advisoryMB: advisory))
             return
+        case .standard, .wiredLimitTooLow:
+            break
         }
         let gguf = ggufURL(for: variant, flashQuant: flashQuant)
         guard FileManager.default.fileExists(atPath: gguf.path) else {
@@ -280,6 +287,7 @@ final class SupervisorService: ObservableObject {
     /// is deferred to `handleExit`; an attached orphan's stop completes when its pids
     /// have actually exited (polled), with the relaunch deferred likewise.
     /// No-op unless a server is running.
+    @discardableResult
     func restart(
         variant: Variant,
         flashQuant: FlashQuant,
@@ -290,13 +298,27 @@ final class SupervisorService: ObservableObject {
         sessions: Int = 1,
         kvDiskDir: URL? = nil,
         overrideWiredLimitGate: Bool = false
-    ) {
-        guard state == .ready || state == .starting else { emitBadState("restart"); return }
+    ) -> RestartResult {
+        guard state == .ready || state == .starting else {
+            emitBadState("restart")
+            return .ignored
+        }
+        if let reason = launchBoundsError(variant: variant, ctx: ctx, sessions: sessions) {
+            recentLog.append("ignored 'restart': \(reason)")
+            return .rejected(.blocked(reason: reason))
+        }
         // Gate BEFORE stopping: a refused restart keeps the healthy running server instead
         // of tearing it down into an error state.
-        if !overrideWiredLimitGate && !wiredLimitGate(variant, flashQuant, ctx, sessions) {
+        let feasibility = wiredLimitGate(variant, flashQuant, ctx, sessions)
+        switch feasibility {
+        case let .blocked(reason):
+            recentLog.append("ignored 'restart': \(reason)")
+            return .rejected(feasibility)
+        case .wiredLimitTooLow where !overrideWiredLimitGate:
             recentLog.append("ignored 'restart': Metal wired limit below the new config's working set")
-            return
+            return .rejected(feasibility)
+        case .standard, .wiredLimitTooLow:
+            break
         }
         let relaunch: () -> Void = { [weak self] in
             guard let self else { return }
@@ -310,6 +332,7 @@ final class SupervisorService: ObservableObject {
         } else {
             pendingRestart = relaunch  // deferred until stop drains (handleExit, or the attached-pid poll)
         }
+        return .accepted
     }
 
     /// On launch, if a ds4-server is already serving on `port` (orphaned from a prior

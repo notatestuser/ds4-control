@@ -50,6 +50,29 @@ final class FeasibilityTests: XCTestCase {
             weightsMB + kvMB)
     }
 
+    func testRequiredWiredMBSaturatesOnOverflow() {
+        XCTAssertEqual(
+            requiredWiredMB(variant: .flash, flashQuant: .q2, ctx: Int.max, sessions: Int.max),
+            Int.max)
+    }
+
+    func testWorkingSetAbovePhysicalRAMBlocks() {
+        guard
+            case let .blocked(reason) = feasibility(
+                ramGiB: 96, variant: .flash, flashQuant: .q2, ctx: 1_000_000,
+                wiredLimitMB: Int.max)
+        else { return XCTFail("Flash q2 at 1M context must not be offered a wired-limit workaround on 96 GiB") }
+        XCTAssertTrue(reason.contains("Reduce context or concurrent sessions"))
+    }
+
+    func testLaunchBoundsBlockBeforeSizing() {
+        XCTAssertEqual(
+            feasibility(
+                ramGiB: 128, variant: .flash, flashQuant: .q2, ctx: Int.max,
+                wiredLimitMB: Int.max, sessions: Int.max),
+            .blocked(reason: "Context size must be between 1 and 1000000 tokens."))
+    }
+
     func testWiredLimitGateFlash96() {
         // 96 GiB Flash q2 @393K: a default-ish cap (~75% ≈ 73,728 MB) gates; the advisory passes.
         // The advisory value leaves an 8 GiB OS buffer below total RAM.

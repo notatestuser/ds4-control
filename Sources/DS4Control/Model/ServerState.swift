@@ -8,6 +8,7 @@ enum ServerError: Equatable {
     case crashed(tail: String)
     case downloadFailed(detail: String)
     case badState(message: String)
+    case configurationBlocked(reason: String)
     /// start() refused: the launch config's GPU-wired working set exceeds the effective
     /// Metal wired limit and the override wasn't passed. `requiredMB`/`advisoryMB` match
     /// `Feasibility.wiredLimitTooLow` so the UI can point at the help window.

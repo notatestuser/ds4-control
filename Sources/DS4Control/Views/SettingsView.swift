@@ -3,6 +3,7 @@ import SwiftUI
 struct SettingsView: View {
     @EnvironmentObject var app: AppState
     @EnvironmentObject var supervisor: SupervisorService
+    @Environment(\.openWindow) private var openWindow
     private let ram = systemRamGiB()
     @State private var confirmingCleanup = false
 
@@ -60,13 +61,13 @@ struct SettingsView: View {
     private var ctxText: Binding<String> {
         Binding(
             get: {
-                let active =
-                    app.ctxOverride > 0
-                    ? app.ctxOverride
-                    : defaultCtx(ramGiB: ram, variant: app.selectedVariant, flashQuant: app.selectedFlashQuant)
-                return String(active)
+                String(app.effectiveCtx(ramGiB: ram))
             },
-            set: { app.ctxOverride = Int($0.filter(\.isNumber)) ?? 0 })
+            set: {
+                let digits = $0.filter(\.isNumber)
+                guard !digits.isEmpty else { app.ctxOverride = 0; return }
+                app.ctxOverride = min(Int(digits) ?? app.selectedVariant.ctxCeiling, app.selectedVariant.ctxCeiling)
+            })
     }
 
     var body: some View {
@@ -115,7 +116,7 @@ struct SettingsView: View {
                 .fixedSize(horizontal: false, vertical: true)
                 LabeledContent {
                     HStack(spacing: 10) {
-                        Slider(value: sessionsBinding, in: 1...16, step: 1)
+                        Slider(value: sessionsBinding, in: 1...Double(maxConcurrentSessions), step: 1)
                         Text("\(app.concurrentSessions)")
                             .monospacedDigit().foregroundStyle(.secondary)
                             .frame(width: 30, alignment: .trailing)
@@ -153,7 +154,7 @@ struct SettingsView: View {
             }
 
             Section {
-                Button("Apply & Restart Server", action: restart)
+                Button("Apply & Restart Server") { restart() }
                     .disabled(!isRunning)
             } footer: {
                 Text(restartHint)
@@ -226,13 +227,46 @@ struct SettingsView: View {
         .onDisappear { WindowChrome.windowClosed() }
     }
 
-    private func restart() {
+    private func restart(overrideWiredLimitGate: Bool = false) {
         let host = app.normalizeHostForLaunch()
-        supervisor.restart(
+        let result = supervisor.restart(
             variant: app.selectedVariant, flashQuant: app.selectedFlashQuant,
             ctx: app.effectiveCtx(ramGiB: ram),
             host: host, port: app.port, power: app.power,
             sessions: app.concurrentSessions,
-            kvDiskDir: app.kvDiskCache ? supervisor.kvDiskCacheURL : nil)
+            kvDiskDir: app.kvDiskCache ? supervisor.kvDiskCacheURL : nil,
+            overrideWiredLimitGate: overrideWiredLimitGate)
+        if case let .rejected(feasibility) = result { showRestartRejection(feasibility) }
+    }
+
+    private func showRestartRejection(_ feasibility: Feasibility) {
+        let alert = NSAlert()
+        alert.alertStyle = .warning
+        switch feasibility {
+        case let .wiredLimitTooLow(requiredMB, advisoryMB):
+            alert.messageText = "Metal wired limit too low"
+            alert.informativeText =
+                "The current server is still running. The new setup needs ~\(requiredMB / 1024) GiB of GPU-wired memory. "
+                + "Raise iogpu.wired_limit_mb to at least \(advisoryMB), or explicitly restart anyway."
+            alert.addButton(withTitle: "Open Wired Limit Help")
+            alert.addButton(withTitle: "Restart Anyway")
+            alert.addButton(withTitle: "Cancel")
+            switch alert.runModal() {
+            case .alertFirstButtonReturn:
+                WindowChrome.willOpenWindow()
+                openWindow(id: "wiredhelp")
+            case .alertSecondButtonReturn:
+                restart(overrideWiredLimitGate: true)
+            default:
+                break
+            }
+        case let .blocked(reason):
+            alert.messageText = "These settings cannot run on this Mac"
+            alert.informativeText = "The current server is still running. \(reason)"
+            alert.addButton(withTitle: "OK")
+            alert.runModal()
+        case .standard:
+            break
+        }
     }
 }

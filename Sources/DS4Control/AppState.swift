@@ -55,7 +55,7 @@ final class AppState: ObservableObject {
         ctxOverride = d.integer(forKey: "ctxOverride")
         let p = d.integer(forKey: "power"); power = p > 0 ? p : nil
         let sessions = d.integer(forKey: "concurrentSessions")
-        concurrentSessions = sessions >= 1 ? min(sessions, 16) : 1  // default 1, clamp 1...16
+        concurrentSessions = sessions >= 1 ? min(sessions, maxConcurrentSessions) : 1
         kvDiskCache = d.object(forKey: "kvDiskCache") as? Bool ?? true  // default on
         if let storedMode = d.string(forKey: "thinkingMode").flatMap(ThinkingMode.init(rawValue:)) {
             thinkingMode = storedMode
@@ -76,7 +76,7 @@ final class AppState: ObservableObject {
 
     func effectiveCtx(ramGiB: Double) -> Int {
         ctxOverride > 0
-            ? ctxOverride
+            ? min(ctxOverride, selectedVariant.ctxCeiling)
             : defaultCtx(ramGiB: ramGiB, variant: selectedVariant, flashQuant: selectedFlashQuant)
     }
 
