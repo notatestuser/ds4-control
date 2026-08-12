@@ -156,7 +156,9 @@ final class SupervisorService: ObservableObject {
         power: Int?,
         sessions: Int = 1,
         kvDiskDir: URL? = nil,
-        overrideWiredLimitGate: Bool = false
+        overrideWiredLimitGate: Bool = false,
+        ssdStreaming: Bool = false,
+        ssdStreamingCacheGB: Int = 0
     ) {
         guard state == .idle || isErrorState else { emitBadState("start"); return }
         if let e = validateDs4Dir() { state = .error(e); return }
@@ -190,6 +192,15 @@ final class SupervisorService: ObservableObject {
             "--port", "\(port)",
             "--metal",
         ]
+        if ssdStreaming {
+            // SSD-backed expert streaming: only `ssdStreamingCacheGB` of routed experts
+            // stay resident; the rest load from the GGUF on cache miss. 0 omits the
+            // budget so ds4 picks its automatic cache.
+            args += ["--ssd-streaming"]
+            if ssdStreamingCacheGB > 0 {
+                args += ["--ssd-streaming-cache-experts", "\(ssdStreamingCacheGB)GB"]
+            }
+        }
         if let power { args += ["--power", "\(power)"] }
         // >1 preallocates N resident KV sessions so that many chats/agents generate at once.
         // 1 must omit the flag: ds4 treats even `--batched-session 1` as batched mode (MTP off).
@@ -302,7 +313,9 @@ final class SupervisorService: ObservableObject {
         power: Int?,
         sessions: Int = 1,
         kvDiskDir: URL? = nil,
-        overrideWiredLimitGate: Bool = false
+        overrideWiredLimitGate: Bool = false,
+        ssdStreaming: Bool = false,
+        ssdStreamingCacheGB: Int = 0
     ) -> RestartResult {
         guard state == .ready || state == .starting else {
             emitBadState("restart")
@@ -312,8 +325,6 @@ final class SupervisorService: ObservableObject {
             recentLog.append("ignored 'restart': \(reason)")
             return .rejected(.blocked(reason: reason))
         }
-        // Gate BEFORE stopping: a refused restart keeps the healthy running server instead
-        // of tearing it down into an error state.
         let feasibility = wiredLimitGate(variant, flashQuant, ctx, sessions)
         switch feasibility {
         case let .blocked(reason):
@@ -329,7 +340,8 @@ final class SupervisorService: ObservableObject {
             guard let self else { return }
             self.start(
                 variant: variant, flashQuant: flashQuant, ctx: ctx, host: host, port: port, power: power,
-                sessions: sessions, kvDiskDir: kvDiskDir, overrideWiredLimitGate: overrideWiredLimitGate)
+                sessions: sessions, kvDiskDir: kvDiskDir, overrideWiredLimitGate: overrideWiredLimitGate,
+                ssdStreaming: ssdStreaming, ssdStreamingCacheGB: ssdStreamingCacheGB)
         }
         stop()
         if state == .idle {

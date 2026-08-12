@@ -290,6 +290,40 @@ final class SupervisorStateMachineTests: XCTestCase {
         s.start(variant: .flash, flashQuant: .q2q4, ctx: 250_000, host: "127.0.0.1", port: 8000, power: nil)
         if case .error(.modelMissing) = s.state {} else { XCTFail("expected modelMissing, got \(s.state)") }
     }
+    func testStartAddsSsdStreamingArgsWhenEnabled() throws {
+        let r = FakeRunner(); let s = try makeSupervisor(r)
+        s.start(
+            variant: .flash, flashQuant: .q2q4, ctx: 250_000, host: "127.0.0.1", port: 8000,
+            power: nil, ssdStreaming: true, ssdStreamingCacheGB: 67)
+        XCTAssertTrue(r.lastArgs.contains("--ssd-streaming"))
+        XCTAssertEqual(
+            r.lastArgs[r.lastArgs.firstIndex(of: "--ssd-streaming-cache-experts")! + 1], "67GB")
+    }
+    func testStartOmitsSsdStreamingArgsByDefault() throws {
+        let r = FakeRunner(); let s = try makeSupervisor(r)
+        s.start(variant: .flash, flashQuant: .q2q4, ctx: 250_000, host: "127.0.0.1", port: 8000, power: nil)
+        XCTAssertFalse(r.lastArgs.contains("--ssd-streaming"))
+        XCTAssertFalse(r.lastArgs.contains("--ssd-streaming-cache-experts"))
+    }
+    func testStartStreamingWithoutBudgetPassesToggleOnly() throws {
+        let r = FakeRunner(); let s = try makeSupervisor(r)
+        s.start(
+            variant: .flash, flashQuant: .q2q4, ctx: 250_000, host: "127.0.0.1", port: 8000,
+            power: nil, ssdStreaming: true, ssdStreamingCacheGB: 0)
+        XCTAssertTrue(r.lastArgs.contains("--ssd-streaming"))
+        XCTAssertFalse(r.lastArgs.contains("--ssd-streaming-cache-experts"))
+    }
+    func testRestartRelaunchCarriesSsdStreamingArgs() throws {
+        let r = FakeRunner(); let s = try makeSupervisor(r)
+        s.start(variant: .flash, flashQuant: .q2q4, ctx: 250_000, host: "127.0.0.1", port: 8000, power: nil)
+        r.emit("ds4-server: listening on http://127.0.0.1:8000")
+        s.restart(
+            variant: .flash, flashQuant: .q2q4, ctx: 393_216, host: "127.0.0.1", port: 8000,
+            power: nil, ssdStreaming: true, ssdStreamingCacheGB: 67)
+        XCTAssertTrue(r.lastArgs.contains("--ssd-streaming"))
+        XCTAssertEqual(
+            r.lastArgs[r.lastArgs.firstIndex(of: "--ssd-streaming-cache-experts")! + 1], "67GB")
+    }
     func testDownloadUsesSelectedQuantFile() throws {
         let dir = URL(fileURLWithPath: NSTemporaryDirectory()).appendingPathComponent(UUID().uuidString)
         try FileManager.default.createDirectory(
