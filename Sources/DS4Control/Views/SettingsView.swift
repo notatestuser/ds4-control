@@ -146,8 +146,9 @@ struct SettingsView: View {
                             + "Memory use grows with sessions × context size. "
                             + "Applies on next server start or restart.")
                     Text(
-                        "Disk KV cache keeps the prompt cache on disk so repeated prompts start "
-                            + "faster. Applies on next server start or restart.")
+                        "Disk KV cache checkpoints session state so conversations can resume faster "
+                            + "after slot reuse or restart. It does not reduce resident memory. "
+                            + "Applies on next server start or restart.")
                 }
             }
 

@@ -30,7 +30,7 @@ final class FeasibilityTests: XCTestCase {
 
     func testRequiredWiredMB() {
         // q2 weights (81 GiB) + KV at 393K ctx (43 layers × 391 B/tok). KV always counts:
-        // the disk KV cache is only a prompt cache — the active session's KV stays resident
+        // the disk store checkpoints the already-resident session tensors rather than replacing them
         // (the harness measures the context buffers with --kv-disk-dir enabled).
         let kvMB = (43 * 391 * 393_216) / (1024 * 1024)
         XCTAssertEqual(
@@ -40,6 +40,14 @@ final class FeasibilityTests: XCTestCase {
         XCTAssertEqual(
             requiredWiredMB(variant: .pro, flashQuant: .q2, ctx: 0),
             Int(Quant.proImatrix.weightsGiB * 1024))
+    }
+
+    func testRequiredWiredMBScalesResidentKVBySessions() {
+        let weightsMB = Int(Quant.q2Imatrix.weightsGiB * 1024)
+        let kvMB = (43 * 391 * 393_216 * 3) / (1024 * 1024)
+        XCTAssertEqual(
+            requiredWiredMB(variant: .flash, flashQuant: .q2, ctx: 393_216, sessions: 3),
+            weightsMB + kvMB)
     }
 
     func testWiredLimitGateFlash96() {
@@ -70,7 +78,7 @@ final class FeasibilityTests: XCTestCase {
         guard
             case let .wiredLimitTooLow(_, advisory) = feasibility(
                 ramGiB: 512, variant: .pro, flashQuant: .q2q4, ctx: 1_000_000, wiredLimitMB: 393_216)
-        else { return XCTFail() }
+        else { return XCTFail("expected feasibility to return wiredLimitTooLow for V4 Pro") }
         XCTAssertEqual(advisory, Int((512.0 - 8.0) * 1024))  // 516096 MB
         XCTAssertEqual(
             feasibility(
@@ -91,6 +99,15 @@ final class FeasibilityTests: XCTestCase {
             feasibility(
                 ramGiB: 128, variant: .flash, flashQuant: .q2q4, ctx: 1_000_000,
                 wiredLimitMB: 110_000), .standard)
+    }
+
+    func testWiredLimitAdvisoryIsNeverBelowRequiredWorkingSet() {
+        guard
+            case let .wiredLimitTooLow(required, advisory) = feasibility(
+                ramGiB: 96, variant: .flash, flashQuant: .q2, ctx: 393_216,
+                wiredLimitMB: 73_728, sessions: 2)
+        else { return XCTFail("expected multiple resident sessions to exceed the wired limit") }
+        XCTAssertGreaterThanOrEqual(advisory, required)
     }
 
     func testEffectiveWiredLimitLive() {

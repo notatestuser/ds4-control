@@ -24,7 +24,8 @@ final class SupervisorStateMachineTests: XCTestCase {
     // `probe` defaults to a hermetic "no server" — an unexpected exit now triggers an
     // adoption probe, and the real default would hit a live ds4-server on the dev machine.
     fileprivate func makeSupervisor(
-        _ runner: FakeRunner, probe: @escaping (Int) async -> Data? = { _ in nil }
+        _ runner: FakeRunner, probe: @escaping (Int) async -> Data? = { _ in nil },
+        wiredLimitGate: @escaping SupervisorService.WiredLimitGate = { _, _, _, _ in true }
     ) throws -> SupervisorService {
         let dir = URL(fileURLWithPath: NSTemporaryDirectory()).appendingPathComponent(UUID().uuidString)
         try FileManager.default.createDirectory(
@@ -41,7 +42,7 @@ final class SupervisorStateMachineTests: XCTestCase {
         FileManager.default.createFile(atPath: gg.path, contents: Data("gguf".utf8))
         return SupervisorService(
             ds4Dir: dir, runner: runner, serverProbe: probe,
-            wiredLimitGate: { _, _, _ in true })  // tests are host-independent: skip the RAM/sysctl gate
+            wiredLimitGate: wiredLimitGate)  // tests are host-independent: skip the RAM/sysctl gate
     }
 
     func testStartReachesReady() throws {
@@ -87,6 +88,26 @@ final class SupervisorStateMachineTests: XCTestCase {
         let r2 = FakeRunner(); let s2 = try makeSupervisor(r2)
         s2.start(variant: .flash, flashQuant: .q2q4, ctx: 250_000, host: "127.0.0.1", port: 8000, power: nil)
         XCTAssertFalse(r2.lastArgs.contains("--batched-session"))
+    }
+    func testWiredLimitGateReceivesRequestedSessionsOnStartAndRestart() throws {
+        let r = FakeRunner()
+        var gatedSessions: [Int] = []
+        let s = try makeSupervisor(
+            r,
+            wiredLimitGate: { _, _, _, sessions in
+                gatedSessions.append(sessions)
+                return true
+            })
+        s.start(
+            variant: .flash, flashQuant: .q2q4, ctx: 250_000, host: "127.0.0.1", port: 8000,
+            power: nil, sessions: 3)
+        XCTAssertEqual(gatedSessions, [3])
+
+        r.emit("ds4-server: listening on http://127.0.0.1:8000")
+        s.restart(
+            variant: .flash, flashQuant: .q2q4, ctx: 250_000, host: "127.0.0.1", port: 8000,
+            power: nil, sessions: 5)
+        XCTAssertEqual(gatedSessions, [3, 5, 5])
     }
     func testCrashIsError() throws {
         let r = FakeRunner(); let s = try makeSupervisor(r)

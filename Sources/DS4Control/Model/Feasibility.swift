@@ -3,7 +3,7 @@ import Metal
 
 enum Feasibility: Equatable {
     case standard
-    /// The launch config's GPU-wired working set (weights + KV) exceeds the machine's
+    /// The launch config's GPU-wired working set (weights + resident KV allocations) exceeds the machine's
     /// effective Metal wired limit. Starting anyway pages the model and hangs the machine,
     /// so Start is gated until the limit is raised (an explicit "Start anyway" override
     /// remains). `advisoryMB` is the sysctl value that makes this config fit.
@@ -80,14 +80,16 @@ private let osReserveGiB = 8.0
 func wiredLimitAdvisoryMB(ramGiB: Double) -> Int { Int((ramGiB - osReserveGiB) * 1024) }
 
 /// The GPU-wired working set ds4 needs for this launch config (MB): resident weights plus
-/// the KV cache at the launch context. KV counts regardless of the disk KV cache: that is
-/// only a prompt cache (ds4 persists *idle* sessions to disk; the active session's KV stays
-/// resident — the harness measures ~16 GiB of context buffers at 1M with disk KV enabled).
+/// the KV cache at the launch context for every resident session. KV counts regardless of
+/// the disk KV cache: ds4 creates the resident session tensors first, then uses the disk
+/// store only to checkpoint and restore their contents. The harness measures ~16 GiB of
+/// context buffers at 1M with disk KV enabled.
 /// Grounded in scripts/flash-mem-harness.sh, where q2 @1M ≈ 96 GiB resident ≈ weights + KV.
-func requiredWiredMB(variant: Variant, flashQuant: FlashQuant, ctx: Int) -> Int {
+func requiredWiredMB(variant: Variant, flashQuant: FlashQuant, ctx: Int, sessions: Int = 1) -> Int {
     let quant = Quant.for(variant, flashQuant: flashQuant)
     let weightsMB = Int(quant.weightsGiB * 1024)
-    return weightsMB + (variant.kvBytesPerToken * ctx) / (1024 * 1024)
+    let kvMB = (variant.kvBytesPerToken * ctx * max(sessions, 1)) / (1024 * 1024)
+    return weightsMB + kvMB
 }
 
 /// Default context, tiered by machine memory (measured via scripts/flash-mem-harness.sh,
@@ -117,7 +119,7 @@ func defaultFlashQuant(ramGiB: Double) -> FlashQuant {
 /// inject `effectiveWiredLimitMB(ramGiB:)` at the call site).
 func feasibility(
     ramGiB: Double, variant: Variant, flashQuant: FlashQuant,
-    ctx: Int, wiredLimitMB: Int
+    ctx: Int, wiredLimitMB: Int, sessions: Int = 1
 ) -> Feasibility {
     switch variant {
     case .pro:
@@ -130,9 +132,11 @@ func feasibility(
             )
         }
     }
-    let required = requiredWiredMB(variant: variant, flashQuant: flashQuant, ctx: ctx)
+    let required = requiredWiredMB(
+        variant: variant, flashQuant: flashQuant, ctx: ctx, sessions: sessions)
     if wiredLimitMB < required {
-        return .wiredLimitTooLow(requiredMB: required, advisoryMB: wiredLimitAdvisoryMB(ramGiB: ramGiB))
+        let advisory = max(required, wiredLimitAdvisoryMB(ramGiB: ramGiB))
+        return .wiredLimitTooLow(requiredMB: required, advisoryMB: advisory)
     }
     return .standard
 }

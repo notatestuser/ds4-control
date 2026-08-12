@@ -64,12 +64,13 @@ final class SupervisorService: ObservableObject {
     /// Returns true when the launch config's GPU-wired working set fits the machine's
     /// effective Metal wired limit. Injectable so tests don't depend on the host's
     /// RAM/sysctl state (CI runners are far smaller than any supported machine).
-    typealias WiredLimitGate = (_ variant: Variant, _ flashQuant: FlashQuant, _ ctx: Int) -> Bool
-    static let defaultWiredLimitGate: WiredLimitGate = { variant, flashQuant, ctx in
+    typealias WiredLimitGate =
+        (_ variant: Variant, _ flashQuant: FlashQuant, _ ctx: Int, _ sessions: Int) -> Bool
+    static let defaultWiredLimitGate: WiredLimitGate = { variant, flashQuant, ctx, sessions in
         let ram = systemRamGiB()
         if case .wiredLimitTooLow = feasibility(
             ramGiB: ram, variant: variant, flashQuant: flashQuant, ctx: ctx,
-            wiredLimitMB: effectiveWiredLimitMB(ramGiB: ram))
+            wiredLimitMB: effectiveWiredLimitMB(ramGiB: ram), sessions: sessions)
         {
             return false
         }
@@ -157,10 +158,12 @@ final class SupervisorService: ObservableObject {
         // Defense-in-depth for the popup gate: refuse configs whose GPU-wired working set
         // exceeds the effective Metal wired limit (starting anyway pages the model and
         // hangs the machine). The UI's confirmed "Start anyway" passes the override.
-        if !overrideWiredLimitGate && !wiredLimitGate(variant, flashQuant, ctx) {
+        if !overrideWiredLimitGate && !wiredLimitGate(variant, flashQuant, ctx, sessions) {
             let ram = systemRamGiB()
-            let required = requiredWiredMB(variant: variant, flashQuant: flashQuant, ctx: ctx)
-            state = .error(.wiredLimitTooLow(requiredMB: required, advisoryMB: wiredLimitAdvisoryMB(ramGiB: ram)))
+            let required = requiredWiredMB(
+                variant: variant, flashQuant: flashQuant, ctx: ctx, sessions: sessions)
+            let advisory = max(required, wiredLimitAdvisoryMB(ramGiB: ram))
+            state = .error(.wiredLimitTooLow(requiredMB: required, advisoryMB: advisory))
             return
         }
         let gguf = ggufURL(for: variant, flashQuant: flashQuant)
@@ -291,7 +294,7 @@ final class SupervisorService: ObservableObject {
         guard state == .ready || state == .starting else { emitBadState("restart"); return }
         // Gate BEFORE stopping: a refused restart keeps the healthy running server instead
         // of tearing it down into an error state.
-        if !overrideWiredLimitGate && !wiredLimitGate(variant, flashQuant, ctx) {
+        if !overrideWiredLimitGate && !wiredLimitGate(variant, flashQuant, ctx, sessions) {
             recentLog.append("ignored 'restart': Metal wired limit below the new config's working set")
             return
         }
