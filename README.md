@@ -69,7 +69,7 @@ DeepSeek V4 is memory-hungry so DS4 Control gates feasibility before launching.
 | V4 Flash (0731) | q4-imatrix | ≥ 256 GiB | Standard. |
 | V4 Flash (0731) | q2-imatrix | 96 GiB minimum | 96–127 GiB requires raising the Metal wired limit (see below). |
 
-On any machine where the model's GPU-wired working set (weights + one KV allocation per configured concurrent session at the launch context) exceeds the **effective Metal wired limit**, Start is gated. The disk KV cache does not shrink this working set: ds4 preallocates every resident KV session, while disk caching only checkpoints those sessions for reuse after a slot switch or server restart. The effective limit is your `iogpu.wired_limit_mb` when raised, else the macOS default — a machine-specific fraction of RAM (~75–84% depending on macOS version) that DS4 Control queries from Metal rather than assumes. When gated, the popup shows the exact fix:
+On any machine where the model's GPU-wired working set (the exact GGUF plus ds4's resident context allocation for every configured concurrent session, including raw/compressed KV and context-dependent Metal buffers) exceeds the **effective Metal wired limit**, Start is gated. The disk KV cache does not shrink this working set: ds4 preallocates every resident session's context, while disk caching only checkpoints those sessions for reuse after a slot switch or server restart. The effective limit is your `iogpu.wired_limit_mb` when raised, else the macOS default — a machine-specific fraction of RAM (~75–84% depending on macOS version) that DS4 Control queries from Metal rather than assumes. When gated, the popup shows the exact fix:
 
 ```sh
 sudo sysctl iogpu.wired_limit_mb=<value shown in the popup>
@@ -77,7 +77,7 @@ sudo sysctl iogpu.wired_limit_mb=<value shown in the popup>
 
 and a "Metal wired limit help…" window walks through it step by step — including making it survive reboots (the sysctl resets on every restart, which is why a setup that worked before can hang after one). A confirmed "Start anyway" override remains if you know your setup works. This applies most often to 96–127 GiB machines running Flash q2, but also to V4 Pro on 512 GiB and Flash q2-q4 at 1M context on 128 GiB when their default cap is below the working set.
 
-**Default context** scales with RAM: `1,000,000` on ≥ 512 GiB (Pro's full model context), up to `393216` ("Think-Max") on Flash with ≥ 128 GiB, and stepped down through a snap set (`393216 → 250000 → 131072 → 65536 → 32768`) for lower-RAM machines based on a weights-plus-KV memory budget. You can override the context in Settings.
+**Default context** is `1,000,000` for Pro and for Flash on ≥ 128 GiB; Flash on 96–127 GiB defaults to `393216` ("Think-Max"). You can override the context in Settings, subject to the physical-memory and wired-limit checks above.
 
 ## Performance
 

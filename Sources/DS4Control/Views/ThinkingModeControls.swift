@@ -33,12 +33,12 @@ struct ThinkingModePicker: View {
     }
 }
 
+@MainActor
 enum ThinkingModePrompt {
     /// NSAlert (Settings and Chat are real windows, already promoted to .regular by
     /// WindowChrome). On confirm: pin the context to 393,216 + enable Max — and, when a
     /// server is running, restart it with the new context (same parameters as Settings →
     /// Apply & Restart Server).
-    @MainActor
     static func confirmAndApply(serverRunning: Bool, app: AppState, supervisor: SupervisorService) {
         let alert = NSAlert()
         alert.messageText = "Max Think requires a context of at least 393,216."
@@ -51,13 +51,87 @@ enum ThinkingModePrompt {
         alert.addButton(withTitle: serverRunning ? "Set Context & Restart" : "Set Context & Enable")
         alert.addButton(withTitle: "Cancel")
         guard alert.runModal() == .alertFirstButtonReturn else { return }
-        app.applyMaxThinkCtxBump()
-        guard serverRunning else { return }
-        supervisor.restart(
+        guard serverRunning else { app.applyMaxThinkCtxBump(); return }
+        handleRestartResult(
+            restartWithMaxThink(app: app, supervisor: supervisor),
+            app: app, supervisor: supervisor)
+    }
+
+    /// Keep the preference change transactional with the restart gate: chat must not
+    /// send Max Think to the old, smaller-context server after a rejected restart.
+    @discardableResult
+    static func restartWithMaxThink(
+        app: AppState, supervisor: SupervisorService,
+        overrideWiredLimitGate: Bool = false
+    ) -> RestartResult {
+        let result = supervisor.restart(
             variant: app.selectedVariant, flashQuant: app.selectedFlashQuant,
-            ctx: app.effectiveCtx(ramGiB: systemRamGiB()),
+            ctx: thinkMaxMinCtx,
             host: app.normalizeHostForLaunch(), port: app.port, power: app.power,
             sessions: app.concurrentSessions,
-            kvDiskDir: app.kvDiskCache ? supervisor.kvDiskCacheURL : nil)
+            kvDiskDir: app.kvDiskCache ? supervisor.kvDiskCacheURL : nil,
+            overrideWiredLimitGate: overrideWiredLimitGate)
+        if result == .accepted { app.applyMaxThinkCtxBump() }
+        return result
+    }
+
+    private static func handleRestartResult(
+        _ result: RestartResult, app: AppState, supervisor: SupervisorService
+    ) {
+        switch result {
+        case .accepted:
+            break
+        case let .rejected(feasibility):
+            showRestartRejection(feasibility, app: app, supervisor: supervisor)
+        case .ignored:
+            // The server may have stopped while the confirmation was open. The setting
+            // is still valid and will apply on the next Start.
+            if supervisor.state != .ready && supervisor.state != .starting {
+                app.applyMaxThinkCtxBump()
+            }
+        }
+    }
+
+    private static func showRestartRejection(
+        _ feasibility: Feasibility, app: AppState, supervisor: SupervisorService
+    ) {
+        let alert = NSAlert()
+        alert.alertStyle = .warning
+        switch feasibility {
+        case let .wiredLimitTooLow(requiredMB, advisoryMB):
+            alert.messageText = "Metal wired limit too low"
+            alert.informativeText =
+                "The current server is still running at its existing context. Max Think needs "
+                + "~\(requiredMB / 1024) GiB of GPU-wired memory. Raise the limit, then try again:\n\n"
+                + "sudo sysctl iogpu.wired_limit_mb=\(advisoryMB)\n\n"
+                + "Or explicitly restart anyway."
+            alert.addButton(withTitle: "Copy Fix Command")
+            alert.addButton(withTitle: "Restart Anyway")
+            alert.addButton(withTitle: "Cancel")
+            alert.buttons[0].keyEquivalent = ""
+            alert.buttons[1].keyEquivalent = ""
+            alert.buttons[2].keyEquivalent = "\r"
+            switch alert.runModal() {
+            case .alertFirstButtonReturn:
+                NSPasteboard.general.clearContents()
+                NSPasteboard.general.setString(
+                    "sudo sysctl iogpu.wired_limit_mb=\(advisoryMB)", forType: .string)
+            case .alertSecondButtonReturn:
+                handleRestartResult(
+                    restartWithMaxThink(
+                        app: app, supervisor: supervisor,
+                        overrideWiredLimitGate: true),
+                    app: app, supervisor: supervisor)
+            default:
+                break
+            }
+        case let .blocked(reason):
+            alert.messageText = "Max Think cannot run with these settings"
+            alert.informativeText = "The current server is still running at its existing context. \(reason)"
+            alert.addButton(withTitle: "OK")
+            alert.runModal()
+        case .standard:
+            break
+        }
     }
 }

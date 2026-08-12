@@ -42,4 +42,14 @@ final class GUIHostOptionSourceTests: XCTestCase {
         // so the kvDiskDir argument appears exactly once.
         XCTAssertEqual(modelRow.components(separatedBy: "kvDiskDir:").count - 1, 1)
     }
+
+    func testWiredLimitHelpSuppressesCommandsForBlockedConfiguration() throws {
+        let help = try source("Sources/DS4Control/Views/WiredLimitHelpView.swift")
+
+        let blockedBranch = try XCTUnwrap(help.range(of: "if let blockedReason"))
+        let commandBranch = try XCTUnwrap(help.range(of: "wiredLimitInstructions"))
+        XCTAssertLessThan(blockedBranch.lowerBound, commandBranch.lowerBound)
+        XCTAssertTrue(help.contains("guard case let .blocked(reason) = result"))
+        XCTAssertTrue(help.contains("A Metal wired-limit change cannot make this configuration fit."))
+    }
 }

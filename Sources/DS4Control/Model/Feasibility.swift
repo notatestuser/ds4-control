@@ -3,7 +3,7 @@ import Metal
 
 enum Feasibility: Equatable {
     case standard
-    /// The launch config's GPU-wired working set (weights + resident KV allocations) exceeds the machine's
+    /// The launch config's GPU-wired working set (weights + resident context allocations) exceeds the machine's
     /// effective Metal wired limit. Starting anyway pages the model and hangs the machine,
     /// so Start is gated until the limit is raised (an explicit "Start anyway" override
     /// remains). `advisoryMB` is the sysctl value that makes this config fit.
@@ -76,28 +76,103 @@ private let osReserveGiB = 8.0
 let maxConcurrentSessions = 16
 
 /// Suggested `iogpu.wired_limit_mb`: total RAM minus the OS reserve, so the GPU-wired
-/// working set (weights + KV) fits. A percentage heuristic under-shoots the largest
+/// working set (weights + resident context allocations) fits. A percentage heuristic under-shoots the largest
 /// models (e.g. 0.9·512 GiB ≈ 460 GiB < Pro's ~471 GiB working set).
 func wiredLimitAdvisoryMB(ramGiB: Double) -> Int { Int((ramGiB - osReserveGiB) * 1024) }
 
-/// The GPU-wired working set ds4 needs for this launch config (MB): resident weights plus
-/// the KV cache at the launch context for every resident session. KV counts regardless of
-/// the disk KV cache: ds4 creates the resident session tensors first, then uses the disk
-/// store only to checkpoint and restore their contents. The harness measures ~16 GiB of
-/// context buffers at 1M with disk KV enabled.
-/// Grounded in scripts/flash-mem-harness.sh, where q2 @1M ≈ 96 GiB resident ≈ weights + KV.
+private let bytesPerMiB = 1024 * 1024
+
+private struct MetalContextShape {
+    let ratio4Layers: Int
+    let ratio128Layers: Int
+    let longPromptPrefillCap: Int
+}
+
+private func metalContextShape(for variant: Variant) -> MetalContextShape {
+    switch variant {
+    case .flash:
+        return MetalContextShape(ratio4Layers: 21, ratio128Layers: 20, longPromptPrefillCap: 4096)
+    case .pro:
+        return MetalContextShape(ratio4Layers: 30, ratio128Layers: 31, longPromptPrefillCap: 8192)
+    }
+}
+
+private func checkedProduct(_ values: [Int]) -> Int? {
+    var result = 1
+    for value in values {
+        let (next, overflow) = result.multipliedReportingOverflow(by: value)
+        guard !overflow else { return nil }
+        result = next
+    }
+    return result
+}
+
+private func checkedSum(_ values: [Int]) -> Int? {
+    var result = 0
+    for value in values {
+        let (next, overflow) = result.addingReportingOverflow(value)
+        guard !overflow else { return nil }
+        result = next
+    }
+    return result
+}
+
+private func roundedUpMiB(_ bytes: Int) -> Int? {
+    guard bytes >= 0 else { return nil }
+    let (result, overflow) = (bytes / bytesPerMiB).addingReportingOverflow(
+        bytes % bytesPerMiB == 0 ? 0 : 1)
+    return overflow ? nil : result
+}
+
+/// Mirrors pinned ds4's Metal `ds4_context_memory_estimate_with_prefill_mode` for
+/// DeepSeek V4. This includes raw KV, per-layer compressed caches, and the
+/// context-dependent prefill scratch that each resident session allocates.
+private func metalContextBytes(variant: Variant, ctx: Int) -> Int? {
+    guard ctx >= 0 else { return nil }
+    guard ctx > 0 else { return 0 }
+
+    let shape = metalContextShape(for: variant)
+    let prefillCap = ctx > 4096 ? shape.longPromptPrefillCap : ctx
+    let rawWindow = min(128, ctx)
+    guard let wanted = checkedSum([rawWindow, prefillCap]) else { return nil }
+    let cappedWanted = min(wanted, ctx)
+    let (alignmentInput, alignmentOverflow) = cappedWanted.addingReportingOverflow(255)
+    guard !alignmentOverflow else { return nil }
+    let rawCap = max(rawWindow, min((alignmentInput / 256) * 256, 8192))
+
+    guard
+        let ratio4Cap = checkedSum([ctx / 4, 2]),
+        let ratio128Cap = checkedSum([ctx / 128, 2]),
+        let rawBytes = checkedProduct([variant.layers, rawCap, 512, 4]),
+        let ratio4AttentionBytes = checkedProduct([ratio4Cap, 512, 2]),
+        let ratio4IndexerBytes = checkedProduct([ratio4Cap, 128, 4]),
+        let ratio4LayerBytes = checkedSum([ratio4AttentionBytes, ratio4IndexerBytes]),
+        let ratio4Bytes = checkedProduct([shape.ratio4Layers, ratio4LayerBytes]),
+        let ratio128LayerBytes = checkedProduct([ratio128Cap, 512, 2]),
+        let ratio128Bytes = checkedProduct([shape.ratio128Layers, ratio128LayerBytes]),
+        let scratchMatricesBytes = checkedProduct([2, ratio4Cap, prefillCap, 4]),
+        let attentionStageCap = checkedSum([prefillCap / 4, 2]),
+        let attentionStageBytes = checkedProduct([attentionStageCap, 512, 4])
+    else { return nil }
+
+    return checkedSum([
+        rawBytes, ratio4Bytes, ratio128Bytes, scratchMatricesBytes, attentionStageBytes,
+    ])
+}
+
+/// The GPU-wired working set ds4 needs for this launch config (MB): exact resident
+/// GGUF bytes plus ds4's Metal context allocation for every resident session. Context
+/// counts regardless of the disk KV cache: disk storage checkpoints resident tensors;
+/// it does not replace them.
 func requiredWiredMB(variant: Variant, flashQuant: FlashQuant, ctx: Int, sessions: Int = 1) -> Int {
     let quant = Quant.for(variant, flashQuant: flashQuant)
-    let weightsMB = Int(quant.weightsGiB * 1024)
-    guard ctx >= 0 else { return Int.max }
-    let (sessionBytes, contextOverflow) = variant.kvBytesPerToken.multipliedReportingOverflow(by: ctx)
-    let (kvBytes, sessionOverflow) = sessionBytes.multipliedReportingOverflow(by: max(sessions, 1))
-    guard !contextOverflow, !sessionOverflow else { return Int.max }
-    let bytesPerMiB = 1024 * 1024
-    let (kvMB, roundingOverflow) = (kvBytes / bytesPerMiB).addingReportingOverflow(
-        kvBytes % bytesPerMiB == 0 ? 0 : 1)
-    guard !roundingOverflow else { return Int.max }
-    let (requiredMB, totalOverflow) = weightsMB.addingReportingOverflow(kvMB)
+    guard
+        let weightsMB = roundedUpMiB(quant.ggufBytes),
+        let sessionBytes = metalContextBytes(variant: variant, ctx: ctx)
+    else { return Int.max }
+    let (contextBytes, sessionOverflow) = sessionBytes.multipliedReportingOverflow(by: max(sessions, 1))
+    guard !sessionOverflow, let contextMB = roundedUpMiB(contextBytes) else { return Int.max }
+    let (requiredMB, totalOverflow) = weightsMB.addingReportingOverflow(contextMB)
     return totalOverflow ? Int.max : requiredMB
 }
 
@@ -113,7 +188,8 @@ func launchBoundsError(variant: Variant, ctx: Int, sessions: Int) -> String? {
 
 /// Default context, tiered by machine memory (measured via scripts/flash-mem-harness.sh,
 /// where q2 @1M ≈ 96 GiB resident): V4 Pro and ≥128 GiB Flash (q2-q4 quant) run the full 1M
-/// window all-resident; 96–127 GiB Flash (q2) is capped at 393K ("Think-Max") so weights + KV
+/// window all-resident; 96–127 GiB Flash (q2) is capped at 393K ("Think-Max") so weights and
+/// resident context allocations
 /// stay resident without paging. `flashQuant` is accepted for API symmetry; the tier keys on RAM.
 func defaultCtx(ramGiB: Double, variant: Variant, flashQuant: FlashQuant) -> Int {
     if variant == .pro { return variant.ctxCeiling }  // Pro: full 1M
@@ -123,7 +199,8 @@ func defaultCtx(ramGiB: Double, variant: Variant, flashQuant: FlashQuant) -> Int
 /// Whether a Flash quant's resident weights fit this machine (weights + OS reserve ≤ RAM).
 /// Drives which options the Settings quant picker offers.
 func flashQuantFits(_ q: FlashQuant, ramGiB: Double) -> Bool {
-    q.quant.weightsGiB + osReserveGiB <= ramGiB
+    let bytesPerGiB = 1_073_741_824.0
+    return Double(q.quant.ggufBytes) + osReserveGiB * bytesPerGiB <= ramGiB * bytesPerGiB
 }
 
 /// Default Flash quant: q2-q4 on ≥128 GiB (room for the 1M window all-resident), else q2
@@ -134,7 +211,7 @@ func defaultFlashQuant(ramGiB: Double) -> FlashQuant {
 
 /// Feasibility gate (spec §5.2). ds4 itself enforces no floor, so the app does. The RAM
 /// tiers block outright; the Metal wired-limit check then gates the launch config's
-/// weights-plus-KV working set against the machine's effective ceiling (`wiredLimitMB` —
+/// exact weights-plus-context working set against the machine's effective ceiling (`wiredLimitMB` —
 /// inject `effectiveWiredLimitMB(ramGiB:)` at the call site).
 func feasibility(
     ramGiB: Double, variant: Variant, flashQuant: FlashQuant,

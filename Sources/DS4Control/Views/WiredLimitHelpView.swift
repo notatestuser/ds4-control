@@ -30,6 +30,17 @@ struct WiredLimitHelpView: View {
             ctx: app.effectiveCtx(ramGiB: ramGiB), sessions: app.concurrentSessions)
     }
 
+    private var blockedReason: String? {
+        let result = feasibility(
+            ramGiB: ramGiB, variant: app.selectedVariant,
+            flashQuant: app.selectedFlashQuant,
+            ctx: app.effectiveCtx(ramGiB: ramGiB),
+            wiredLimitMB: effectiveWiredLimitMB(ramGiB: ramGiB),
+            sessions: app.concurrentSessions)
+        guard case let .blocked(reason) = result else { return nil }
+        return reason
+    }
+
     /// Content height capped to the visible screen, so short screens still get a
     /// resizable window with a scrollbar instead of one taller than the display.
     private var windowHeight: CGFloat {
@@ -41,58 +52,18 @@ struct WiredLimitHelpView: View {
         ScrollView {
             VStack(alignment: .leading, spacing: 14) {
                 Text("The Metal wired memory limit").font(.headline)
-                Text(
-                    "macOS only lets the GPU wire a limited share of unified memory. ds4 wires the whole model "
-                        + "(weights + every resident session's context) for the GPU, so if that working set exceeds the limit, macOS pages it "
-                        + "and the server hangs while memory pegs near 100%. DS4 Control blocks Start until the limit "
-                        + "is high enough — raise it once and you're set."
-                )
-
-                VStack(alignment: .leading, spacing: 6) {
-                    Text("Your machine right now").font(.headline)
-                    VStack(alignment: .leading, spacing: 4) {
-                        row("Unified memory", "~\(Int(ramGiB)) GiB")
-                        row(
-                            "GPU wired limit",
-                            "~\(effectiveWiredLimitMB(ramGiB: ramGiB) / 1024) GiB"
-                                + (emulatedWiredLimitMB() != nil
-                                    ? " (emulated)"
-                                    : (currentWiredLimitMB() > 0 ? " (raised via sysctl)" : " (macOS default)")))
-                        row("This setup needs", "~\(requiredMB / 1024) GiB")
-                    }
-                    .font(.callout).frame(maxWidth: .infinity, alignment: .leading)
-                    .padding(10)
-                    .background(.quaternary.opacity(0.4), in: RoundedRectangle(cornerRadius: 6))
+                if let blockedReason {
+                    Text("This configuration cannot fit in this Mac's physical unified memory.")
+                    machineSummary
+                    Label(
+                        "A Metal wired-limit change cannot make this configuration fit. Reduce context or concurrent sessions in Settings.",
+                        systemImage: "exclamationmark.triangle.fill"
+                    )
+                    .foregroundStyle(.orange)
+                    Text(blockedReason).font(.callout).foregroundStyle(.secondary)
+                } else {
+                    wiredLimitInstructions
                 }
-
-                Text("1 · Raise the limit (takes effect immediately)").font(.headline)
-                codeBlock(sysctlCommand, id: "raise")
-                Text(
-                    advisoryNote + " The value resets on every reboot — "
-                        + "if you ran this before and it hangs again now, a restart wiped it."
-                )
-                .font(.callout).foregroundStyle(.secondary)
-
-                Text("2 · Keep it across reboots").font(.headline)
-                Text(
-                    "Set the same value in /etc/sysctl.conf so macOS applies it at boot. "
-                        + "The command replaces any existing iogpu.wired_limit_mb setting:"
-                )
-                .font(.callout)
-                codeBlock(persistCommand, id: "persist")
-                Text(
-                    "Other settings in the file are preserved. To undo later: delete the "
-                        + "iogpu.wired_limit_mb line and run `sudo sysctl iogpu.wired_limit_mb=0`."
-                )
-                .font(.callout).foregroundStyle(.secondary)
-
-                Text("3 · Verify").font(.headline)
-                Text(
-                    "Run `sysctl iogpu.wired_limit_mb` — it should print \(advisoryMB). "
-                        + "The popup re-checks every couple of seconds, so Start un-blocks on its own "
-                        + "as soon as the limit is up. No app restart needed."
-                )
-                .font(.callout)
             }
             .padding(16)
             .frame(width: 560, alignment: .leading)
@@ -113,6 +84,65 @@ struct WiredLimitHelpView: View {
             Spacer()
             Text(value).monospacedDigit()
         }
+    }
+
+    private var machineSummary: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Text("Your machine right now").font(.headline)
+            VStack(alignment: .leading, spacing: 4) {
+                row("Unified memory", "~\(Int(ramGiB)) GiB")
+                row(
+                    "GPU wired limit",
+                    "~\(effectiveWiredLimitMB(ramGiB: ramGiB) / 1024) GiB"
+                        + (emulatedWiredLimitMB() != nil
+                            ? " (emulated)"
+                            : (currentWiredLimitMB() > 0 ? " (raised via sysctl)" : " (macOS default)")))
+                row("This setup needs", "~\(requiredMB / 1024) GiB")
+            }
+            .font(.callout).frame(maxWidth: .infinity, alignment: .leading)
+            .padding(10)
+            .background(.quaternary.opacity(0.4), in: RoundedRectangle(cornerRadius: 6))
+        }
+    }
+
+    @ViewBuilder private var wiredLimitInstructions: some View {
+        Text(
+            "macOS only lets the GPU wire a limited share of unified memory. ds4 wires the whole model "
+                + "(weights + every resident session's context) for the GPU, so if that working set exceeds the limit, macOS pages it "
+                + "and the server hangs while memory pegs near 100%. DS4 Control blocks Start until the limit "
+                + "is high enough — raise it once and you're set."
+        )
+
+        machineSummary
+
+        Text("1 · Raise the limit (takes effect immediately)").font(.headline)
+        codeBlock(sysctlCommand, id: "raise")
+        Text(
+            advisoryNote + " The value resets on every reboot — "
+                + "if you ran this before and it hangs again now, a restart wiped it."
+        )
+        .font(.callout).foregroundStyle(.secondary)
+
+        Text("2 · Keep it across reboots").font(.headline)
+        Text(
+            "Set the same value in /etc/sysctl.conf so macOS applies it at boot. "
+                + "The command replaces any existing iogpu.wired_limit_mb setting:"
+        )
+        .font(.callout)
+        codeBlock(persistCommand, id: "persist")
+        Text(
+            "Other settings in the file are preserved. To undo later: delete the "
+                + "iogpu.wired_limit_mb line and run `sudo sysctl iogpu.wired_limit_mb=0`."
+        )
+        .font(.callout).foregroundStyle(.secondary)
+
+        Text("3 · Verify").font(.headline)
+        Text(
+            "Run `sysctl iogpu.wired_limit_mb` — it should print \(advisoryMB). "
+                + "The popup re-checks every couple of seconds, so Start un-blocks on its own "
+                + "as soon as the limit is up. No app restart needed."
+        )
+        .font(.callout)
     }
 
     @ViewBuilder private func codeBlock(_ text: String, id: String) -> some View {

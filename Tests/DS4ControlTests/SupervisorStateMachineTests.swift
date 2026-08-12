@@ -180,6 +180,41 @@ final class SupervisorStateMachineTests: XCTestCase {
         s.restart(variant: .flash, flashQuant: .q2q4, ctx: 393_216, host: "127.0.0.1", port: 8000, power: nil)
         XCTAssertEqual(s.state, .idle)  // no-op; nothing to restart
     }
+    func testMaxThinkRejectedRestartDoesNotCommitAppState() throws {
+        let r = FakeRunner()
+        let rejection = Feasibility.wiredLimitTooLow(requiredMB: 100_000, advisoryMB: 110_000)
+        let s = try makeSupervisor(
+            r,
+            wiredLimitGate: { _, _, ctx, _ in ctx == thinkMaxMinCtx ? rejection : .standard })
+        s.start(
+            variant: .flash, flashQuant: .q2q4, ctx: 100_000,
+            host: "127.0.0.1", port: 8000, power: nil)
+        r.emit("ds4-server: listening on http://127.0.0.1:8000")
+
+        let app = AppState(defaults: UserDefaults(suiteName: "test.\(UUID().uuidString)")!)
+        app.selectedVariant = .flash
+        app.selectedFlashQuant = .q2q4
+        app.ctxOverride = 100_000
+        app.thinkingMode = .standard
+        app.kvDiskCache = false
+
+        XCTAssertEqual(
+            ThinkingModePrompt.restartWithMaxThink(app: app, supervisor: s),
+            .rejected(rejection))
+        XCTAssertEqual(app.ctxOverride, 100_000)
+        XCTAssertEqual(app.thinkingMode, .standard)
+        XCTAssertEqual(s.state, .ready)
+        XCTAssertEqual(s.ctx, 100_000)
+
+        XCTAssertEqual(
+            ThinkingModePrompt.restartWithMaxThink(
+                app: app, supervisor: s, overrideWiredLimitGate: true),
+            .accepted)
+        XCTAssertEqual(app.ctxOverride, thinkMaxMinCtx)
+        XCTAssertEqual(app.thinkingMode, .max)
+        XCTAssertEqual(s.state, .starting)
+        XCTAssertTrue(r.lastArgs.contains(String(thinkMaxMinCtx)))
+    }
     func testMissingModel() throws {
         let dir = URL(fileURLWithPath: NSTemporaryDirectory()).appendingPathComponent(UUID().uuidString)
         try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)

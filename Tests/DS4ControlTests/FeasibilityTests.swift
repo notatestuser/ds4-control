@@ -29,33 +29,25 @@ final class FeasibilityTests: XCTestCase {
     }
 
     func testRequiredWiredMB() {
-        // q2 weights (81 GiB) + KV at 393K ctx (43 layers × 391 B/tok). KV always counts:
-        // the disk store checkpoints the already-resident session tensors rather than replacing them
-        // (the harness measures the context buffers with --kv-disk-dir enabled).
-        let kvBytes = 43 * 391 * 393_216
-        let kvMB = kvBytes / (1024 * 1024) + (kvBytes % (1024 * 1024) == 0 ? 0 : 1)
-        XCTAssertEqual(
-            requiredWiredMB(variant: .flash, flashQuant: .q2, ctx: 393_216),
-            Int(Quant.q2Imatrix.weightsGiB * 1024) + kvMB)
+        // Fixed values from the pinned ds4 Metal context estimator plus the exact
+        // Hugging Face GGUF byte sizes. Keep these independent of the Swift formula.
+        XCTAssertEqual(requiredWiredMB(variant: .flash, flashQuant: .q2, ctx: 393_216), 89_227)
+        XCTAssertEqual(requiredWiredMB(variant: .flash, flashQuant: .q4, ctx: 1_000_000), 173_031)
+        XCTAssertEqual(requiredWiredMB(variant: .pro, flashQuant: .q2, ctx: 1_000_000), 470_933)
         // Pro ignores the Flash quant choice; ctx 0 → weights only.
-        XCTAssertEqual(
-            requiredWiredMB(variant: .pro, flashQuant: .q2, ctx: 0),
-            Int(Quant.proImatrix.weightsGiB * 1024))
+        XCTAssertEqual(requiredWiredMB(variant: .pro, flashQuant: .q2, ctx: 0), 443_104)
     }
 
     func testRequiredWiredMBScalesResidentKVBySessions() {
-        let weightsMB = Int(Quant.q2Imatrix.weightsGiB * 1024)
-        let kvBytes = 43 * 391 * 393_216 * 3
-        let kvMB = kvBytes / (1024 * 1024) + (kvBytes % (1024 * 1024) == 0 ? 0 : 1)
         XCTAssertEqual(
             requiredWiredMB(variant: .flash, flashQuant: .q2, ctx: 393_216, sessions: 3),
-            weightsMB + kvMB)
+            102_275)
     }
 
     func testWiredLimitRejectsFractionalKVOverage() {
-        let weightsMB = Int(Quant.q2Imatrix.weightsGiB * 1024)
-        let kvBytes = 43 * 391 * 393_216
-        let truncatedRequiredMB = weightsMB + kvBytes / (1024 * 1024)
+        // Exact q2 weights round to 82,703 MiB. ds4 reports 6,840,560,640 bytes
+        // of context allocation here, so truncating that fractional MiB is unsafe.
+        let truncatedRequiredMB = 82_703 + 6_840_560_640 / (1024 * 1024)
         guard
             case let .wiredLimitTooLow(requiredMB, _) = feasibility(
                 ramGiB: 96, variant: .flash, flashQuant: .q2, ctx: 393_216,
@@ -76,6 +68,16 @@ final class FeasibilityTests: XCTestCase {
                 ramGiB: 96, variant: .flash, flashQuant: .q2, ctx: 1_000_000,
                 wiredLimitMB: Int.max)
         else { return XCTFail("Flash q2 at 1M context must not be offered a wired-limit workaround on 96 GiB") }
+        XCTAssertTrue(reason.contains("Reduce context or concurrent sessions"))
+    }
+
+    func testProSessionsThatExceedPhysicalRAMBlockUsingDs4Allocation() {
+        guard
+            case let .blocked(reason) = feasibility(
+                ramGiB: 512, variant: .pro, flashQuant: .q2, ctx: 1_000_000,
+                wiredLimitMB: 516_096, sessions: 3)
+        else { return XCTFail("three Pro sessions exceed 512 GiB with ds4's real context allocation") }
+        XCTAssertEqual(requiredWiredMB(variant: .pro, flashQuant: .q2, ctx: 1_000_000, sessions: 3), 526_589)
         XCTAssertTrue(reason.contains("Reduce context or concurrent sessions"))
     }
 
@@ -104,7 +106,7 @@ final class FeasibilityTests: XCTestCase {
     }
 
     func testWiredLimitGatePro512() {
-        // Pro @1M needs ~455 GiB wired — a default 75% cap on 512 GiB (393,216 MB) gates;
+        // Pro @1M needs ~460 GiB wired — a default 75% cap on 512 GiB (393,216 MB) gates;
         // the advisory (516,096 MB) passes.
         if case .wiredLimitTooLow = feasibility(
             ramGiB: 512, variant: .pro, flashQuant: .q2q4, ctx: 1_000_000, wiredLimitMB: 393_216)

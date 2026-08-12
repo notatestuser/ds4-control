@@ -2,9 +2,9 @@ import XCTest
 @testable import DS4Control
 
 final class VariantTests: XCTestCase {
-    func testKVBytesPerToken() {
-        XCTAssertEqual(Variant.pro.kvBytesPerToken, 23_851)  // 61 layers × 391
-        XCTAssertEqual(Variant.flash.kvBytesPerToken, 16_813)  // 43 layers × 391 (measured)
+    func testLayerCounts() {
+        XCTAssertEqual(Variant.pro.layers, 61)
+        XCTAssertEqual(Variant.flash.layers, 43)
     }
     func testCtxCeiling() {
         XCTAssertEqual(Variant.pro.ctxCeiling, 1_000_000)
@@ -43,6 +43,11 @@ final class VariantTests: XCTestCase {
         XCTAssertEqual(Quant.for(.flash, flashQuant: .q4).weightsGiB, 153, accuracy: 1)
         XCTAssertEqual(Quant.for(.flash, flashQuant: .q2).weightsGiB, 81, accuracy: 1)
         XCTAssertEqual(Quant.for(.flash, flashQuant: .q2q4).weightsGiB, 91, accuracy: 1)
+
+        XCTAssertEqual(Quant.proImatrix.ggufBytes, 464_627_334_560)
+        XCTAssertEqual(Quant.q4Imatrix.ggufBytes, 164_633_502_592)
+        XCTAssertEqual(Quant.q2Imatrix.ggufBytes, 86_720_111_488)
+        XCTAssertEqual(Quant.q2q4Imatrix.ggufBytes, 97_591_747_456)
     }
     func testFlashQuant() {
         XCTAssertEqual(FlashQuant.allCases, [.q2, .q2q4, .q4])  // smallest → largest (picker order)
@@ -57,5 +62,7 @@ final class VariantTests: XCTestCase {
         XCTAssertEqual(defaultFlashQuant(ramGiB: 96), .q2)  // 91 + 8 > 96 → fall back to q2
         XCTAssertTrue(flashQuantFits(.q4, ramGiB: 512))
         XCTAssertFalse(flashQuantFits(.q4, ramGiB: 128))  // 153 + 8 > 128
+        XCTAssertFalse(flashQuantFits(.q4, ramGiB: 161.2))  // exact weights are ~153.33 GiB
+        XCTAssertTrue(flashQuantFits(.q4, ramGiB: 161.4))
     }
 }

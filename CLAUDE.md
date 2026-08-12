@@ -11,6 +11,14 @@ coding agent (pi or claude) in Terminal pointed at the local server.
 It does **no embedded inference** — all inference is delegated to `ds4-server`. This app only
 supervises that process and surfaces system metrics + a chat/agent front end.
 
+## DeepSeek V4 preview maintenance
+
+The current 0731 DeepSeek V4 GGUFs are preview artifacts, not the final GA release. When V4
+leaves preview, update the pinned GGUF names/URLs and `external/ds4` revision together. Re-read
+the GA files' exact byte sizes into `Quant.ggufBytes`, verify the Metal context-allocation formula
+against that ds4 revision, and refresh the feasibility/variant tests and documented memory tiers.
+Do not carry the preview size constants or allocator assumptions into a GA release unchanged.
+
 ## Stack
 
 - SwiftPM executable target `DS4Control` (Swift 6 mode, macOS 14+). `swift-tools-version: 6.3`.
@@ -53,7 +61,7 @@ Entry point `DS4ControlApp.swift` (`@main`) builds one `AppState`, one `Supervis
 |---|---|---|
 | State | `AppState.swift` | Persisted user prefs (port, ctxOverride, variant, flashQuant, kvDiskCache, thinkingMode, concurrentSessions). Pattern: `@Published var X { didSet { d.set(X, forKey:) } }` + read-back in `init`. |
 | Supervisor | `Services/SupervisorService.swift`, `ProcessRunner.swift`, `ReadinessMatcher.swift`, `HFDownloader.swift`, `ChunkFetcher.swift`, `ChunkBitmap.swift`, `DownloadProbe.swift` | Spawns/monitors `ds4-server` (stderr readiness, health poll, graceful stop, crash detect); downloads GGUF weights with a native parallel chunked downloader (offset writes + an on-disk bitmap sidecar for resume-across-restarts); owns the on-disk KV cache dir. |
-| Models | `Model/Variant.swift`, `Feasibility.swift`, `ServerState.swift` | `Variant` (pro/flash: layers, kvBytesPerToken, ctxCeiling, modelId, quants). `Feasibility` = RAM gate, `defaultCtx` (RAM-tiered), `defaultFlashQuant`, `thinkMax` threshold (393,216). |
+| Models | `Model/Variant.swift`, `Feasibility.swift`, `ServerState.swift` | `Variant` (pro/flash: layers, exact GGUF sizes, ctxCeiling, modelId, quants). `Feasibility` mirrors the pinned ds4 Metal context allocator for the RAM/wired-limit gate and owns `defaultCtx`, `defaultFlashQuant`, and the `thinkMax` threshold (393,216). |
 | Metrics | `Metrics/*` | IOReport/IOKit sampling (memory/GPU/CPU/power) on a 2 s timer; `MetricsManager` + per-collector files + `SparklineView` history. |
 | Chat | `Services/ChatService.swift`, `ChatSSEParser.swift`, `ViewModels/ChatViewModel.swift`, `Views/ChatView.swift`, `MarkdownText.swift` | Streams `ds4-server` `/v1/chat/completions` (SSE). `content` → answer, `reasoning_content` → a collapsible "thinking" section. `MarkdownText` is a selectable NSTextView markdown renderer + light LaTeX cleanup. |
 | Agent launcher | `Services/AgentLauncher.swift` | Generates a wrapper shell script + `osascript` to open Terminal running pi/claude against the local server (Max-Think prompt, env vars, bundled pi `models.json`). |

@@ -7,10 +7,6 @@ enum Variant: String, CaseIterable, Identifiable, Codable {
     var modelId: String { self == .pro ? "deepseek-v4-pro" : "deepseek-v4-flash" }
     /// Transformer layers (DS4 shape): Pro 61, Flash 43.
     var layers: Int { self == .pro ? 61 : 43 }
-    /// KV-cache bytes per context token, summed over layers. Measured via
-    /// scripts/flash-mem-harness.sh: ds4 reports ~16,023 MiB of context buffers for Flash at
-    /// 1M tokens (~391 B/tok/layer) — well under the old fp32 theoretical estimate (640).
-    var kvBytesPerToken: Int { layers * 391 }
     /// Context ceiling: both variants support a full 1M-token context window.
     var ctxCeiling: Int { 1_000_000 }
 }
@@ -61,6 +57,17 @@ enum Quant {
         case .q4Imatrix: return 153
         case .q2Imatrix: return 81
         case .q2q4Imatrix: return 91
+        }
+    }
+
+    /// Exact GGUF byte size. Feasibility uses this instead of the rounded display
+    /// value above so the wired-limit gate never understates resident weights.
+    var ggufBytes: Int {
+        switch self {
+        case .proImatrix: return 464_627_334_560
+        case .q4Imatrix: return 164_633_502_592
+        case .q2Imatrix: return 86_720_111_488
+        case .q2q4Imatrix: return 97_591_747_456
         }
     }
 

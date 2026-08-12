@@ -403,7 +403,7 @@ final class SupervisorService: ObservableObject {
         if let e = validateDs4Dir() { state = .error(e); return }
         let q = Quant.for(variant, flashQuant: flashQuant)
         let baseDir = ggufBaseDir()
-        let expectedBytes = Int64(q.weightsGiB * 1_073_741_824)
+        let expectedBytes = Int64(q.ggufBytes)
         download = DownloadProgress(pct: 0, file: q.ggufFilename, receivedBytes: 0, totalBytes: expectedBytes)
         state = .downloading
         lastDownloadSample = nil
