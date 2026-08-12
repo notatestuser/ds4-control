@@ -16,6 +16,13 @@ final class AppState: ObservableObject {
     /// keeping the original single-session path. Memory grows with sessions × context.
     @Published var concurrentSessions: Int { didSet { d.set(concurrentSessions, forKey: "concurrentSessions") } }
     @Published var kvDiskCache: Bool { didSet { d.set(kvDiskCache, forKey: "kvDiskCache") } }
+    /// SSD streaming: cache only `ssdStreamingCacheGB` of routed experts in RAM; the
+    /// rest stream from the GGUF on demand. Default ON with the ~15 GiB-free budget
+    /// for the selected quant.
+    @Published var ssdStreaming: Bool { didSet { d.set(ssdStreaming, forKey: "ssdStreaming") } }
+    @Published var ssdStreamingCacheGB: Int {
+        didSet { d.set(ssdStreamingCacheGB, forKey: "ssdStreamingCacheGB") }
+    }
     /// The chat's thinking level (Off / Standard / Max Think). Coding-agent CLIs set their
     /// own per-request level, so this affects only the built-in chat.
     @Published var thinkingMode: ThinkingMode { didSet { d.set(thinkingMode.rawValue, forKey: "thinkingMode") } }
@@ -83,7 +90,14 @@ final class AppState: ObservableObject {
         let stored = d.string(forKey: "selectedVariant").flatMap(Variant.init(rawValue:))
         selectedVariant = stored ?? (ramGiB >= 512 ? .pro : .flash)  // default Pro on ≥512 GiB
         let storedQuant = d.string(forKey: "selectedFlashQuant").flatMap(FlashQuant.init(rawValue:))
-        selectedFlashQuant = storedQuant ?? defaultFlashQuant(ramGiB: ramGiB)  // default q2-q4-imatrix
+        let flashQuant = storedQuant ?? defaultFlashQuant(ramGiB: ramGiB)  // default q2-q4-imatrix
+        selectedFlashQuant = flashQuant
+        ssdStreaming = d.object(forKey: "ssdStreaming") as? Bool ?? true  // default on
+        if let storedGB = d.object(forKey: "ssdStreamingCacheGB") as? Int {
+            ssdStreamingCacheGB = storedGB
+        } else {
+            ssdStreamingCacheGB = Quant.for(selectedVariant, flashQuant: flashQuant).defaultStreamingCacheGB
+        }
     }
 
     func effectiveCtx(ramGiB: Double) -> Int {
