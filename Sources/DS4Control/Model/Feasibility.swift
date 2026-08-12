@@ -82,7 +82,10 @@ let maxConcurrentSessions = 16
 
 /// Suggested `iogpu.wired_limit_mb`: total RAM minus the OS reserve, so the GPU-wired
 /// working set (weights + resident context allocations + graph allocations) fits.
-/// A percentage heuristic under-shoots the largest models.
+/// A percentage heuristic under-shoots the largest models. The 4 GiB reserve is
+/// intentional: the real-model harness measured Flash q2 weights at ~80.8 GiB and
+/// confirmed context memory is additive; pinned ds4 sizing puts its 393,216-token
+/// default at 93,546 MiB, below the 94,208 MiB ceiling on a 96 GiB Mac.
 func wiredLimitAdvisoryMB(ramGiB: Double) -> Int { Int((ramGiB - osReserveGiB) * 1024) }
 
 private let bytesPerMiB = 1024 * 1024
@@ -337,7 +340,7 @@ func requiredWiredMB(variant: Variant, flashQuant: FlashQuant, ctx: Int, session
 
 func launchBoundsError(variant: Variant, ctx: Int, sessions: Int) -> String? {
     guard (1...variant.ctxCeiling).contains(ctx) else {
-        return "Context size must be between 1 and \(variant.ctxCeiling) tokens."
+        return "Context size must be between 1 and \(variant.ctxCeiling.formatted()) tokens."
     }
     guard (1...maxConcurrentSessions).contains(sessions) else {
         return "Concurrent sessions must be between 1 and \(maxConcurrentSessions)."
@@ -354,11 +357,12 @@ func defaultCtx(ramGiB: Double, variant: Variant, flashQuant: FlashQuant) -> Int
     return ramGiB >= 128 ? variant.ctxCeiling : 393_216  // Flash: 1M on ≥128 GiB, else 393K
 }
 
-/// Whether a Flash quant's resident weights fit this machine (weights + OS reserve ≤ RAM).
+/// Whether a Flash quant's default launch fits while preserving the OS reserve.
 /// Drives which options the Settings quant picker offers.
 func flashQuantFits(_ q: FlashQuant, ramGiB: Double) -> Bool {
-    let bytesPerGiB = 1_073_741_824.0
-    return Double(q.quant.ggufBytes) + osReserveGiB * bytesPerGiB <= ramGiB * bytesPerGiB
+    let ctx = defaultCtx(ramGiB: ramGiB, variant: .flash, flashQuant: q)
+    return requiredWiredMB(variant: .flash, flashQuant: q, ctx: ctx)
+        <= wiredLimitAdvisoryMB(ramGiB: ramGiB)
 }
 
 /// Default Flash quant: q2-q4 on ≥128 GiB (room for the 1M window all-resident), else q2

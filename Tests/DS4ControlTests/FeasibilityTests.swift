@@ -127,7 +127,7 @@ final class FeasibilityTests: XCTestCase {
             feasibility(
                 ramGiB: 128, variant: .flash, flashQuant: .q2, ctx: Int.max,
                 wiredLimitMB: Int.max, sessions: Int.max),
-            .blocked(reason: "Context size must be between 1 and 1000000 tokens."))
+            .blocked(reason: "Context size must be between 1 and 1,000,000 tokens."))
     }
 
     func testWiredLimitGateFlash96() {
@@ -203,6 +203,7 @@ final class FeasibilityTests: XCTestCase {
     }
 
     func testEffectiveWiredLimitLive() {
+        unsetenv("DS4_EMULATE_WIRED_LIMIT_MB")
         let ram = systemRamGiB()
         XCTAssertGreaterThan(defaultWiredLimitMB(ramGiB: ram), 0)
         XCTAssertLessThanOrEqual(defaultWiredLimitMB(ramGiB: ram), Int(ram * 1024))
