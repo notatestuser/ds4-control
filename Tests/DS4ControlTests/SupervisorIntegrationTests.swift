@@ -197,7 +197,7 @@ final class SupervisorIntegrationTests: XCTestCase {
             return XCTFail("expected .wiredLimitTooLow, got \(s.state)")
         }
         XCTAssertEqual(required, requiredWiredMB(variant: .flash, flashQuant: .q2, ctx: 393_216))
-        XCTAssertEqual(advisory, wiredLimitAdvisoryMB(ramGiB: systemRamGiB()))
+        XCTAssertEqual(advisory, max(required, wiredLimitAdvisoryMB(ramGiB: systemRamGiB())))
 
         // The override (confirmed "Start anyway") gets past the gate to launch.
         s.start(
