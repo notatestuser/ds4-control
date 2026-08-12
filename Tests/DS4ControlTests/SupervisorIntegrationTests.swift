@@ -208,7 +208,8 @@ final class SupervisorIntegrationTests: XCTestCase {
         s.start(
             variant: .flash, flashQuant: .q2, ctx: 393_216, host: "127.0.0.1", port: 8137, power: nil,
             overrideWiredLimitGate: true)
-        XCTAssertNotEqual(s.state, .error(.wiredLimitTooLow(requiredMB: required, advisoryMB: advisory)))
+        XCTAssertEqual(s.state, .starting)
+        s.stop()
     }
 
     /// restart() gates BEFORE stopping: a refused restart keeps the healthy running server.
@@ -233,6 +234,7 @@ final class SupervisorIntegrationTests: XCTestCase {
             host: "127.0.0.1", port: 8137, power: nil)
         XCTAssertEqual(result, .rejected(rejection))
         XCTAssertEqual(s.state, .starting, "a refused restart must keep the running server untouched")
+        s.stop()
     }
 
     func testDownloadCompletesToIdle() async throws {

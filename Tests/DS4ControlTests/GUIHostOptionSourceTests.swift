@@ -25,9 +25,8 @@ final class GUIHostOptionSourceTests: XCTestCase {
         XCTAssertTrue(settings.contains("let host = app.normalizeHostForLaunch()"))
         XCTAssertTrue(settings.contains("supervisor.restart("))
         XCTAssertTrue(settings.contains("host: host"))
-        XCTAssertTrue(settings.contains("if case let .rejected(feasibility) = result"))
-        XCTAssertTrue(settings.contains("Restart Anyway"))
-        XCTAssertTrue(settings.contains("openWindow(id: \"wiredhelp\")"))
+        XCTAssertTrue(settings.contains("RestartRejectionAlert.show("))
+        XCTAssertTrue(settings.contains("restart(overrideWiredLimitGate: true)"))
         XCTAssertTrue(settings.contains("overrideWiredLimitGate: overrideWiredLimitGate"))
         XCTAssertTrue(settings.contains("min(Int(digits) ?? app.selectedVariant.ctxCeiling"))
     }
@@ -38,9 +37,33 @@ final class GUIHostOptionSourceTests: XCTestCase {
         XCTAssertTrue(modelRow.contains("let host = app.normalizeHostForLaunch()"))
         XCTAssertTrue(modelRow.contains("supervisor.start("))
         XCTAssertTrue(modelRow.contains("host: host"))
-        // Both start paths (Retry and Start) route through one startServer() helper now,
-        // so the kvDiskDir argument appears exactly once.
-        XCTAssertEqual(modelRow.components(separatedBy: "kvDiskDir:").count - 1, 1)
+        let blockedNote = try XCTUnwrap(modelRow.range(of: "case let .blocked(reason):"))
+        let blockedSource = modelRow[blockedNote.lowerBound...]
+        XCTAssertTrue(blockedSource.contains(".fixedSize(horizontal: false, vertical: true)"))
+        XCTAssertTrue(blockedSource.contains(".frame(maxWidth: .infinity, alignment: .leading)"))
+
+        let retryCase = try XCTUnwrap(modelRow.range(of: "case .error:"))
+        let defaultCase = try XCTUnwrap(
+            modelRow.range(of: "default:", range: retryCase.upperBound..<modelRow.endIndex))
+        let startHelper = try XCTUnwrap(
+            modelRow.range(
+                of: "private func startServer", range: defaultCase.upperBound..<modelRow.endIndex))
+        let retryPath = modelRow[retryCase.upperBound..<defaultCase.lowerBound]
+        let startPath = modelRow[defaultCase.upperBound..<startHelper.lowerBound]
+        XCTAssertTrue(retryPath.contains("startServer(overrideWiredLimitGate: false)"))
+        XCTAssertTrue(startPath.contains("startServer(overrideWiredLimitGate: false)"))
+    }
+
+    func testRestartRejectionsUseSharedAlertMapping() throws {
+        let settings = try source("Sources/DS4Control/Views/SettingsView.swift")
+        let thinking = try source("Sources/DS4Control/Views/ThinkingModeControls.swift")
+
+        XCTAssertFalse(settings.contains("private func showRestartRejection"))
+        XCTAssertTrue(settings.contains("RestartRejectionAlert.show("))
+        XCTAssertTrue(thinking.contains("enum RestartRejectionAlert"))
+        XCTAssertTrue(thinking.contains("Copy Fix Command"))
+        XCTAssertTrue(thinking.contains("Restart Anyway"))
+        XCTAssertTrue(thinking.contains("alert.buttons[2].keyEquivalent = \"\\r\""))
     }
 
     func testWiredLimitHelpSuppressesCommandsForBlockedConfiguration() throws {
@@ -51,5 +74,7 @@ final class GUIHostOptionSourceTests: XCTestCase {
         XCTAssertLessThan(blockedBranch.lowerBound, commandBranch.lowerBound)
         XCTAssertTrue(help.contains("guard case let .blocked(reason) = result"))
         XCTAssertTrue(help.contains("A Metal wired-limit change cannot make this configuration fit."))
+        XCTAssertTrue(help.contains("cannot fit safely while leaving memory for macOS"))
+        XCTAssertTrue(help.contains("roundedUpGiB(fromMB: requiredMB)"))
     }
 }

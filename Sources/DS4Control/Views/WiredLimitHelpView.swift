@@ -53,7 +53,7 @@ struct WiredLimitHelpView: View {
             VStack(alignment: .leading, spacing: 14) {
                 Text("The Metal wired memory limit").font(.headline)
                 if let blockedReason {
-                    Text("This configuration cannot fit in this Mac's physical unified memory.")
+                    Text("This configuration cannot fit safely while leaving memory for macOS.")
                     machineSummary
                     Label(
                         "A Metal wired-limit change cannot make this configuration fit. Reduce context or concurrent sessions in Settings.",
@@ -97,7 +97,7 @@ struct WiredLimitHelpView: View {
                         + (emulatedWiredLimitMB() != nil
                             ? " (emulated)"
                             : (currentWiredLimitMB() > 0 ? " (raised via sysctl)" : " (macOS default)")))
-                row("This setup needs", "~\(requiredMB / 1024) GiB")
+                row("This setup needs", "~\(roundedUpGiB(fromMB: requiredMB)) GiB")
             }
             .font(.callout).frame(maxWidth: .infinity, alignment: .leading)
             .padding(10)

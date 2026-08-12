@@ -265,7 +265,7 @@ struct PopupView: View {
         case let .configurationBlocked(reason): return reason
         case let .wiredLimitTooLow(requiredMB, _):
             return
-                "Metal wired limit is below this config's ~\(requiredMB / 1024) GiB working set. "
+                "Metal wired limit is below this config's ~\(roundedUpGiB(fromMB: requiredMB)) GiB working set. "
                 + "Use \"Metal wired limit help…\" under Start to fix it."
         }
     }

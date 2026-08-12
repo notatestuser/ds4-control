@@ -3,7 +3,6 @@ import SwiftUI
 struct SettingsView: View {
     @EnvironmentObject var app: AppState
     @EnvironmentObject var supervisor: SupervisorService
-    @Environment(\.openWindow) private var openWindow
     private let ram = systemRamGiB()
     @State private var confirmingCleanup = false
 
@@ -236,37 +235,13 @@ struct SettingsView: View {
             sessions: app.concurrentSessions,
             kvDiskDir: app.kvDiskCache ? supervisor.kvDiskCacheURL : nil,
             overrideWiredLimitGate: overrideWiredLimitGate)
-        if case let .rejected(feasibility) = result { showRestartRejection(feasibility) }
-    }
-
-    private func showRestartRejection(_ feasibility: Feasibility) {
-        let alert = NSAlert()
-        alert.alertStyle = .warning
-        switch feasibility {
-        case let .wiredLimitTooLow(requiredMB, advisoryMB):
-            alert.messageText = "Metal wired limit too low"
-            alert.informativeText =
-                "The current server is still running. The new setup needs ~\(requiredMB / 1024) GiB of GPU-wired memory. "
-                + "Raise iogpu.wired_limit_mb to at least \(advisoryMB), or explicitly restart anyway."
-            alert.addButton(withTitle: "Open Wired Limit Help")
-            alert.addButton(withTitle: "Restart Anyway")
-            alert.addButton(withTitle: "Cancel")
-            switch alert.runModal() {
-            case .alertFirstButtonReturn:
-                WindowChrome.willOpenWindow()
-                openWindow(id: "wiredhelp")
-            case .alertSecondButtonReturn:
+        if case let .rejected(feasibility) = result {
+            RestartRejectionAlert.show(
+                feasibility,
+                contextSentence: "The current server is still running."
+            ) {
                 restart(overrideWiredLimitGate: true)
-            default:
-                break
             }
-        case let .blocked(reason):
-            alert.messageText = "These settings cannot run on this Mac"
-            alert.informativeText = "The current server is still running. \(reason)"
-            alert.addButton(withTitle: "OK")
-            alert.runModal()
-        case .standard:
-            break
         }
     }
 }

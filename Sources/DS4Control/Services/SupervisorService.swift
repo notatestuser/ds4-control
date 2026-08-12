@@ -137,6 +137,12 @@ final class SupervisorService: ObservableObject {
     /// Disk KV-cache budget (MB) when `kvDiskDir` is provided. ds4's compressed KV
     /// is tiny, so this holds many cached prefixes; generous but trivial on modern SSDs.
     static let kvDiskSpaceMB = 16384
+    /// Feasibility mirrors ds4's defaults, so inherited allocator tuning must not
+    /// silently change the resident working set after the gate approves a launch.
+    private static let deterministicMetalEnvironment = [
+        "DS4_METAL_PREFILL_CHUNK": "",
+        "DS4_METAL_GRAPH_RAW_CAP": "",
+    ]
 
     private static func normalizedBindHost(_ host: String) -> String {
         let trimmed = host.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -204,7 +210,7 @@ final class SupervisorService: ObservableObject {
         do {
             try runner.launch(
                 executable: ds4Dir.appendingPathComponent("ds4-server"),
-                args: args, cwd: ds4Dir, env: [:],
+                args: args, cwd: ds4Dir, env: Self.deterministicMetalEnvironment,
                 onStderrLine: { [weak self] line in Self.onMain { self?.handleStderr(line) } },
                 onExit: { [weak self] code in Self.onMain { self?.handleExit(code) } })
         } catch {

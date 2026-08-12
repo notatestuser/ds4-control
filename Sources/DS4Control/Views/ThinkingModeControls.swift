@@ -34,6 +34,49 @@ struct ThinkingModePicker: View {
 }
 
 @MainActor
+enum RestartRejectionAlert {
+    static func show(
+        _ feasibility: Feasibility,
+        contextSentence: String,
+        restartAnyway: () -> Void
+    ) {
+        let alert = NSAlert()
+        alert.alertStyle = .warning
+        switch feasibility {
+        case let .wiredLimitTooLow(requiredMB, advisoryMB):
+            alert.messageText = "Metal wired limit too low"
+            alert.informativeText =
+                "\(contextSentence) The requested setup needs ~\(roundedUpGiB(fromMB: requiredMB)) GiB of GPU-wired memory. "
+                + "Raise the limit, then try again:\n\nsudo sysctl iogpu.wired_limit_mb=\(advisoryMB)\n\n"
+                + "Or explicitly restart anyway."
+            alert.addButton(withTitle: "Copy Fix Command")
+            alert.addButton(withTitle: "Restart Anyway")
+            alert.addButton(withTitle: "Cancel")
+            alert.buttons[0].keyEquivalent = ""
+            alert.buttons[1].keyEquivalent = ""
+            alert.buttons[2].keyEquivalent = "\r"
+            switch alert.runModal() {
+            case .alertFirstButtonReturn:
+                NSPasteboard.general.clearContents()
+                NSPasteboard.general.setString(
+                    "sudo sysctl iogpu.wired_limit_mb=\(advisoryMB)", forType: .string)
+            case .alertSecondButtonReturn:
+                restartAnyway()
+            default:
+                break
+            }
+        case let .blocked(reason):
+            alert.messageText = "These settings cannot run on this Mac"
+            alert.informativeText = "\(contextSentence) \(reason)"
+            alert.addButton(withTitle: "OK")
+            alert.runModal()
+        case .standard:
+            break
+        }
+    }
+}
+
+@MainActor
 enum ThinkingModePrompt {
     /// NSAlert (Settings and Chat are real windows, already promoted to .regular by
     /// WindowChrome). On confirm: pin the context to 393,216 + enable Max — and, when a
@@ -82,7 +125,17 @@ enum ThinkingModePrompt {
         case .accepted:
             break
         case let .rejected(feasibility):
-            showRestartRejection(feasibility, app: app, supervisor: supervisor)
+            RestartRejectionAlert.show(
+                feasibility,
+                contextSentence:
+                    "The current server is still running at its existing context. Max Think remains disabled."
+            ) {
+                handleRestartResult(
+                    restartWithMaxThink(
+                        app: app, supervisor: supervisor,
+                        overrideWiredLimitGate: true),
+                    app: app, supervisor: supervisor)
+            }
         case .ignored:
             // The server may have stopped while the confirmation was open. The setting
             // is still valid and will apply on the next Start.
@@ -92,46 +145,4 @@ enum ThinkingModePrompt {
         }
     }
 
-    private static func showRestartRejection(
-        _ feasibility: Feasibility, app: AppState, supervisor: SupervisorService
-    ) {
-        let alert = NSAlert()
-        alert.alertStyle = .warning
-        switch feasibility {
-        case let .wiredLimitTooLow(requiredMB, advisoryMB):
-            alert.messageText = "Metal wired limit too low"
-            alert.informativeText =
-                "The current server is still running at its existing context. Max Think needs "
-                + "~\(requiredMB / 1024) GiB of GPU-wired memory. Raise the limit, then try again:\n\n"
-                + "sudo sysctl iogpu.wired_limit_mb=\(advisoryMB)\n\n"
-                + "Or explicitly restart anyway."
-            alert.addButton(withTitle: "Copy Fix Command")
-            alert.addButton(withTitle: "Restart Anyway")
-            alert.addButton(withTitle: "Cancel")
-            alert.buttons[0].keyEquivalent = ""
-            alert.buttons[1].keyEquivalent = ""
-            alert.buttons[2].keyEquivalent = "\r"
-            switch alert.runModal() {
-            case .alertFirstButtonReturn:
-                NSPasteboard.general.clearContents()
-                NSPasteboard.general.setString(
-                    "sudo sysctl iogpu.wired_limit_mb=\(advisoryMB)", forType: .string)
-            case .alertSecondButtonReturn:
-                handleRestartResult(
-                    restartWithMaxThink(
-                        app: app, supervisor: supervisor,
-                        overrideWiredLimitGate: true),
-                    app: app, supervisor: supervisor)
-            default:
-                break
-            }
-        case let .blocked(reason):
-            alert.messageText = "Max Think cannot run with these settings"
-            alert.informativeText = "The current server is still running at its existing context. \(reason)"
-            alert.addButton(withTitle: "OK")
-            alert.runModal()
-        case .standard:
-            break
-        }
-    }
 }

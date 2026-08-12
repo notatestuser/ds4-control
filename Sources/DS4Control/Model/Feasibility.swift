@@ -124,6 +124,11 @@ private func roundedUpMiB(_ bytes: Int) -> Int? {
     return overflow ? nil : result
 }
 
+func roundedUpGiB(fromMB megabytes: Int) -> Int {
+    guard megabytes > 0 else { return 0 }
+    return megabytes / 1024 + (megabytes % 1024 == 0 ? 0 : 1)
+}
+
 /// Mirrors pinned ds4's Metal `ds4_context_memory_estimate_with_prefill_mode` for
 /// DeepSeek V4. This includes raw KV, per-layer compressed caches, and the
 /// context-dependent prefill scratch that each resident session allocates.
@@ -132,7 +137,7 @@ private func metalContextBytes(variant: Variant, ctx: Int) -> Int? {
     guard ctx > 0 else { return 0 }
 
     let shape = metalContextShape(for: variant)
-    let prefillCap = ctx > 4096 ? shape.longPromptPrefillCap : ctx
+    let prefillCap = ctx > 4096 ? min(shape.longPromptPrefillCap, ctx) : ctx
     let rawWindow = min(128, ctx)
     guard let wanted = checkedSum([rawWindow, prefillCap]) else { return nil }
     let cappedWanted = min(wanted, ctx)
@@ -233,15 +238,15 @@ func feasibility(
     }
     let required = requiredWiredMB(
         variant: variant, flashQuant: flashQuant, ctx: ctx, sessions: sessions)
-    if Double(required) > ramGiB * 1024 {
+    let usableMB = wiredLimitAdvisoryMB(ramGiB: ramGiB)
+    if required > usableMB {
         return .blocked(
             reason:
-                "This setup needs ~\(required / 1024) GiB unified memory, but this Mac has ~\(Int(ramGiB)) GiB. Reduce context or concurrent sessions."
+                "This setup needs ~\(roundedUpGiB(fromMB: required)) GiB unified memory, but this Mac has ~\(Int(ramGiB)) GiB and macOS needs ~\(Int(osReserveGiB)) GiB. Reduce context or concurrent sessions."
         )
     }
     if wiredLimitMB < required {
-        let advisory = max(required, wiredLimitAdvisoryMB(ramGiB: ramGiB))
-        return .wiredLimitTooLow(requiredMB: required, advisoryMB: advisory)
+        return .wiredLimitTooLow(requiredMB: required, advisoryMB: usableMB)
     }
     return .standard
 }

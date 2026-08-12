@@ -38,6 +38,18 @@ final class FeasibilityTests: XCTestCase {
         XCTAssertEqual(requiredWiredMB(variant: .pro, flashQuant: .q2, ctx: 0), 443_104)
     }
 
+    func testProPrefillCapNeverExceedsShortLongPrompt() {
+        // Pinned ds4 selects the 8,192-token Pro chunk above 4,096, then caps it
+        // to the actual prompt length before estimating scratch allocation.
+        XCTAssertEqual(requiredWiredMB(variant: .pro, flashQuant: .q2, ctx: 4_097), 443_703)
+    }
+
+    func testRequiredMemoryDisplayRoundsUpToGiB() {
+        XCTAssertEqual(roundedUpGiB(fromMB: 90_899), 89)
+        XCTAssertEqual(roundedUpGiB(fromMB: 90_112), 88)
+        XCTAssertEqual(roundedUpGiB(fromMB: 0), 0)
+    }
+
     func testRequiredWiredMBScalesResidentKVBySessions() {
         XCTAssertEqual(
             requiredWiredMB(variant: .flash, flashQuant: .q2, ctx: 393_216, sessions: 3),
@@ -69,6 +81,22 @@ final class FeasibilityTests: XCTestCase {
                 wiredLimitMB: Int.max)
         else { return XCTFail("Flash q2 at 1M context must not be offered a wired-limit workaround on 96 GiB") }
         XCTAssertTrue(reason.contains("Reduce context or concurrent sessions"))
+    }
+
+    func testWorkingSetThatConsumesOSReserveBlocks() {
+        let required = requiredWiredMB(variant: .flash, flashQuant: .q2, ctx: 500_000)
+        let usableMB = wiredLimitAdvisoryMB(ramGiB: 96)
+        XCTAssertEqual(required, 90_899)
+        XCTAssertGreaterThan(required, usableMB)
+        XCTAssertLessThan(required, 96 * 1024)
+
+        guard
+            case let .blocked(reason) = feasibility(
+                ramGiB: 96, variant: .flash, flashQuant: .q2, ctx: 500_000,
+                wiredLimitMB: Int.max)
+        else { return XCTFail("a setup that consumes the macOS reserve must be blocked") }
+        XCTAssertTrue(reason.contains("needs ~89 GiB unified memory"))
+        XCTAssertTrue(reason.contains("macOS needs ~8 GiB"))
     }
 
     func testProSessionsThatExceedPhysicalRAMBlockUsingDs4Allocation() {
@@ -140,13 +168,16 @@ final class FeasibilityTests: XCTestCase {
                 wiredLimitMB: 110_000), .standard)
     }
 
-    func testWiredLimitAdvisoryIsNeverBelowRequiredWorkingSet() {
+    func testWiredLimitAdvisoryFitsWorkingSetWithoutConsumingOSReserve() {
+        let usableMB = wiredLimitAdvisoryMB(ramGiB: 128)
         guard
             case let .wiredLimitTooLow(required, advisory) = feasibility(
-                ramGiB: 96, variant: .flash, flashQuant: .q2, ctx: 393_216,
-                wiredLimitMB: 73_728, sessions: 2)
-        else { return XCTFail("expected multiple resident sessions to exceed the wired limit") }
+                ramGiB: 128, variant: .flash, flashQuant: .q2q4, ctx: 1_000_000,
+                wiredLimitMB: 98_304)
+        else { return XCTFail("expected the default wired limit to gate this setup") }
         XCTAssertGreaterThanOrEqual(advisory, required)
+        XCTAssertEqual(advisory, usableMB)
+        XCTAssertLessThan(advisory, 128 * 1024)
     }
 
     func testEffectiveWiredLimitLive() {

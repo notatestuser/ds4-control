@@ -55,6 +55,8 @@ final class SupervisorStateMachineTests: XCTestCase {
         XCTAssertTrue(r.lastArgs.contains("250000"))
         XCTAssertEqual(r.lastArgs[r.lastArgs.firstIndex(of: "--host")! + 1], "0.0.0.0")
         XCTAssertFalse(r.lastArgs.contains("--kv-disk-dir"))  // omitted when no dir passed
+        XCTAssertEqual(r.lastEnv["DS4_METAL_PREFILL_CHUNK"], "")
+        XCTAssertEqual(r.lastEnv["DS4_METAL_GRAPH_RAW_CAP"], "")
     }
     func testStartNormalizesHostBeforeLaunch() throws {
         let r = FakeRunner(); let s = try makeSupervisor(r)

@@ -124,7 +124,7 @@ struct ModelRowView: View {
             // within ~2 s — no app restart needed.
             VStack(alignment: .leading, spacing: 4) {
                 Text(
-                    "Metal wired limit too low: this setup needs ~\(requiredMB / 1024) GiB but the GPU can wire "
+                    "Metal wired limit too low: this setup needs ~\(roundedUpGiB(fromMB: requiredMB)) GiB but the GPU can wire "
                         + "~\(effectiveWiredLimitMB(ramGiB: ramGiB) / 1024) GiB. Raise it in Terminal:"
                 )
                 Text("sudo sysctl iogpu.wired_limit_mb=\(advisoryMB)")
@@ -142,7 +142,11 @@ struct ModelRowView: View {
             .fixedSize(horizontal: false, vertical: true)
             .frame(maxWidth: .infinity, alignment: .leading)
         case let .blocked(reason):
-            Text(reason).font(.caption2).foregroundStyle(.red)
+            Text(reason)
+                .font(.caption2)
+                .foregroundStyle(.red)
+                .fixedSize(horizontal: false, vertical: true)
+                .frame(maxWidth: .infinity, alignment: .leading)
         }
     }
 }
