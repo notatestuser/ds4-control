@@ -71,6 +71,25 @@ enum Quant {
         }
     }
 
+    /// Routed-expert tensor bytes (GiB) — the weights SSD streaming can push to disk.
+    /// q2-q4 measured from the 0731 GGUF metadata (ffn gate/up/down expert tensors);
+    /// the others are estimated as total weights minus ~8 GiB non-routed
+    /// (attention, embeddings, shared FFN, norms).
+    var routedExpertGiB: Double {
+        switch self {
+        case .proImatrix: return 424
+        case .q4Imatrix: return 145
+        case .q2Imatrix: return 73
+        case .q2q4Imatrix: return 82.69
+        }
+    }
+
+    /// Default SSD-streaming expert-cache budget (GiB) for this quant: keeps all but
+    /// ~15 GiB of routed experts resident; the rest stream from the GGUF on demand.
+    /// Truncates (82.69 − 15 → 67). Floor 16 so a degenerate tiny cache can never be
+    /// configured accidentally.
+    var defaultStreamingCacheGB: Int { max(16, Int(routedExpertGiB - 15)) }
+
     /// Pre-0731 ("preview") Flash GGUF filenames this app used to download. Referenced only
     /// by the one-time migration cleanup; Pro never had a preview build.
     static let legacyPreviewFilenames = [

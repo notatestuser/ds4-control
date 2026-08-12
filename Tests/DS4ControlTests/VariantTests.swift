@@ -68,4 +68,17 @@ final class VariantTests: XCTestCase {
         XCTAssertFalse(flashQuantFits(.q4, ramGiB: 184))
         XCTAssertTrue(flashQuantFits(.q4, ramGiB: 185))
     }
+    func testRoutedExpertGiB() {
+        XCTAssertEqual(Quant.proImatrix.routedExpertGiB, 424, accuracy: 1)  // estimated: 432 − ~8 non-routed
+        XCTAssertEqual(Quant.q4Imatrix.routedExpertGiB, 145, accuracy: 1)  // estimated: 153 − ~8 non-routed
+        XCTAssertEqual(Quant.q2Imatrix.routedExpertGiB, 73, accuracy: 1)  // estimated: 81 − ~8 non-routed
+        XCTAssertEqual(Quant.q2q4Imatrix.routedExpertGiB, 82.69, accuracy: 0.01)  // MEASURED from 0731 GGUF metadata
+    }
+    func testDefaultStreamingCacheGB() {
+        // Truncating budget that leaves ~15 GiB of routed experts to stream from SSD.
+        XCTAssertEqual(Quant.proImatrix.defaultStreamingCacheGB, 409)
+        XCTAssertEqual(Quant.q4Imatrix.defaultStreamingCacheGB, 130)
+        XCTAssertEqual(Quant.q2Imatrix.defaultStreamingCacheGB, 58)
+        XCTAssertEqual(Quant.q2q4Imatrix.defaultStreamingCacheGB, 67)  // 82.69 − 15 = 67.69 → 67
+    }
 }
