@@ -6,13 +6,20 @@ private final class FakeRunner: ProcessRunner {
     var isRunning = false
     var lastArgs: [String] = []
     var lastEnv: [String: String] = [:]
+    var lastRemovedEnvironmentKeys: Set<String> = []
     private var stderr: (@Sendable (String) -> Void)?
     private var exit: (@Sendable (Int32) -> Void)?
     func launch(
         executable: URL, args: [String], cwd: URL, env: [String: String],
+        removingEnvironmentKeys: Set<String>,
         onStderrLine: @escaping @Sendable (String) -> Void, onExit: @escaping @Sendable (Int32) -> Void
     ) throws {
-        lastArgs = args; lastEnv = env; isRunning = true; stderr = onStderrLine; exit = onExit
+        lastArgs = args
+        lastEnv = env
+        lastRemovedEnvironmentKeys = removingEnvironmentKeys
+        isRunning = true
+        stderr = onStderrLine
+        exit = onExit
     }
     func terminate(graceSeconds: Double) { isRunning = false; exit?(0) }
     func emit(_ line: String) { stderr?(line) }
@@ -55,8 +62,27 @@ final class SupervisorStateMachineTests: XCTestCase {
         XCTAssertTrue(r.lastArgs.contains("250000"))
         XCTAssertEqual(r.lastArgs[r.lastArgs.firstIndex(of: "--host")! + 1], "0.0.0.0")
         XCTAssertFalse(r.lastArgs.contains("--kv-disk-dir"))  // omitted when no dir passed
-        XCTAssertEqual(r.lastEnv["DS4_METAL_PREFILL_CHUNK"], "")
-        XCTAssertEqual(r.lastEnv["DS4_METAL_GRAPH_RAW_CAP"], "")
+        XCTAssertEqual(r.lastEnv, [:])
+        XCTAssertEqual(
+            r.lastRemovedEnvironmentKeys,
+            ["DS4_METAL_PREFILL_CHUNK", "DS4_METAL_GRAPH_RAW_CAP"])
+    }
+
+    func testRealRunnerPreservesInheritedEnvironmentWhileRemovingKeys() {
+        let environment = RealProcessRunner.childEnvironment(
+            inherited: [
+                "PATH": "/usr/bin", "HOME": "/tmp/home", "TMPDIR": "/tmp",
+                "DS4_METAL_PREFILL_CHUNK": "0",
+            ],
+            overrides: ["DS4_CONTROL_TEST": "present"],
+            removing: ["DS4_METAL_PREFILL_CHUNK", "DS4_METAL_GRAPH_RAW_CAP"])
+
+        XCTAssertEqual(environment["PATH"], "/usr/bin")
+        XCTAssertEqual(environment["HOME"], "/tmp/home")
+        XCTAssertEqual(environment["TMPDIR"], "/tmp")
+        XCTAssertEqual(environment["DS4_CONTROL_TEST"], "present")
+        XCTAssertNil(environment["DS4_METAL_PREFILL_CHUNK"])
+        XCTAssertNil(environment["DS4_METAL_GRAPH_RAW_CAP"])
     }
     func testStartNormalizesHostBeforeLaunch() throws {
         let r = FakeRunner(); let s = try makeSupervisor(r)

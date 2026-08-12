@@ -7,6 +7,7 @@ private final class NoopRunner: ProcessRunner {
     var isRunning = false
     func launch(
         executable: URL, args: [String], cwd: URL, env: [String: String],
+        removingEnvironmentKeys: Set<String>,
         onStderrLine: @escaping @Sendable (String) -> Void, onExit: @escaping @Sendable (Int32) -> Void
     ) throws {}
     func terminate(graceSeconds: Double) {}

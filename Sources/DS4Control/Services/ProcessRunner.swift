@@ -2,10 +2,11 @@ import Foundation
 
 protocol ProcessRunner: AnyObject {
     /// Launch `executable` with `args` in `cwd`; `env` is merged over the inherited
-    /// environment (used to pass HF_TOKEN securely, never on the command line).
+    /// environment, then `removingEnvironmentKeys` is removed from the child only.
     /// Delivers stderr lines and termination.
     func launch(
         executable: URL, args: [String], cwd: URL, env: [String: String],
+        removingEnvironmentKeys: Set<String>,
         onStderrLine: @escaping @Sendable (String) -> Void,
         onExit: @escaping @Sendable (Int32) -> Void) throws
     func terminate(graceSeconds: Double)
@@ -47,6 +48,7 @@ final class RealProcessRunner: ProcessRunner {
 
     func launch(
         executable: URL, args: [String], cwd: URL, env: [String: String],
+        removingEnvironmentKeys: Set<String>,
         onStderrLine: @escaping @Sendable (String) -> Void,
         onExit: @escaping @Sendable (Int32) -> Void
     ) throws {
@@ -54,10 +56,11 @@ final class RealProcessRunner: ProcessRunner {
         p.executableURL = executable
         p.arguments = args
         p.currentDirectoryURL = cwd
-        if !env.isEmpty {
-            var merged = ProcessInfo.processInfo.environment
-            for (k, v) in env { merged[k] = v }
-            p.environment = merged
+        if !env.isEmpty || !removingEnvironmentKeys.isEmpty {
+            p.environment = Self.childEnvironment(
+                inherited: ProcessInfo.processInfo.environment,
+                overrides: env,
+                removing: removingEnvironmentKeys)
         }
         let err = Pipe()
         p.standardError = err
@@ -69,6 +72,15 @@ final class RealProcessRunner: ProcessRunner {
         }
         try p.run()
         self.process = p
+    }
+
+    static func childEnvironment(
+        inherited: [String: String], overrides: [String: String], removing: Set<String>
+    ) -> [String: String] {
+        var result = inherited
+        for (key, value) in overrides { result[key] = value }
+        for key in removing { result.removeValue(forKey: key) }
+        return result
     }
 
     func terminate(graceSeconds: Double) {
