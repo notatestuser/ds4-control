@@ -213,12 +213,18 @@ final class FeasibilityTests: XCTestCase {
     }
 
     func testEmulatedWiredLimitOverride() {
-        // DS4_EMULATE_WIRED_LIMIT_MB wins over the live sysctl — preview the gated
-        // notice without sudo.
-        setenv("DS4_EMULATE_WIRED_LIMIT_MB", "20000", 1)
-        defer { unsetenv("DS4_EMULATE_WIRED_LIMIT_MB") }
-        XCTAssertEqual(emulatedWiredLimitMB(), 20_000)
-        XCTAssertEqual(effectiveWiredLimitMB(ramGiB: 512), 20_000)
+        #if DEBUG
+            // DS4_EMULATE_WIRED_LIMIT_MB wins over the live sysctl — preview the gated
+            // notice without sudo.
+            setenv("DS4_EMULATE_WIRED_LIMIT_MB", "20000", 1)
+            defer { unsetenv("DS4_EMULATE_WIRED_LIMIT_MB") }
+            XCTAssertEqual(emulatedWiredLimitMB(), 20_000)
+            XCTAssertEqual(effectiveWiredLimitMB(ramGiB: 512), 20_000)
+        #else
+            setenv("DS4_EMULATE_WIRED_LIMIT_MB", "20000", 1)
+            defer { unsetenv("DS4_EMULATE_WIRED_LIMIT_MB") }
+            XCTAssertNil(emulatedWiredLimitMB())
+        #endif
     }
 
     func testThinkMax() {

@@ -67,12 +67,13 @@ run_one() {
   # workspace. The Metal allocations are not in RSS, so these values are additive.
   rss_gib="$(awk "BEGIN{printf \"%.1f\", $peak_rss/1024/1024}")"
   kv_gib="$(awk "BEGIN{printf \"%.1f\", ${kvest:-0}/1024}")"
-  total_gib="$(awk "BEGIN{printf \"%.1f\", $rss_gib + $kv_gib + $GRAPH_GIB}")"
-  ok="$(awk "BEGIN{print ($total_gib<=$LIMIT_GIB)?\"YES\":\"NO\"}")"
-  warn="$(awk "BEGIN{print ($total_gib> $USABLE_GIB && $total_gib<=$LIMIT_GIB)?\" (>${USABLE_GIB} usable, will page)\":\"\"}")"
+  total_raw="$(awk "BEGIN{printf \"%.9f\", $peak_rss/1024/1024 + ${kvest:-0}/1024 + $GRAPH_GIB}")"
+  total_gib="$(awk "BEGIN{printf \"%.1f\", $total_raw}")"
+  ok="$(awk "BEGIN{print ($total_raw<=$LIMIT_GIB)?\"YES\":\"NO\"}")"
+  warn="$(awk "BEGIN{print ($total_raw> $USABLE_GIB && $total_raw<=$LIMIT_GIB)?\" (>${USABLE_GIB} usable, will page)\":\"\"}")"
   printf '  %-9s %s weights_RSS=%-7s context=%-7s graph=%-6s total≈%-7s GiB  fits_96=%s%s\n' \
     "$ctx" "$label" "$rss_gib" "${kv_gib}GiB" "${GRAPH_GIB}GiB" "$total_gib" "$ok" "$warn"
-  awk "BEGIN{exit !($total_gib<=$LIMIT_GIB)}"
+  awk "BEGIN{exit !($total_raw<=$LIMIT_GIB)}"
 }
 
 echo "=== V4 Flash q2 resident-memory harness — limit ${LIMIT_GIB} GiB (usable ~${USABLE_GIB} GiB after OS) ==="

@@ -47,14 +47,18 @@ func defaultWiredLimitMB(ramGiB: Double) -> Int {
     return min(metal, Int(ramGiB * 1024))
 }
 
-/// Test/dev override: when `DS4_EMULATE_WIRED_LIMIT_MB` is a positive integer, the
+/// Test/debug override: when `DS4_EMULATE_WIRED_LIMIT_MB` is a positive integer, the
 /// effective limit reports that instead of the machine's real one — so the gated-Start
 /// notice can be exercised without touching the sysctl (no sudo needed).
 func emulatedWiredLimitMB() -> Int? {
-    guard let raw = ProcessInfo.processInfo.environment["DS4_EMULATE_WIRED_LIMIT_MB"],
-        let mb = Int(raw), mb > 0
-    else { return nil }
-    return mb
+    #if DEBUG
+        guard let raw = ProcessInfo.processInfo.environment["DS4_EMULATE_WIRED_LIMIT_MB"],
+            let mb = Int(raw), mb > 0
+        else { return nil }
+        return mb
+    #else
+        return nil
+    #endif
 }
 
 /// Effective GPU wired ceiling right now (MB): the user's `iogpu.wired_limit_mb` when
@@ -387,6 +391,12 @@ func feasibility(
     }
     let required = requiredWiredMB(
         variant: variant, flashQuant: flashQuant, ctx: ctx, sessions: sessions)
+    if required == Int.max {
+        return .blocked(
+            reason:
+                "This context and session count is too large to run on any Mac. Reduce context or concurrent sessions."
+        )
+    }
     let usableMB = wiredLimitAdvisoryMB(ramGiB: ramGiB)
     if required > usableMB {
         return .blocked(
