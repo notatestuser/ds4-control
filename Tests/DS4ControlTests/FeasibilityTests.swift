@@ -15,15 +15,13 @@ final class FeasibilityTests: XCTestCase {
 
     func testRAMBlocks() {
         if case .blocked = feasibility(
-            ramGiB: 400, variant: .pro, flashQuant: .q2q4, ctx: 1_000_000,
-            wiredLimitMB: Int.max, kvDiskCache: true)
+            ramGiB: 400, variant: .pro, flashQuant: .q2q4, ctx: 1_000_000, wiredLimitMB: Int.max)
         {
         } else {
             XCTFail("pro<512 must block")
         }
         if case .blocked = feasibility(
-            ramGiB: 80, variant: .flash, flashQuant: .q2, ctx: 393_216,
-            wiredLimitMB: Int.max, kvDiskCache: true)
+            ramGiB: 80, variant: .flash, flashQuant: .q2, ctx: 393_216, wiredLimitMB: Int.max)
         {
         } else {
             XCTFail("<96 blocked")
@@ -31,18 +29,16 @@ final class FeasibilityTests: XCTestCase {
     }
 
     func testRequiredWiredMB() {
-        // q2 weights (81 GiB) + KV at 393K ctx (43 layers × 391 B/tok).
+        // q2 weights (81 GiB) + KV at 393K ctx (43 layers × 391 B/tok). KV always counts:
+        // the disk KV cache is only a prompt cache — the active session's KV stays resident
+        // (the harness measures the context buffers with --kv-disk-dir enabled).
         let kvMB = (43 * 391 * 393_216) / (1024 * 1024)
         XCTAssertEqual(
             requiredWiredMB(variant: .flash, flashQuant: .q2, ctx: 393_216),
             Int(Quant.q2Imatrix.weightsGiB * 1024) + kvMB)
-        // Disk KV cache: KV excluded, weights only.
+        // Pro ignores the Flash quant choice; ctx 0 → weights only.
         XCTAssertEqual(
-            requiredWiredMB(variant: .flash, flashQuant: .q2, ctx: 393_216, kvDiskCache: true),
-            Int(Quant.q2Imatrix.weightsGiB * 1024))
-        // Pro ignores the Flash quant choice.
-        XCTAssertEqual(
-            requiredWiredMB(variant: .pro, flashQuant: .q2, ctx: 0, kvDiskCache: true),
+            requiredWiredMB(variant: .pro, flashQuant: .q2, ctx: 0),
             Int(Quant.proImatrix.weightsGiB * 1024))
     }
 
@@ -52,62 +48,41 @@ final class FeasibilityTests: XCTestCase {
         let advisory = Int((96.0 - 8.0) * 1024)
         guard
             case let .wiredLimitTooLow(required, adv) = feasibility(
-                ramGiB: 96, variant: .flash, flashQuant: .q2, ctx: 393_216,
-                wiredLimitMB: 73_728, kvDiskCache: false)
+                ramGiB: 96, variant: .flash, flashQuant: .q2, ctx: 393_216, wiredLimitMB: 73_728)
         else { return XCTFail("default-equivalent cap must gate") }
         XCTAssertEqual(required, requiredWiredMB(variant: .flash, flashQuant: .q2, ctx: 393_216))
         XCTAssertEqual(adv, advisory)
         XCTAssertEqual(
             feasibility(
-                ramGiB: 96, variant: .flash, flashQuant: .q2, ctx: 393_216,
-                wiredLimitMB: advisory, kvDiskCache: false), .standard)
-    }
-
-    func testWiredLimitGateKVCacheExcluded() {
-        // With the disk KV cache on, only the weights count — a limit that gates the
-        // all-resident config passes.
-        let weightsMB = Int(Quant.q2Imatrix.weightsGiB * 1024)
-        if case .wiredLimitTooLow = feasibility(
-            ramGiB: 96, variant: .flash, flashQuant: .q2, ctx: 393_216,
-            wiredLimitMB: weightsMB + 100, kvDiskCache: false)
-        {
-        } else {
-            XCTFail("weights+KV must exceed weights+100MB")
-        }
-        XCTAssertEqual(
-            feasibility(
-                ramGiB: 96, variant: .flash, flashQuant: .q2, ctx: 393_216,
-                wiredLimitMB: weightsMB, kvDiskCache: true), .standard)
+                ramGiB: 96, variant: .flash, flashQuant: .q2, ctx: 393_216, wiredLimitMB: advisory),
+            .standard)
     }
 
     func testWiredLimitGatePro512() {
         // Pro @1M needs ~455 GiB wired — a default 75% cap on 512 GiB (393,216 MB) gates;
         // the advisory (516,096 MB) passes.
         if case .wiredLimitTooLow = feasibility(
-            ramGiB: 512, variant: .pro, flashQuant: .q2q4, ctx: 1_000_000,
-            wiredLimitMB: 393_216, kvDiskCache: false)
+            ramGiB: 512, variant: .pro, flashQuant: .q2q4, ctx: 1_000_000, wiredLimitMB: 393_216)
         {
         } else {
             XCTFail("default 75% cap must gate Pro even on 512 GiB")
         }
         guard
             case let .wiredLimitTooLow(_, advisory) = feasibility(
-                ramGiB: 512, variant: .pro, flashQuant: .q2q4, ctx: 1_000_000,
-                wiredLimitMB: 393_216, kvDiskCache: false)
+                ramGiB: 512, variant: .pro, flashQuant: .q2q4, ctx: 1_000_000, wiredLimitMB: 393_216)
         else { return XCTFail() }
         XCTAssertEqual(advisory, Int((512.0 - 8.0) * 1024))  // 516096 MB
         XCTAssertEqual(
             feasibility(
                 ramGiB: 512, variant: .pro, flashQuant: .q2q4, ctx: 1_000_000,
-                wiredLimitMB: Int((512.0 - 8.0) * 1024), kvDiskCache: false), .standard)
+                wiredLimitMB: Int((512.0 - 8.0) * 1024)), .standard)
     }
 
     func testWiredLimitGateFlash128Q2Q4() {
         // q2-q4 @1M ≈ 107 GiB: a 75%-default 128 GiB machine (98,304 MB) gates — this tier
         // is NOT automatically standard — while a raised cap passes.
         if case .wiredLimitTooLow = feasibility(
-            ramGiB: 128, variant: .flash, flashQuant: .q2q4, ctx: 1_000_000,
-            wiredLimitMB: 98_304, kvDiskCache: false)
+            ramGiB: 128, variant: .flash, flashQuant: .q2q4, ctx: 1_000_000, wiredLimitMB: 98_304)
         {
         } else {
             XCTFail("98,304 MB cap must gate q2-q4 @1M")
@@ -115,7 +90,7 @@ final class FeasibilityTests: XCTestCase {
         XCTAssertEqual(
             feasibility(
                 ramGiB: 128, variant: .flash, flashQuant: .q2q4, ctx: 1_000_000,
-                wiredLimitMB: 110_000, kvDiskCache: false), .standard)
+                wiredLimitMB: 110_000), .standard)
     }
 
     func testEffectiveWiredLimitLive() {

@@ -18,7 +18,7 @@ struct WiredLimitHelpView: View {
     private var requiredMB: Int {
         requiredWiredMB(
             variant: app.selectedVariant, flashQuant: app.selectedFlashQuant,
-            ctx: app.effectiveCtx(ramGiB: ramGiB), kvDiskCache: app.kvDiskCache)
+            ctx: app.effectiveCtx(ramGiB: ramGiB))
     }
 
     /// Content height capped to the visible screen, so short screens still get a

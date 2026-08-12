@@ -80,13 +80,14 @@ private let osReserveGiB = 8.0
 func wiredLimitAdvisoryMB(ramGiB: Double) -> Int { Int((ramGiB - osReserveGiB) * 1024) }
 
 /// The GPU-wired working set ds4 needs for this launch config (MB): resident weights plus
-/// KV cache at the launch context (KV excluded when the disk KV cache is on). Grounded in
-/// scripts/flash-mem-harness.sh, where q2 @1M ≈ 96 GiB resident ≈ weights + KV.
-func requiredWiredMB(variant: Variant, flashQuant: FlashQuant, ctx: Int, kvDiskCache: Bool = false) -> Int {
+/// the KV cache at the launch context. KV counts regardless of the disk KV cache: that is
+/// only a prompt cache (ds4 persists *idle* sessions to disk; the active session's KV stays
+/// resident — the harness measures ~16 GiB of context buffers at 1M with disk KV enabled).
+/// Grounded in scripts/flash-mem-harness.sh, where q2 @1M ≈ 96 GiB resident ≈ weights + KV.
+func requiredWiredMB(variant: Variant, flashQuant: FlashQuant, ctx: Int) -> Int {
     let quant = Quant.for(variant, flashQuant: flashQuant)
     let weightsMB = Int(quant.weightsGiB * 1024)
-    let kvMB = kvDiskCache ? 0 : (variant.kvBytesPerToken * ctx) / (1024 * 1024)
-    return weightsMB + kvMB
+    return weightsMB + (variant.kvBytesPerToken * ctx) / (1024 * 1024)
 }
 
 /// Default context, tiered by machine memory (measured via scripts/flash-mem-harness.sh,
@@ -116,7 +117,7 @@ func defaultFlashQuant(ramGiB: Double) -> FlashQuant {
 /// inject `effectiveWiredLimitMB(ramGiB:)` at the call site).
 func feasibility(
     ramGiB: Double, variant: Variant, flashQuant: FlashQuant,
-    ctx: Int, wiredLimitMB: Int, kvDiskCache: Bool
+    ctx: Int, wiredLimitMB: Int
 ) -> Feasibility {
     switch variant {
     case .pro:
@@ -129,7 +130,7 @@ func feasibility(
             )
         }
     }
-    let required = requiredWiredMB(variant: variant, flashQuant: flashQuant, ctx: ctx, kvDiskCache: kvDiskCache)
+    let required = requiredWiredMB(variant: variant, flashQuant: flashQuant, ctx: ctx)
     if wiredLimitMB < required {
         return .wiredLimitTooLow(requiredMB: required, advisoryMB: wiredLimitAdvisoryMB(ramGiB: ramGiB))
     }

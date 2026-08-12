@@ -69,7 +69,7 @@ DeepSeek V4 is memory-hungry so DS4 Control gates feasibility before launching.
 | V4 Flash (0731) | q4-imatrix | ≥ 256 GiB | Standard. |
 | V4 Flash (0731) | q2-imatrix | 96 GiB minimum | 96–127 GiB requires raising the Metal wired limit (see below). |
 
-On any machine where the model's GPU-wired working set (weights + KV cache at the launch context) exceeds the **effective Metal wired limit**, Start is gated. The effective limit is your `iogpu.wired_limit_mb` when raised, else the macOS default — a machine-specific fraction of RAM (~75–84% depending on macOS version) that DS4 Control queries from Metal rather than assumes. When gated, the popup shows the exact fix:
+On any machine where the model's GPU-wired working set (weights + KV cache at the launch context) exceeds the **effective Metal wired limit**, Start is gated. The disk KV cache does not shrink this working set — it only persists idle sessions to disk; the active session's KV stays resident. The effective limit is your `iogpu.wired_limit_mb` when raised, else the macOS default — a machine-specific fraction of RAM (~75–84% depending on macOS version) that DS4 Control queries from Metal rather than assumes. When gated, the popup shows the exact fix:
 
 ```sh
 sudo sysctl iogpu.wired_limit_mb=<value shown in the popup>

@@ -20,8 +20,7 @@ struct ModelRowView: View {
             let feas = feasibility(
                 ramGiB: ramGiB, variant: app.selectedVariant, flashQuant: app.selectedFlashQuant,
                 ctx: app.effectiveCtx(ramGiB: ramGiB),
-                wiredLimitMB: effectiveWiredLimitMB(ramGiB: ramGiB),
-                kvDiskCache: app.kvDiskCache)
+                wiredLimitMB: effectiveWiredLimitMB(ramGiB: ramGiB))
             actionButton(feas)
             feasibilityNote(feas)
         }

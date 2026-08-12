@@ -41,7 +41,7 @@ final class SupervisorStateMachineTests: XCTestCase {
         FileManager.default.createFile(atPath: gg.path, contents: Data("gguf".utf8))
         return SupervisorService(
             ds4Dir: dir, runner: runner, serverProbe: probe,
-            wiredLimitGate: { _, _, _, _ in true })  // tests are host-independent: skip the RAM/sysctl gate
+            wiredLimitGate: { _, _, _ in true })  // tests are host-independent: skip the RAM/sysctl gate
     }
 
     func testStartReachesReady() throws {
