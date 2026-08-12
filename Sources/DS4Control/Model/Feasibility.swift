@@ -3,10 +3,11 @@ import Metal
 
 enum Feasibility: Equatable {
     case standard
-    /// The launch config's GPU-wired working set (weights + resident context allocations) exceeds the machine's
-    /// effective Metal wired limit. Starting anyway pages the model and hangs the machine,
-    /// so Start is gated until the limit is raised (an explicit "Start anyway" override
-    /// remains). `advisoryMB` is the sysctl value that makes this config fit.
+    /// The launch config's GPU-wired working set (weights + resident context allocations
+    /// + shared graph workspace) exceeds the machine's effective Metal wired limit.
+    /// Starting anyway pages the model and hangs the machine, so Start is gated until
+    /// the limit is raised (an explicit "Start anyway" override remains). `advisoryMB`
+    /// is the sysctl value that makes this config fit.
     case wiredLimitTooLow(requiredMB: Int, advisoryMB: Int)
     case blocked(reason: String)  // cannot run on this machine
 }
@@ -72,29 +73,59 @@ func thinkMax(ctx: Int) -> Bool { ctx >= thinkMaxMinCtx }
 
 /// Headroom left for macOS and other processes — also the buffer the Metal
 /// wired-limit advisory leaves below total RAM.
-private let osReserveGiB = 8.0
+let osReserveGiB = 4.0
 let maxConcurrentSessions = 16
 
 /// Suggested `iogpu.wired_limit_mb`: total RAM minus the OS reserve, so the GPU-wired
-/// working set (weights + resident context allocations) fits. A percentage heuristic under-shoots the largest
-/// models (e.g. 0.9·512 GiB ≈ 460 GiB < Pro's ~471 GiB working set).
+/// working set (weights + resident context allocations + graph allocations) fits.
+/// A percentage heuristic under-shoots the largest models.
 func wiredLimitAdvisoryMB(ramGiB: Double) -> Int { Int((ramGiB - osReserveGiB) * 1024) }
 
 private let bytesPerMiB = 1024 * 1024
 
-private struct MetalContextShape {
+private struct MetalShape {
     let ratio4Layers: Int
     let ratio128Layers: Int
     let longPromptPrefillCap: Int
+    let embeddingWidth: Int
+    let attentionHeads: Int
+    let headWidth: Int
+    let outputGroups: Int
+    let queryRank: Int
+    let outputRank: Int
+    let expertCount: Int
+    let expertsUsed: Int
+    let expertWidth: Int
+    let indexerHeads: Int
+    let indexerHeadWidth: Int
+    let indexerTopK: Int
+    let hyperConnections: Int
+    let vocabularySize: Int
 }
 
-private func metalContextShape(for variant: Variant) -> MetalContextShape {
+private func metalShape(for variant: Variant) -> MetalShape {
     switch variant {
     case .flash:
-        return MetalContextShape(ratio4Layers: 21, ratio128Layers: 20, longPromptPrefillCap: 4096)
+        return MetalShape(
+            ratio4Layers: 21, ratio128Layers: 20, longPromptPrefillCap: 4096,
+            embeddingWidth: 4096, attentionHeads: 64, headWidth: 512,
+            outputGroups: 8, queryRank: 1024, outputRank: 1024,
+            expertCount: 256, expertsUsed: 6, expertWidth: 2048,
+            indexerHeads: 64, indexerHeadWidth: 128, indexerTopK: 512,
+            hyperConnections: 4, vocabularySize: 129_280)
     case .pro:
-        return MetalContextShape(ratio4Layers: 30, ratio128Layers: 31, longPromptPrefillCap: 8192)
+        return MetalShape(
+            ratio4Layers: 30, ratio128Layers: 31, longPromptPrefillCap: 8192,
+            embeddingWidth: 7168, attentionHeads: 128, headWidth: 512,
+            outputGroups: 16, queryRank: 1536, outputRank: 1024,
+            expertCount: 384, expertsUsed: 6, expertWidth: 3072,
+            indexerHeads: 64, indexerHeadWidth: 128, indexerTopK: 1024,
+            hyperConnections: 4, vocabularySize: 129_280)
     }
+}
+
+private func metalPrefillCap(shape: MetalShape, ctx: Int) -> Int {
+    ctx > 4096 ? min(shape.longPromptPrefillCap, ctx) : ctx
 }
 
 private func checkedProduct(_ values: [Int]) -> Int? {
@@ -136,8 +167,8 @@ private func metalContextBytes(variant: Variant, ctx: Int) -> Int? {
     guard ctx >= 0 else { return nil }
     guard ctx > 0 else { return 0 }
 
-    let shape = metalContextShape(for: variant)
-    let prefillCap = ctx > 4096 ? min(shape.longPromptPrefillCap, ctx) : ctx
+    let shape = metalShape(for: variant)
+    let prefillCap = metalPrefillCap(shape: shape, ctx: ctx)
     let rawWindow = min(128, ctx)
     guard let wanted = checkedSum([rawWindow, prefillCap]) else { return nil }
     let cappedWanted = min(wanted, ctx)
@@ -165,19 +196,138 @@ private func metalContextBytes(variant: Variant, ctx: Int) -> Int? {
     ])
 }
 
+/// Mirrors pinned ds4's long-lived Metal prefill workspace. `ds4-server` shares one
+/// workspace across batched sessions; a single-session server owns one equivalent set.
+/// Include the lazily materialized `batch_ffn_out` buffer because the wired-limit gate
+/// must cover peak prefill, not only the allocation state immediately after launch.
+private func metalSharedGraphWorkspaceBytes(variant: Variant, ctx: Int) -> Int? {
+    guard ctx >= 0 else { return nil }
+    guard ctx > 0 else { return 0 }
+
+    let shape = metalShape(for: variant)
+    let prefillCap = metalPrefillCap(shape: shape, ctx: ctx)
+    guard
+        let hyperConnectionWidth = checkedProduct([shape.hyperConnections, shape.embeddingWidth]),
+        let hyperConnectionMixWidth = checkedSum([
+            2 * shape.hyperConnections, shape.hyperConnections * shape.hyperConnections,
+        ]),
+        let queryWidth = checkedProduct([shape.attentionHeads, shape.headWidth]),
+        let groupedOutputWidth = checkedProduct([shape.outputGroups, shape.outputRank]),
+        let groupTemporaryWidth = checkedProduct([
+            shape.headWidth, shape.attentionHeads / shape.outputGroups,
+        ]),
+        let indexerQueryWidth = checkedProduct([shape.indexerHeads, shape.indexerHeadWidth]),
+        let compressionWidth = checkedProduct([2, max(shape.headWidth, shape.indexerHeadWidth)]),
+        let floatElementsPerToken = checkedSum([
+            1,  // prefill_tokens (int32)
+            8 * shape.embeddingWidth,
+            shape.expertsUsed * shape.embeddingWidth,
+            3 * shape.expertsUsed * shape.expertWidth,
+            2 * shape.expertsUsed,
+            2 * shape.expertCount,
+            3 * shape.expertWidth,
+            4 * hyperConnectionWidth,
+            shape.outputRank,
+            groupTemporaryWidth,
+            groupedOutputWidth,
+            2 * queryWidth,
+            shape.indexerHeads,
+            indexerQueryWidth,
+            2 * compressionWidth,
+            2 * shape.headWidth,
+            2 * shape.queryRank,
+            2 * hyperConnectionMixWidth,
+        ]),
+        let floatBytes = checkedProduct([prefillCap, floatElementsPerToken, 4]),
+        let halfQueryBytes = checkedProduct([prefillCap, queryWidth, 2]),
+        let seedBytes = checkedProduct([variant.layers, 64, shape.expertsUsed, 4])
+    else { return nil }
+
+    return checkedSum([floatBytes, halfQueryBytes, seedBytes])
+}
+
+/// Per-session graph allocations omitted by ds4's public context estimator. The large
+/// score/mask and attention-stage tensors are already in `metalContextBytes`, so this
+/// adds only the remaining decode/head buffers and fixed per-layer compressor state.
+private func metalSessionGraphBytes(variant: Variant, ctx: Int) -> Int? {
+    guard ctx >= 0 else { return nil }
+    guard ctx > 0 else { return 0 }
+
+    let shape = metalShape(for: variant)
+    let prefillCap = metalPrefillCap(shape: shape, ctx: ctx)
+    guard
+        let hyperConnectionWidth = checkedProduct([shape.hyperConnections, shape.embeddingWidth]),
+        let hyperConnectionMixWidth = checkedSum([
+            2 * shape.hyperConnections, shape.hyperConnections * shape.hyperConnections,
+        ]),
+        let queryWidth = checkedProduct([shape.attentionHeads, shape.headWidth]),
+        let groupedOutputWidth = checkedProduct([shape.outputGroups, shape.outputRank]),
+        let indexerQueryWidth = checkedProduct([shape.indexerHeads, shape.indexerHeadWidth]),
+        let compressionWidth = checkedProduct([2, max(shape.headWidth, shape.indexerHeadWidth)]),
+        let selectedIndexElements = checkedProduct([shape.indexerTopK, prefillCap]),
+        let decodeElements = checkedSum([
+            2 * hyperConnectionWidth,
+            2 * hyperConnectionMixWidth,
+            2 * shape.embeddingWidth,
+            2 * shape.queryRank,
+            queryWidth,
+            2 * shape.headWidth,
+            2 * compressionWidth,
+            4 * shape.indexerHeadWidth,
+            indexerQueryWidth,
+            shape.indexerHeads,
+            selectedIndexElements,
+            queryWidth,
+            groupedOutputWidth,
+            shape.embeddingWidth,
+            hyperConnectionWidth,
+            2 * shape.embeddingWidth,
+            3 * shape.expertWidth,
+            shape.embeddingWidth,
+            2 * shape.expertCount,
+            2 * shape.expertsUsed,
+            3 * shape.expertsUsed * shape.expertWidth,
+            shape.expertsUsed * shape.embeddingWidth,
+            shape.embeddingWidth,
+            hyperConnectionWidth,
+            2 * shape.hyperConnections,
+            2 * shape.embeddingWidth,
+            shape.vocabularySize,
+        ]),
+        let ratio4StateElements = checkedProduct([
+            shape.ratio4Layers, 32, shape.headWidth + shape.indexerHeadWidth,
+        ]),
+        let ratio128StateElements = checkedProduct([
+            shape.ratio128Layers, 256, shape.headWidth,
+        ]),
+        let stateElements = checkedSum([ratio4StateElements, ratio128StateElements]),
+        let totalElements = checkedSum([decodeElements, stateElements])
+    else { return nil }
+
+    return checkedProduct([totalElements, 4])
+}
+
 /// The GPU-wired working set ds4 needs for this launch config (MB): exact resident
-/// GGUF bytes plus ds4's Metal context allocation for every resident session. Context
-/// counts regardless of the disk KV cache: disk storage checkpoints resident tensors;
-/// it does not replace them.
+/// GGUF bytes, ds4's Metal context and graph allocations for every resident session, and
+/// one prefill workspace shared across sessions. Context counts regardless of the disk KV
+/// cache: disk storage checkpoints resident tensors; it does not replace them.
 func requiredWiredMB(variant: Variant, flashQuant: FlashQuant, ctx: Int, sessions: Int = 1) -> Int {
     let quant = Quant.for(variant, flashQuant: flashQuant)
     guard
         let weightsMB = roundedUpMiB(quant.ggufBytes),
-        let sessionBytes = metalContextBytes(variant: variant, ctx: ctx)
+        let sessionBytes = metalContextBytes(variant: variant, ctx: ctx),
+        let sessionGraphBytes = metalSessionGraphBytes(variant: variant, ctx: ctx),
+        let sharedGraphBytes = metalSharedGraphWorkspaceBytes(variant: variant, ctx: ctx),
+        let perSessionBytes = checkedSum([sessionBytes, sessionGraphBytes])
     else { return Int.max }
-    let (contextBytes, sessionOverflow) = sessionBytes.multipliedReportingOverflow(by: max(sessions, 1))
-    guard !sessionOverflow, let contextMB = roundedUpMiB(contextBytes) else { return Int.max }
-    let (requiredMB, totalOverflow) = weightsMB.addingReportingOverflow(contextMB)
+    let (residentSessionBytes, sessionOverflow) = perSessionBytes.multipliedReportingOverflow(
+        by: max(sessions, 1))
+    guard
+        !sessionOverflow,
+        let allocationBytes = checkedSum([residentSessionBytes, sharedGraphBytes]),
+        let allocationMB = roundedUpMiB(allocationBytes)
+    else { return Int.max }
+    let (requiredMB, totalOverflow) = weightsMB.addingReportingOverflow(allocationMB)
     return totalOverflow ? Int.max : requiredMB
 }
 
@@ -191,11 +341,10 @@ func launchBoundsError(variant: Variant, ctx: Int, sessions: Int) -> String? {
     return nil
 }
 
-/// Default context, tiered by machine memory (measured via scripts/flash-mem-harness.sh,
-/// where q2 @1M ≈ 96 GiB resident): V4 Pro and ≥128 GiB Flash (q2-q4 quant) run the full 1M
-/// window all-resident; 96–127 GiB Flash (q2) is capped at 393K ("Think-Max") so weights and
-/// resident context allocations
-/// stay resident without paging. `flashQuant` is accepted for API symmetry; the tier keys on RAM.
+/// Default context, tiered by machine memory: V4 Pro and ≥128 GiB Flash (q2-q4 quant)
+/// run the full 1M window all-resident; 96–127 GiB Flash (q2) is capped at 393K
+/// ("Think-Max") because q2 at 1M exceeds a 96 GiB machine once all Metal allocations
+/// are included. `flashQuant` is accepted for API symmetry; the tier keys on RAM.
 func defaultCtx(ramGiB: Double, variant: Variant, flashQuant: FlashQuant) -> Int {
     if variant == .pro { return variant.ctxCeiling }  // Pro: full 1M
     return ramGiB >= 128 ? variant.ctxCeiling : 393_216  // Flash: 1M on ≥128 GiB, else 393K
@@ -216,8 +365,8 @@ func defaultFlashQuant(ramGiB: Double) -> FlashQuant {
 
 /// Feasibility gate (spec §5.2). ds4 itself enforces no floor, so the app does. The RAM
 /// tiers block outright; the Metal wired-limit check then gates the launch config's
-/// exact weights-plus-context working set against the machine's effective ceiling (`wiredLimitMB` —
-/// inject `effectiveWiredLimitMB(ramGiB:)` at the call site).
+/// exact weights-plus-context-plus-graph working set against the machine's effective
+/// ceiling (`wiredLimitMB` — inject `effectiveWiredLimitMB(ramGiB:)` at the call site).
 func feasibility(
     ramGiB: Double, variant: Variant, flashQuant: FlashQuant,
     ctx: Int, wiredLimitMB: Int, sessions: Int = 1
@@ -232,7 +381,7 @@ func feasibility(
         if ramGiB < 96 {
             return .blocked(
                 reason:
-                    "V4 Flash needs ≥ 96 GiB unified memory. Below that, the ~81 GiB model plus its KV cache exceed RAM, so it can't run."
+                    "V4 Flash needs ≥ 96 GiB unified memory. Below that, its weights, resident context, and Metal graph allocations cannot fit safely."
             )
         }
     }

@@ -4,11 +4,11 @@
 # warms the weights, sends one short prompt, and samples peak RSS + peak physical footprint.
 #
 # ds4 exposes no memory metric, so resident memory is measured externally (ps / vmmap). The
-# on-disk KV cache (--kv-disk-dir) is the documented enabler for 1M-on-96GB, so we test it and
-# (at the largest ctx) a no-disk control to show the difference.
+# on-disk KV cache checkpoints resident tensors rather than replacing them, so we test it and
+# (at the largest ctx) a no-disk control to verify that the memory requirement is unchanged.
 #
 # Usage: scripts/flash-mem-harness.sh ["ctx1 ctx2 …"]   (default: 131072 393216 1000000)
-# Exit non-zero if any disk-KV run's peak RSS exceeds 96 GiB.
+# Exit non-zero if any disk-KV run's estimated working set exceeds 96 GiB.
 set -u
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
@@ -17,7 +17,8 @@ GGUF_DIR="$HOME/Library/Application Support/DS4 Control/gguf"
 Q2="$GGUF_DIR/DeepSeek-V4-Flash-IQ2XXS-w2Q2K-AProjQ8-SExpQ8-OutQ8-chat-v2-imatrix-0731.gguf"
 PORT=8137
 LIMIT_GIB=96          # hard machine ceiling
-USABLE_GIB=88         # 96 − 8 GiB OS reserve (practical limit)
+USABLE_GIB=92         # 96 − 4 GiB OS reserve (practical limit)
+GRAPH_GIB=4.22        # pinned ds4 Flash graph allocation beyond its public context estimate
 KVDISK="/tmp/ds4-memharness-kv"
 CTXS="${1:-131072 393216 1000000}"
 
@@ -62,15 +63,15 @@ run_one() {
   done
   kill "$pid" 2>/dev/null; wait "$pid" 2>/dev/null; rm -f "$log"; sleep 2   # free the port
 
-  # Total resident = mmap'd weights (RSS) + GPU-wired KV (ds4's own context-buffer estimate,
-  # the full-context worst case). The KV is NOT in RSS, so the two are additive.
+  # Total resident = mmap'd weights (RSS) + GPU-wired context allocation + the shared graph
+  # workspace. The Metal allocations are not in RSS, so these values are additive.
   rss_gib="$(awk "BEGIN{printf \"%.1f\", $peak_rss/1024/1024}")"
   kv_gib="$(awk "BEGIN{printf \"%.1f\", ${kvest:-0}/1024}")"
-  total_gib="$(awk "BEGIN{printf \"%.1f\", $rss_gib + $kv_gib}")"
+  total_gib="$(awk "BEGIN{printf \"%.1f\", $rss_gib + $kv_gib + $GRAPH_GIB}")"
   ok="$(awk "BEGIN{print ($total_gib<=$LIMIT_GIB)?\"YES\":\"NO\"}")"
-  warn="$(awk "BEGIN{print ($total_gib> $USABLE_GIB && $total_gib<=$LIMIT_GIB)?\" (>88 usable, will page)\":\"\"}")"
-  printf '  %-9s %s weights_RSS=%-7s KV=%-7s total≈%-7s GiB  fits_96=%s%s\n' \
-    "$ctx" "$label" "$rss_gib" "${kv_gib}GiB" "$total_gib" "$ok" "$warn"
+  warn="$(awk "BEGIN{print ($total_gib> $USABLE_GIB && $total_gib<=$LIMIT_GIB)?\" (>${USABLE_GIB} usable, will page)\":\"\"}")"
+  printf '  %-9s %s weights_RSS=%-7s context=%-7s graph=%-6s total≈%-7s GiB  fits_96=%s%s\n' \
+    "$ctx" "$label" "$rss_gib" "${kv_gib}GiB" "${GRAPH_GIB}GiB" "$total_gib" "$ok" "$warn"
   awk "BEGIN{exit !($total_gib<=$LIMIT_GIB)}"
 }
 
@@ -79,7 +80,7 @@ echo "    model: $Q2"
 for ctx in $CTXS; do
   run_one "$ctx" 1 || fail=1          # disk-KV: the real default path (gated)
 done
-# no-disk control at the largest ctx, to show disk-KV is the enabler
+# no-disk control at the largest ctx, to confirm disk KV does not reduce resident memory
 last=""; for c in $CTXS; do last="$c"; done
 echo "  --- control (no disk KV) ---"
 run_one "$last" 0 || true

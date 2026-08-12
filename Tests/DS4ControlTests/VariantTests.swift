@@ -59,10 +59,10 @@ final class VariantTests: XCTestCase {
     }
     func testFlashQuantFitAndDefault() {
         XCTAssertEqual(defaultFlashQuant(ramGiB: 512), .q2q4)  // requested default fits
-        XCTAssertEqual(defaultFlashQuant(ramGiB: 96), .q2)  // 91 + 8 > 96 → fall back to q2
+        XCTAssertEqual(defaultFlashQuant(ramGiB: 96), .q2)  // 96 GiB tier deliberately defaults to q2
         XCTAssertTrue(flashQuantFits(.q4, ramGiB: 512))
-        XCTAssertFalse(flashQuantFits(.q4, ramGiB: 128))  // 153 + 8 > 128
-        XCTAssertFalse(flashQuantFits(.q4, ramGiB: 161.2))  // exact weights are ~153.33 GiB
-        XCTAssertTrue(flashQuantFits(.q4, ramGiB: 161.4))
+        XCTAssertFalse(flashQuantFits(.q4, ramGiB: 128))  // 153 + 4 > 128
+        XCTAssertFalse(flashQuantFits(.q4, ramGiB: 157.2))  // exact weights are ~153.33 GiB
+        XCTAssertTrue(flashQuantFits(.q4, ramGiB: 157.4))
     }
 }

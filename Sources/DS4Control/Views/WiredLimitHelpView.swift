@@ -14,7 +14,7 @@ struct WiredLimitHelpView: View {
     private var advisoryMB: Int { max(wiredLimitAdvisoryMB(ramGiB: ramGiB), requiredMB) }
     private var advisoryNote: String {
         if advisoryMB == wiredLimitAdvisoryMB(ramGiB: ramGiB) {
-            return "\(advisoryMB) MB leaves ~8 GiB for macOS."
+            return "\(advisoryMB) MB leaves ~\(Int(osReserveGiB)) GiB for macOS."
         }
         return
             "\(advisoryMB) MB is the minimum for this setup; reduce context or concurrent sessions if macOS needs more headroom."
@@ -108,7 +108,7 @@ struct WiredLimitHelpView: View {
     @ViewBuilder private var wiredLimitInstructions: some View {
         Text(
             "macOS only lets the GPU wire a limited share of unified memory. ds4 wires the whole model "
-                + "(weights + every resident session's context) for the GPU, so if that working set exceeds the limit, macOS pages it "
+                + "(weights + every resident session's context + graph allocations, with one prefill workspace shared across sessions) for the GPU, so if that working set exceeds the limit, macOS pages it "
                 + "and the server hangs while memory pegs near 100%. DS4 Control blocks Start until the limit "
                 + "is high enough — raise it once and you're set."
         )
