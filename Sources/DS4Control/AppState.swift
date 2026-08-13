@@ -88,7 +88,8 @@ final class AppState: ObservableObject {
         launchAtLogin = SMAppService.mainApp.status == .enabled  // OS is the source of truth
         legacyWeightsPromptDismissed = d.bool(forKey: "legacyWeightsPromptDismissed0731")  // default false
         let stored = d.string(forKey: "selectedVariant").flatMap(Variant.init(rawValue:))
-        selectedVariant = stored ?? (ramGiB >= 512 ? .pro : .flash)  // default Pro on ≥512 GiB
+        let variant = stored ?? (ramGiB >= 512 ? .pro : .flash)  // default Pro on ≥512 GiB
+        selectedVariant = variant
         let storedQuant = d.string(forKey: "selectedFlashQuant").flatMap(FlashQuant.init(rawValue:))
         let flashQuant = storedQuant ?? defaultFlashQuant(ramGiB: ramGiB)  // default q2-q4-imatrix
         selectedFlashQuant = flashQuant
@@ -96,7 +97,7 @@ final class AppState: ObservableObject {
         if let storedGB = d.object(forKey: "ssdStreamingCacheGB") as? Int {
             ssdStreamingCacheGB = storedGB
         } else {
-            ssdStreamingCacheGB = Quant.for(selectedVariant, flashQuant: flashQuant).defaultStreamingCacheGB
+            ssdStreamingCacheGB = Quant.for(variant, flashQuant: flashQuant).defaultStreamingCacheGB
         }
     }
 

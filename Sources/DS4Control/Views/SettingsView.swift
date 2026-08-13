@@ -183,7 +183,6 @@ struct SettingsView: View {
             }
 
             Section {
-            Section {
                 Toggle("Stream expert weights from SSD", isOn: $app.ssdStreaming)
                 if app.ssdStreaming {
                     LabeledContent {
