@@ -77,7 +77,9 @@ struct SettingsView: View {
     private var streamingCaption: String {
         let q = Quant.for(app.selectedVariant, flashQuant: app.selectedFlashQuant)
         let gb = app.ssdStreamingCacheGB
-        let freed = Int(q.routedExpertGiB - Double(gb))  // truncates: 82.69 − 67 → ~15 GiB
+        // Truncates (82.69 − 67 → ~15 GiB); clamps at 0 so a saved budget larger than
+        // the current quant's experts (e.g. after switching quant) never shows negative.
+        let freed = max(0, Int(q.routedExpertGiB - Double(gb)))
         return
             "Expert cache \(gb) GiB — frees ~\(freed) GiB of RAM from model weights. "
             + "Decode can be slower when the SSD must refill the cache."
