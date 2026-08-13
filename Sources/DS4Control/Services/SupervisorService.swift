@@ -122,8 +122,11 @@ final class SupervisorService: ObservableObject {
         }
         return ggufBaseOverride ?? ds4Dir.appendingPathComponent("gguf")
     }
+    private func ggufURL(for model: Model) -> URL {
+        ggufBaseDir().appendingPathComponent(model.ggufFilename)
+    }
     private func ggufURL(for variant: Variant, flashQuant: FlashQuant) -> URL {
-        ggufBaseDir().appendingPathComponent(Quant.for(variant, flashQuant: flashQuant).ggufFilename)
+        ggufURL(for: Model.from(variant: variant, flashQuant: flashQuant))
     }
     private func validateDs4Dir() -> ServerError? {
         for f in ["ds4-server", "download_model.sh"] {
@@ -162,30 +165,52 @@ final class SupervisorService: ObservableObject {
         ssdStreaming: Bool = false,
         ssdStreamingCacheGB: Int = 0
     ) {
+        start(
+            model: Model.from(variant: variant, flashQuant: flashQuant), ctx: ctx, host: host,
+            port: port, power: power, sessions: sessions, kvDiskDir: kvDiskDir,
+            overrideWiredLimitGate: overrideWiredLimitGate,
+            ssdStreaming: ssdStreaming, ssdStreamingCacheGB: ssdStreamingCacheGB)
+    }
+
+    func start(
+        model: Model,
+        ctx: Int,
+        host: String,
+        port: Int,
+        power: Int?,
+        sessions: Int = 1,
+        kvDiskDir: URL? = nil,
+        overrideWiredLimitGate: Bool = false,
+        ssdStreaming: Bool = false,
+        ssdStreamingCacheGB: Int = 0
+    ) {
         guard state == .idle || isErrorState else { emitBadState("start"); return }
         if let e = validateDs4Dir() { state = .error(e); return }
-        if let reason = launchBoundsError(variant: variant, ctx: ctx, sessions: sessions) {
-            state = .error(.configurationBlocked(reason: reason))
-            return
+        if let v = model.variant, let f = model.flashQuant {
+            if let reason = launchBoundsError(variant: v, ctx: ctx, sessions: sessions) {
+                state = .error(.configurationBlocked(reason: reason))
+                return
+            }
+            // Defense-in-depth for the popup gate (DS4F): refuse configs whose GPU-wired
+            // working set exceeds the effective Metal wired limit. The confirmed
+            // "Start anyway" path passes the override. Laguna has no variant, so it is
+            // gated only by its RAM floor in feasibility(model:).
+            switch wiredLimitGate(v, f, ctx, sessions) {
+            case let .blocked(reason):
+                state = .error(.configurationBlocked(reason: reason))
+                return
+            case let .wiredLimitTooLow(required, advisory) where !overrideWiredLimitGate:
+                state = .error(.wiredLimitTooLow(requiredMB: required, advisoryMB: advisory))
+                return
+            case .standard, .wiredLimitTooLow:
+                break
+            }
         }
-        // Defense-in-depth for the popup gate: refuse configs whose GPU-wired working set
-        // exceeds the effective Metal wired limit (starting anyway pages the model and
-        // hangs the machine). The UI's confirmed "Start anyway" passes the override.
-        switch wiredLimitGate(variant, flashQuant, ctx, sessions, ssdStreaming ? ssdStreamingCacheGB : 0) {
-        case let .blocked(reason):
-            state = .error(.configurationBlocked(reason: reason))
-            return
-        case let .wiredLimitTooLow(required, advisory) where !overrideWiredLimitGate:
-            state = .error(.wiredLimitTooLow(requiredMB: required, advisoryMB: advisory))
-            return
-        case .standard, .wiredLimitTooLow:
-            break
-        }
-        let gguf = ggufURL(for: variant, flashQuant: flashQuant)
+        let gguf = ggufURL(for: model)
         guard FileManager.default.fileExists(atPath: gguf.path) else {
             state = .error(.modelMissing(filename: gguf.lastPathComponent)); return
         }
-        self.port = port; self.ctx = ctx; self.activeModel = variant.modelId
+        self.port = port; self.ctx = ctx; self.activeModel = model.modelId
         stderrTail = []; expectingExit = false; serverAttached = false
         var args = [
             "-m", gguf.path,
@@ -194,14 +219,18 @@ final class SupervisorService: ObservableObject {
             "--port", "\(port)",
             "--metal",
         ]
-        if ssdStreaming {
-            // SSD-backed expert streaming: only `ssdStreamingCacheGB` of routed experts
-            // stay resident; the rest load from the GGUF on cache miss. 0 omits the
-            // budget so ds4 picks its automatic cache.
+        if model.supportsSSDStreaming && ssdStreaming {
+            // SSD-backed expert streaming (DS4F only). ds4 hard-refuses this flag for
+            // Laguna S 2.1, so it is never passed for that model.
             args += ["--ssd-streaming"]
             if ssdStreamingCacheGB > 0 {
                 args += ["--ssd-streaming-cache-experts", "\(ssdStreamingCacheGB)GB"]
             }
+        }
+        if let chunk = model.defaultPrefillChunk {
+            // Bounds the graph scratch on 64 GB-class machines (measured: ~1.5 GiB at
+            // 4096 vs ~5.9 GiB at Laguna's default 16384).
+            args += ["--prefill-chunk", "\(chunk)"]
         }
         if let power { args += ["--power", "\(power)"] }
         // >1 preallocates N resident KV sessions so that many chats/agents generate at once.
@@ -319,29 +348,52 @@ final class SupervisorService: ObservableObject {
         ssdStreaming: Bool = false,
         ssdStreamingCacheGB: Int = 0
     ) -> RestartResult {
+        restart(
+            model: Model.from(variant: variant, flashQuant: flashQuant), ctx: ctx, host: host,
+            port: port, power: power, sessions: sessions, kvDiskDir: kvDiskDir,
+            overrideWiredLimitGate: overrideWiredLimitGate,
+            ssdStreaming: ssdStreaming, ssdStreamingCacheGB: ssdStreamingCacheGB)
+    }
+
+    @discardableResult
+    func restart(
+        model: Model,
+        ctx: Int,
+        host: String,
+        port: Int,
+        power: Int?,
+        sessions: Int = 1,
+        kvDiskDir: URL? = nil,
+        overrideWiredLimitGate: Bool = false,
+        ssdStreaming: Bool = false,
+        ssdStreamingCacheGB: Int = 0
+    ) -> RestartResult {
         guard state == .ready || state == .starting else {
             emitBadState("restart")
             return .ignored
         }
-        if let reason = launchBoundsError(variant: variant, ctx: ctx, sessions: sessions) {
-            recentLog.append("ignored 'restart': \(reason)")
-            return .rejected(.blocked(reason: reason))
-        }
-        let feasibility = wiredLimitGate(variant, flashQuant, ctx, sessions, ssdStreaming ? ssdStreamingCacheGB : 0)
-        switch feasibility {
-        case let .blocked(reason):
-            recentLog.append("ignored 'restart': \(reason)")
-            return .rejected(feasibility)
-        case .wiredLimitTooLow where !overrideWiredLimitGate:
-            recentLog.append("ignored 'restart': Metal wired limit below the new config's working set")
-            return .rejected(feasibility)
-        case .standard, .wiredLimitTooLow:
-            break
+        if let v = model.variant, let f = model.flashQuant {
+            if let reason = launchBoundsError(variant: v, ctx: ctx, sessions: sessions) {
+                recentLog.append("ignored 'restart': \(reason)")
+                return .rejected(.blocked(reason: reason))
+            }
+            // Gate BEFORE stopping: a refused restart keeps the healthy running server.
+            let feasibility = wiredLimitGate(v, f, ctx, sessions, ssdStreaming ? ssdStreamingCacheGB : 0)
+            switch feasibility {
+            case let .blocked(reason):
+                recentLog.append("ignored 'restart': \(reason)")
+                return .rejected(feasibility)
+            case .wiredLimitTooLow where !overrideWiredLimitGate:
+                recentLog.append("ignored 'restart': Metal wired limit below the new config's working set")
+                return .rejected(feasibility)
+            case .standard, .wiredLimitTooLow:
+                break
+            }
         }
         let relaunch: () -> Void = { [weak self] in
             guard let self else { return }
             self.start(
-                variant: variant, flashQuant: flashQuant, ctx: ctx, host: host, port: port, power: power,
+                model: model, ctx: ctx, host: host, port: port, power: power,
                 sessions: sessions, kvDiskDir: kvDiskDir, overrideWiredLimitGate: overrideWiredLimitGate,
                 ssdStreaming: ssdStreaming, ssdStreamingCacheGB: ssdStreamingCacheGB)
         }
@@ -349,15 +401,12 @@ final class SupervisorService: ObservableObject {
         if state == .idle {
             relaunch()  // stopped synchronously (the runner exited inline)
         } else {
-            pendingRestart = relaunch  // deferred until stop drains (handleExit, or the attached-pid poll)
+            pendingRestart = relaunch  // deferred until stop drains
         }
         return .accepted
     }
 
-    /// On launch, if a ds4-server is already serving on `port` (orphaned from a prior
-    /// session, model still loaded), attach to it as `.ready` instead of spawning a
-    /// new one — avoids a port conflict and a second multi-hundred-GB load.
-    func resumeRunningServerIfAny(port: Int) {
+  func resumeRunningServerIfAny(port: Int) {
         guard state == .idle else { return }
         adoptHealthyServerIfPresent(port: port)
     }

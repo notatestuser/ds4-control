@@ -13,6 +13,36 @@ enum Model: String, CaseIterable, Identifiable, Codable {
 
     var id: String { rawValue }
 
+    /// Map a legacy (variant, flashQuant) pair to a `Model` (used by the transitional
+    /// start/restart wrappers and cleanup; removed once the unified picker lands).
+    static func from(variant: Variant, flashQuant: FlashQuant) -> Model {
+        if variant == .pro { return .v4Pro }
+        switch flashQuant {
+        case .q2: return .v4FlashQ2
+        case .q4: return .v4FlashQ4
+        default: return .v4FlashQ2Q4
+        }
+    }
+
+    /// The DS4F variant this model maps to (nil for Laguna). Used to route the
+    /// DS4F-only Metal wired-limit gate in the supervisor launch path.
+    var variant: Variant? {
+        switch self {
+        case .v4Pro: return .pro
+        case .v4FlashQ2, .v4FlashQ2Q4, .v4FlashQ4: return .flash
+        case .lagunaS21: return nil
+        }
+    }
+    /// The DS4F Flash quant this model maps to (nil for Pro/Laguna).
+    var flashQuant: FlashQuant? {
+        switch quant {
+        case .q4Imatrix: return .q4
+        case .q2Imatrix: return .q2
+        case .q2q4Imatrix: return .q2q4
+        default: return nil
+        }
+    }
+
     /// The DS4F quant this model maps to (nil for Laguna — it has no DS4F quant).
     var quant: Quant? {
         switch self {

@@ -324,6 +324,39 @@ final class SupervisorStateMachineTests: XCTestCase {
         XCTAssertEqual(
             r.lastArgs[r.lastArgs.firstIndex(of: "--ssd-streaming-cache-experts")! + 1], "67GB")
     }
+    func testLagunaLaunchPassesPrefillChunkAndNeverSsdStreaming() throws {
+        let dir = URL(fileURLWithPath: NSTemporaryDirectory()).appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(
+            at: dir.appendingPathComponent("gguf"), withIntermediateDirectories: true)
+        for f in ["ds4-server", "download_model.sh"] {
+            let u = dir.appendingPathComponent(f);
+            FileManager.default.createFile(atPath: u.path, contents: Data("#!/bin/sh
+".utf8))
+            try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: u.path)
+        }
+        let gg = dir.appendingPathComponent("gguf").appendingPathComponent(Model.lagunaS21.ggufFilename)
+        FileManager.default.createFile(atPath: gg.path, contents: Data("gguf".utf8))
+        let r = FakeRunner()
+        let s = SupervisorService(ds4Dir: dir, runner: r)
+        // The global SSD-streaming setting is ON — it must be inert for Laguna.
+        s.start(
+            model: .lagunaS21, ctx: 50_000, host: "127.0.0.1", port: 8000, power: nil,
+            ssdStreaming: true, ssdStreamingCacheGB: 67)
+        XCTAssertTrue(r.lastArgs.contains("--prefill-chunk"))
+        XCTAssertEqual(r.lastArgs[r.lastArgs.firstIndex(of: "--prefill-chunk")! + 1], "4096")
+        XCTAssertFalse(r.lastArgs.contains("--ssd-streaming"))
+        XCTAssertFalse(r.lastArgs.contains("--ssd-streaming-cache-experts"))
+        XCTAssertTrue(r.lastArgs.contains { $0.contains("laguna-s-2.1-RoutedQ2_K-Last27Q3_K.gguf") })
+    }
+    func testDs4fLaunchStillPassesSsdStreamingWhenEnabled() throws {
+        let r = FakeRunner(); let s = try makeSupervisor(r)
+        s.start(
+            model: .v4FlashQ2Q4, ctx: 250_000, host: "127.0.0.1", port: 8000, power: nil,
+            ssdStreaming: true, ssdStreamingCacheGB: 67)
+        XCTAssertTrue(r.lastArgs.contains("--ssd-streaming"))
+        XCTAssertFalse(r.lastArgs.contains("--prefill-chunk"))
+    }
+
     func testDownloadUsesSelectedQuantFile() throws {
         let dir = URL(fileURLWithPath: NSTemporaryDirectory()).appendingPathComponent(UUID().uuidString)
         try FileManager.default.createDirectory(
