@@ -44,7 +44,9 @@ struct SettingsView: View {
 
     private var thinkingHint: String {
         if !supportsMaxThink(ramGiB: ram) {
-            return "Max Think requires at least 128 GiB unified memory. Coding agents set their own level; this only affects the built-in chat."
+            return
+                "Max Think requires at least 128 GiB unified memory. "
+                + "Coding agents set their own level; this only affects the built-in chat."
         }
         return
             "Max Think needs a context of at least 393,216 — you'll be asked to raise it. "
