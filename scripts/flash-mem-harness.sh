@@ -1,11 +1,12 @@
 #!/bin/sh
 # flash-mem-harness.sh — measure V4 Flash (q2) resident memory across context sizes to verify
 # it fits a 96 GiB machine. Spins up the REAL ds4-server (loads the ~81 GB model) at each ctx,
-# warms the weights, sends one short prompt, and samples peak RSS + peak physical footprint.
+# warms the weights, sends one short prompt, and records peak RSS + Metal allocations.
 #
-# ds4 exposes no memory metric, so resident memory is measured externally (ps / vmmap). The
-# on-disk KV cache checkpoints resident tensors rather than replacing them, so we test it and
-# (at the largest ctx) a no-disk control to verify that the memory requirement is unchanged.
+# Resident weights are measured externally with ps; context and Metal allocation telemetry
+# come from ds4-server. The on-disk KV cache checkpoints resident tensors rather than replacing
+# them, so we test it and (at the largest ctx) a no-disk control to verify that the memory
+# requirement is unchanged.
 #
 # Usage: scripts/flash-mem-harness.sh ["ctx1 ctx2 …"]   (default: 131072 256000 1000000)
 # Exit non-zero if a run exceeds 96 GiB or disk KV reduces the measured resident allocation.
@@ -18,7 +19,6 @@ Q2="$GGUF_DIR/DeepSeek-V4-Flash-IQ2XXS-w2Q2K-AProjQ8-SExpQ8-OutQ8-chat-v2-imatri
 PORT=8137
 LIMIT_GIB=96          # hard machine ceiling
 USABLE_GIB=92         # 96 − 4 GiB OS reserve (practical limit)
-GRAPH_GIB=4.22        # pinned ds4 Flash graph allocation beyond its public context estimate
 KVDISK="/tmp/ds4-memharness-kv"
 CTXS="${1:-131072 256000 1000000}"
 
@@ -27,18 +27,22 @@ CTXS="${1:-131072 256000 1000000}"
 
 fail=0
 
-# run_one <ctx> <disk:0|1>  -> prints a result row; returns non-zero if peak RSS > 96 GiB
+# run_one <ctx> <disk:0|1>  -> prints a result row; returns non-zero if total > 96 GiB
 run_one() {
   ctx="$1"; disk="$2"
   total_raw=""
   log="$(mktemp)"
   if [ "$disk" = 1 ]; then
     rm -rf "$KVDISK"; mkdir -p "$KVDISK"; label="disk-kv "
-    ( cd "$DS4" && exec ./ds4-server -m "$Q2" --ctx "$ctx" --host 127.0.0.1 --port "$PORT" \
+    ( cd "$DS4" && unset DS4_METAL_MEMORY_REPORT DS4_METAL_DISABLE_STREAMING_EXPERT_TIMING_SUMMARY && \
+      export DS4_METAL_STREAMING_EXPERT_TIMING_SUMMARY=1 && \
+      exec ./ds4-server -m "$Q2" --ctx "$ctx" --host 127.0.0.1 --port "$PORT" \
         --metal --warm-weights --kv-disk-dir "$KVDISK" --kv-disk-space-mb 16384 ) >"$log" 2>&1 &
   else
     label="no-disk "
-    ( cd "$DS4" && exec ./ds4-server -m "$Q2" --ctx "$ctx" --host 127.0.0.1 --port "$PORT" \
+    ( cd "$DS4" && unset DS4_METAL_MEMORY_REPORT DS4_METAL_DISABLE_STREAMING_EXPERT_TIMING_SUMMARY && \
+      export DS4_METAL_STREAMING_EXPERT_TIMING_SUMMARY=1 && \
+      exec ./ds4-server -m "$Q2" --ctx "$ctx" --host 127.0.0.1 --port "$PORT" \
         --metal --warm-weights ) >"$log" 2>&1 &
   fi
   pid=$!   # exec in the subshell => $! is ds4-server itself
@@ -67,29 +71,35 @@ run_one() {
     [ -n "$rss" ] && [ "$rss" -gt "$peak_rss" ] 2>/dev/null && peak_rss="$rss"
     n=$((n + 1)); sleep 0.5
   done
-  kill "$pid" 2>/dev/null; wait "$pid" 2>/dev/null; rm -f "$log"; sleep 2   # free the port
+  # Graceful shutdown emits ds4's Metal cleanup report. Its tensor peak captures the graph and
+  # resident context allocations; its scratch total captures the backend buffers actually
+  # allocated by this run. Both are required so a telemetry change cannot produce a false pass.
+  kill "$pid" 2>/dev/null; wait "$pid" 2>/dev/null
+  metal_tensors_mib="$(awk '$1 == "ds4:" && $2 == "runtime" && $3 == "tensors" && $7 == "peak" && $9 == "MiB" { value=$8 } END { print value }' "$log")"
+  metal_scratch_mib="$(awk '$1 == "ds4:" && $2 == "scratch" && $4 == "MiB" { value=$3 } END { print value }' "$log")"
+  metal_indexer_mib="$(awk '$1 == "ds4:" && $2 == "scratch" { for (i=1; i<NF; i++) if ($i == "indexer") { value=$(i+1); sub(/,$/, "", value) } } END { print value }' "$log")"
+  if [ -z "$metal_tensors_mib" ] || [ -z "$metal_scratch_mib" ] || [ -z "$metal_indexer_mib" ] || \
+      ! awk -v tensors="$metal_tensors_mib" -v scratch="$metal_scratch_mib" -v indexer="$metal_indexer_mib" \
+        'BEGIN { number="^[0-9]+([.][0-9]+)?$"; exit !(tensors ~ number && scratch ~ number && indexer ~ number) }'; then
+    echo "ctx=$ctx $label: Metal tensor or scratch allocation telemetry missing"
+    tail -8 "$log"; rm -f "$log"; sleep 2
+    return 1
+  fi
+  rm -f "$log"; sleep 2   # free the port
 
-  # A short prompt does not grow ds4's persistent indexer top-k buffer to its context-bound
-  # peak. Include the same conservative bound as Feasibility: two UInt32 banks over the
-  # largest final full/partial 4096-token prefill chunk.
-  indexer_gib="$(awk -v ctx="$ctx" 'BEGIN {
-    cap=(ctx<4096)?ctx:4096; partial=ctx%cap; last_full=ctx-partial
-    full=(last_full>0 && int(last_full/4)>512)?2*int(last_full/4)*cap*4:0
-    tail=(partial>0 && int(ctx/4)>512)?2*int(ctx/4)*partial*4:0
-    printf "%.9f", ((full>tail)?full:tail)/1024/1024/1024
-  }')"
-
-  # Total resident = mmap'd weights (RSS) + GPU-wired context allocation + the shared graph
-  # workspace + persistent Metal backend scratch. Metal allocations are not in RSS, so the
-  # values are additive.
+  # Total resident = mmap'd weights (RSS) + measured peak Metal tensor allocation + measured
+  # Metal scratch. Metal allocations are not in RSS, so these values are additive.
   rss_gib="$(awk "BEGIN{printf \"%.1f\", $peak_rss/1024/1024}")"
   kv_gib="$(awk "BEGIN{printf \"%.1f\", $kvest/1024}")"
-  total_raw="$(awk "BEGIN{printf \"%.9f\", $peak_rss/1024/1024 + $kvest/1024 + $GRAPH_GIB + $indexer_gib}")"
+  metal_tensors_gib="$(awk "BEGIN{printf \"%.9f\", $metal_tensors_mib/1024}")"
+  metal_scratch_gib="$(awk "BEGIN{printf \"%.9f\", $metal_scratch_mib/1024}")"
+  metal_indexer_gib="$(awk "BEGIN{printf \"%.9f\", $metal_indexer_mib/1024}")"
+  total_raw="$(awk "BEGIN{printf \"%.9f\", $peak_rss/1024/1024 + $metal_tensors_mib/1024 + $metal_scratch_mib/1024}")"
   total_gib="$(awk "BEGIN{printf \"%.1f\", $total_raw}")"
   ok="$(awk "BEGIN{print ($total_raw<=$LIMIT_GIB)?\"YES\":\"NO\"}")"
   warn="$(awk "BEGIN{print ($total_raw> $USABLE_GIB && $total_raw<=$LIMIT_GIB)?\" (>${USABLE_GIB} usable, will page)\":\"\"}")"
-  printf '  %-9s %s weights_RSS=%-7s context=%-7s graph=%-6s indexer=%-7s total≈%-7s GiB  fits_96=%s%s\n' \
-    "$ctx" "$label" "$rss_gib" "${kv_gib}GiB" "${GRAPH_GIB}GiB" "${indexer_gib}GiB" "$total_gib" "$ok" "$warn"
+  printf '  %-9s %s weights_RSS=%-7s context=%-7s metal_tensors=%-7s scratch=%-7s indexer=%-7s total≈%-7s GiB  fits_96=%s%s\n' \
+    "$ctx" "$label" "$rss_gib" "${kv_gib}GiB" "${metal_tensors_gib}GiB" "${metal_scratch_gib}GiB" "${metal_indexer_gib}GiB" "$total_gib" "$ok" "$warn"
   awk "BEGIN{exit !($total_raw<=$LIMIT_GIB)}"
 }
 
