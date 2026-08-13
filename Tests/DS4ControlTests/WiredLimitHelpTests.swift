@@ -4,6 +4,11 @@ import XCTest
 @testable import DS4Control
 
 final class WiredLimitHelpTests: XCTestCase {
+    func testOverflowRequirementUsesUnboundedDisplaySentinel() {
+        XCTAssertNil(boundedWiredRequirementMB(Int.max))
+        XCTAssertEqual(boundedWiredRequirementMB(94_208), 94_208)
+    }
+
     func testPersistenceScriptReplacesSettingAndNormalizesFinalNewline() throws {
         let advisoryMB = 94_208
         let cases = [

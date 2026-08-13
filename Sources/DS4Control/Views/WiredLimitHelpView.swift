@@ -8,6 +8,10 @@ func wiredLimitPersistenceCommand(advisoryMB: Int) -> String {
     "sudo sh -c '\(wiredLimitPersistenceScript(advisoryMB: advisoryMB))' sh /etc/sysctl.conf"
 }
 
+func boundedWiredRequirementMB(_ requiredMB: Int) -> Int? {
+    requiredMB == Int.max ? nil : requiredMB
+}
+
 /// Walkthrough window for the Metal wired memory limit: why the gate fired, the exact
 /// sysctl to fix it, and how to make it survive reboots (the sysctl resets on every
 /// restart — the classic "it worked before, now it hangs" trap). Opened from the popup's
@@ -19,7 +23,9 @@ struct WiredLimitHelpView: View {
     /// Measured content height — the window opens tall enough to show everything at once.
     @State private var contentHeight: CGFloat = 0
 
-    private var advisoryMB: Int { max(wiredLimitAdvisoryMB(ramGiB: ramGiB), requiredMB) }
+    private var advisoryMB: Int {
+        max(wiredLimitAdvisoryMB(ramGiB: ramGiB), requiredMB ?? 0)
+    }
     private var advisoryNote: String {
         if advisoryMB == wiredLimitAdvisoryMB(ramGiB: ramGiB) {
             return "\(advisoryMB) MB leaves ~\(Int(osReserveGiB)) GiB for macOS."
@@ -32,10 +38,16 @@ struct WiredLimitHelpView: View {
         wiredLimitPersistenceCommand(advisoryMB: advisoryMB)
     }
 
-    private var requiredMB: Int {
-        requiredWiredMB(
-            variant: app.selectedVariant, flashQuant: app.selectedFlashQuant,
-            ctx: app.effectiveCtx(ramGiB: ramGiB), sessions: app.concurrentSessions)
+    private var requiredMB: Int? {
+        boundedWiredRequirementMB(
+            requiredWiredMB(
+                variant: app.selectedVariant, flashQuant: app.selectedFlashQuant,
+                ctx: app.effectiveCtx(ramGiB: ramGiB), sessions: app.concurrentSessions))
+    }
+
+    private var requiredMemoryLabel: String {
+        guard let requiredMB else { return "more than any Mac provides" }
+        return "~\(roundedUpGiB(fromMB: requiredMB)) GiB"
     }
 
     private var blockedReason: String? {
@@ -105,7 +117,7 @@ struct WiredLimitHelpView: View {
                         + (emulatedWiredLimitMB() != nil
                             ? " (emulated)"
                             : (currentWiredLimitMB() > 0 ? " (raised via sysctl)" : " (macOS default)")))
-                row("This setup needs", "~\(roundedUpGiB(fromMB: requiredMB)) GiB")
+                row("This setup needs", requiredMemoryLabel)
             }
             .font(.callout).frame(maxWidth: .infinity, alignment: .leading)
             .padding(10)

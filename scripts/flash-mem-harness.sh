@@ -62,8 +62,8 @@ run_one() {
   fi
 
   # exercise the model briefly, sampling peak RSS (KB) throughout
-  curl -s "http://127.0.0.1:$PORT/v1/chat/completions" -H 'Content-Type: application/json' \
-    -d '{"model":"deepseek-v4-flash","messages":[{"role":"user","content":"Say hi in one word."}],"max_tokens":16,"thinking":{"type":"disabled"}}' >/dev/null 2>&1 &
+  curl -fsS "http://127.0.0.1:$PORT/v1/chat/completions" -H 'Content-Type: application/json' \
+    -d '{"model":"deepseek-v4-flash","messages":[{"role":"user","content":"Say hi in one word."}],"max_tokens":16,"thinking":{"type":"disabled"}}' >/dev/null 2>>"$log" &
   cpid=$!
   peak_rss=0; n=0
   while kill -0 "$cpid" 2>/dev/null || [ "$n" -lt 6 ]; do   # at least ~3 s of samples
@@ -71,6 +71,12 @@ run_one() {
     [ -n "$rss" ] && [ "$rss" -gt "$peak_rss" ] 2>/dev/null && peak_rss="$rss"
     n=$((n + 1)); sleep 0.5
   done
+  if ! wait "$cpid"; then
+    echo "ctx=$ctx $label: inference request failed"
+    kill "$pid" 2>/dev/null; wait "$pid" 2>/dev/null
+    tail -8 "$log"; rm -f "$log"; sleep 2
+    return 1
+  fi
   # Graceful shutdown emits ds4's Metal cleanup report. Its tensor peak captures the graph and
   # resident context allocations; its scratch total captures the backend buffers actually
   # allocated by this run. Both are required so a telemetry change cannot produce a false pass.
