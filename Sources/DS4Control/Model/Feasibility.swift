@@ -491,6 +491,17 @@ func feasibility(
 /// weights) targets 64 GB-class machines: ≥96 GiB is comfortable; 64–95 GiB fits
 /// only with the Metal wired limit raised (default ~0.67×RAM ≈ 43 GiB < weights);
 /// below 64 GiB the weights + 8 GiB OS reserve don't fit.
+/// Config-specific feasibility for the unified picker: DS4F routes through the full
+/// Metal wired-limit gate; Laguna (no Metal shape yet) is gated by its RAM floor.
+func feasibility(ramGiB: Double, model: Model, ctx: Int, wiredLimitMB: Int, sessions: Int = 1) -> Feasibility {
+    if let v = model.variant, let f = model.flashQuant {
+        return feasibility(
+            ramGiB: ramGiB, variant: v, flashQuant: f, ctx: ctx,
+            wiredLimitMB: wiredLimitMB, sessions: sessions)
+    }
+    return feasibility(ramGiB: ramGiB, model: model)
+}
+
 /// RAM-tier feasibility for the model picker: which models can run on this machine at
 /// all. The config-specific Metal wired-limit gate lives in `feasibility(variant:…ctx:wiredLimitMB:sessions:)`
 /// and is applied at Start time by the supervisor (and by the popup's Start-anyway flow).

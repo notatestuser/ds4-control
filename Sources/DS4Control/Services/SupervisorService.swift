@@ -563,12 +563,15 @@ final class SupervisorService: ObservableObject {
     /// stuck/stalled or errored progress bar. The native downloader cancels through the cancelled
     /// task; `download` re-resumes from the on-disk bitmap.
     func retryDownload(variant: Variant, flashQuant: FlashQuant, highPerformance: Bool = false) {
+        retryDownload(model: Model.from(variant: variant, flashQuant: flashQuant), highPerformance: highPerformance)
+    }
+    func retryDownload(model: Model, highPerformance: Bool = false) {
         downloadTask?.cancel()
         downloadTask = nil
         lastDownloadSample = nil
         download = nil
         state = .idle
-        download(variant: variant, flashQuant: flashQuant, highPerformance: highPerformance)
+        download(model: model, highPerformance: highPerformance)
     }
 
     /// Cancel an in-progress download and return to idle without restarting. Bumping the generation
@@ -598,17 +601,20 @@ final class SupervisorService: ObservableObject {
     /// so this is just a normal `download()`. `highPerformance` (the persisted setting) is threaded
     /// through so the resumed download uses the user's chosen worker count.
     func resumeInFlightDownloadIfAny(variant: Variant, flashQuant: FlashQuant, highPerformance: Bool = false) {
+        resumeInFlightDownloadIfAny(
+            model: Model.from(variant: variant, flashQuant: flashQuant), highPerformance: highPerformance)
+    }
+    func resumeInFlightDownloadIfAny(model: Model, highPerformance: Bool = false) {
         guard state == .idle else { return }
         let base = ggufBaseDir()
-        let q = Quant.for(variant, flashQuant: flashQuant)
         // Already fully downloaded → nothing to resume.
-        if FileManager.default.fileExists(atPath: base.appendingPathComponent(q.ggufFilename).path) { return }
+        if FileManager.default.fileExists(atPath: base.appendingPathComponent(model.ggufFilename).path) { return }
         // Resume when the bitmap sidecar records durable bytes (parallel partial), or a legacy
         // contiguous `.part`/hf `.incomplete` has bytes on disk.
-        let resumable = resumableBytes(ggufDir: base, filename: q.ggufFilename) > 0
-        let legacy = downloadedBytes(ggufDir: base, filename: q.ggufFilename) > 0
+        let resumable = resumableBytes(ggufDir: base, filename: model.ggufFilename) > 0
+        let legacy = downloadedBytes(ggufDir: base, filename: model.ggufFilename) > 0
         guard resumable || legacy else { return }
-        download(variant: variant, flashQuant: flashQuant, highPerformance: highPerformance)
+        download(model: model, highPerformance: highPerformance)
     }
 
     /// True when the model's gguf exists on disk.

@@ -62,7 +62,7 @@ struct DS4ControlApp: App {
             metrics.start()
             supervisor.resumeRunningServerIfAny(port: app.port)
             supervisor.resumeInFlightDownloadIfAny(
-                variant: app.selectedVariant, flashQuant: app.selectedFlashQuant,
+                model: app.selectedModel,
                 highPerformance: app.highPerformanceDownload)
         }
     }

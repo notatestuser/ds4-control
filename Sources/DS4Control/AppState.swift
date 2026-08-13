@@ -49,27 +49,6 @@ final class AppState: ObservableObject {
     @Published var selectedModel: Model {
         didSet { d.set(selectedModel.rawValue, forKey: "selectedModel") }
     }
-    /// Compatibility shims over `selectedModel` (removed once the unified picker lands).
-    var selectedVariant: Variant {
-        get { selectedModel == .v4Pro ? .pro : .flash }
-        set { selectedModel = newValue == .pro ? .v4Pro : .v4FlashQ2Q4 }
-    }
-    var selectedFlashQuant: FlashQuant {
-        get {
-            switch selectedModel.quant {
-            case .q4Imatrix: return .q4
-            case .q2Imatrix: return .q2
-            default: return .q2q4
-            }
-        }
-        set {
-            switch newValue {
-            case .q2: selectedModel = .v4FlashQ2
-            case .q4: selectedModel = .v4FlashQ4
-            case .q2q4: selectedModel = selectedModel == .v4Pro ? .v4Pro : .v4FlashQ2Q4
-            }
-        }
-    }
 
     init(defaults: UserDefaults = .standard, ramGiB: Double = systemRamGiB()) {
         self.d = defaults
@@ -118,7 +97,7 @@ final class AppState: ObservableObject {
     /// First-launch model selection: the legacy selectedVariant/selectedFlashQuant keys
     /// migrate into `selectedModel`; otherwise tier by RAM (Pro ≥512, Flash q2-q4 ≥128,
     /// Flash q2 96–127, Laguna below — the only feasible model on 64 GB-class machines).
-    static func migrateLegacySelection(defaults d: UserDefaults, ramGiB: Double) -> Model {
+    nonisolated static func migrateLegacySelection(defaults d: UserDefaults, ramGiB: Double) -> Model {
         if let v = d.string(forKey: "selectedVariant").flatMap(Variant.init(rawValue:)),
             let f = d.string(forKey: "selectedFlashQuant").flatMap(FlashQuant.init(rawValue:))
         {
@@ -134,9 +113,8 @@ final class AppState: ObservableObject {
 
     func effectiveCtx(ramGiB: Double) -> Int {
         ctxOverride > 0
-            ? min(ctxOverride, selectedVariant.ctxCeiling)
-            : defaultCtx(ramGiB: ramGiB, variant: selectedVariant, flashQuant: selectedFlashQuant)
-    }
+            ? min(ctxOverride, selectedModel.ctxCeiling)
+            : defaultCtx(ramGiB: ramGiB, model: selectedModel)    }
 
     /// Set the chat's thinking level. Max is unavailable below 128 GiB and otherwise needs
     /// context ≥ 393,216. Rejections leave the current mode unchanged.

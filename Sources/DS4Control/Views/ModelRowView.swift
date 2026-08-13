@@ -6,19 +6,26 @@ struct ModelRowView: View {
     @Environment(\.openWindow) private var openWindow
     let ramGiB: Double
 
-    private var variants: [Variant] { ramGiB >= 512 ? [.pro, .flash] : [.flash] }
+    /// Models that can run on this machine (feasibility not blocked). On 64 GB-class
+    /// machines that is just Laguna S 2.1; on this machine, the DS4F variants too.
+    private var runnableModels: [Model] {
+        Model.allCases.filter {
+            if case .blocked = feasibility(ramGiB: ramGiB, model: $0) { return false }
+            return true
+        }
+    }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
-            Picker("", selection: Binding(get: { app.selectedVariant }, set: { app.selectedVariant = $0 })) {
-                ForEach(variants) { Text($0.displayName).tag($0) }
+            Picker("", selection: $app.selectedModel) {
+                ForEach(runnableModels) { Text($0.label).tag($0) }
             }
-            .pickerStyle(.segmented)
+            .pickerStyle(.menu)
             .labelsHidden()
             .disabled(supervisor.state == .downloading)  // don't switch model mid-download
 
             let feas = feasibility(
-                ramGiB: ramGiB, variant: app.selectedVariant, flashQuant: app.selectedFlashQuant,
+                ramGiB: ramGiB, model: app.selectedModel,
                 ctx: app.effectiveCtx(ramGiB: ramGiB),
                 wiredLimitMB: effectiveWiredLimitMB(ramGiB: ramGiB),
                 sessions: app.concurrentSessions,
@@ -29,7 +36,7 @@ struct ModelRowView: View {
     }
 
     @ViewBuilder private func actionButton(_ feas: Feasibility) -> some View {
-        let downloaded = supervisor.isDownloaded(app.selectedVariant, flashQuant: app.selectedFlashQuant)
+        let downloaded = supervisor.isDownloaded(app.selectedModel)
         let blocked: Bool = {
             if case .blocked = feas { return true }
             return false
@@ -48,7 +55,7 @@ struct ModelRowView: View {
             HStack {
                 Button("Retry download") {
                     supervisor.retryDownload(
-                        variant: app.selectedVariant, flashQuant: app.selectedFlashQuant,
+                        model: app.selectedModel,
                         highPerformance: app.highPerformanceDownload)
                 }
                 .tint(.orange).frame(maxWidth: .infinity).disabled(blocked)
@@ -61,16 +68,16 @@ struct ModelRowView: View {
                     wiredLow ? confirmStartAnyway() : startServer(overrideWiredLimitGate: false)
                 } else {
                     supervisor.retryDownload(
-                        variant: app.selectedVariant, flashQuant: app.selectedFlashQuant,
+                        model: app.selectedModel,
                         highPerformance: app.highPerformanceDownload)
                 }
             }
             .tint(.orange).frame(maxWidth: .infinity).disabled(blocked)
         default:
             if !downloaded {
-                Button("Download \(app.selectedVariant.displayName)") {
+                Button("Download \(app.selectedModel.displayName)") {
                     supervisor.download(
-                        variant: app.selectedVariant, flashQuant: app.selectedFlashQuant,
+                        model: app.selectedModel,
                         highPerformance: app.highPerformanceDownload)
                 }
                 .frame(maxWidth: .infinity).disabled(blocked)
@@ -87,7 +94,7 @@ struct ModelRowView: View {
     private func startServer(overrideWiredLimitGate: Bool) {
         let host = app.normalizeHostForLaunch()
         supervisor.start(
-            variant: app.selectedVariant, flashQuant: app.selectedFlashQuant,
+            model: app.selectedModel,
             ctx: app.effectiveCtx(ramGiB: ramGiB),
             host: host, port: app.port, power: app.power,
             sessions: app.concurrentSessions,

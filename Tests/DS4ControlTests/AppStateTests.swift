@@ -6,11 +6,11 @@ final class AppStateTests: XCTestCase {
     func testEffectiveCtxFallsBackToDefault() {
         let d = UserDefaults(suiteName: "test.\(UUID().uuidString)")!
         let app = AppState(defaults: d)
-        app.selectedVariant = .flash
+        app.selectedModel = .v4FlashQ2
         app.ctxOverride = 0
         XCTAssertEqual(
             app.effectiveCtx(ramGiB: 128),
-            defaultCtx(ramGiB: 128, variant: .flash, flashQuant: app.selectedFlashQuant))
+            defaultCtx(ramGiB: 128, model: app.selectedModel))
         app.ctxOverride = 50_000
         XCTAssertEqual(app.effectiveCtx(ramGiB: 128), 50_000)
         app.ctxOverride = Int.max
@@ -125,14 +125,6 @@ final class AppStateTests: XCTestCase {
         let app = AppState(defaults: d)
         XCTAssertEqual(app.selectedModel, .v4FlashQ2)  // mapped from the legacy pair
     }
-    func testSelectedModelShimsRoundTrip() {
-        let app = AppState(defaults: UserDefaults(suiteName: "test.\(UUID().uuidString)")!)
-        app.selectedVariant = .pro
-        XCTAssertEqual(app.selectedModel, .v4Pro)
-        app.selectedFlashQuant = .q2
-        XCTAssertEqual(app.selectedModel, .v4FlashQ2)
-    }
-
     func testThinkingModeGateAndCtxBump() {
         let lowMemoryApp = AppState(
             defaults: UserDefaults(suiteName: "test.\(UUID().uuidString)")!, ramGiB: 96)
@@ -175,9 +167,8 @@ final class AppStateTests: XCTestCase {
     func testSsdStreamingCacheGBDefaultsToFree15BudgetAndPersists() {
         let name = "test.\(UUID().uuidString)"
         let a1 = AppState(defaults: UserDefaults(suiteName: name)!)
-        XCTAssertEqual(
-            a1.ssdStreamingCacheGB,
-            Quant.for(a1.selectedVariant, flashQuant: a1.selectedFlashQuant).defaultStreamingCacheGB)
+        // The fresh-install budget is the ~15 GiB-free value for the default DS4F quant.
+        XCTAssertEqual(a1.ssdStreamingCacheGB, Quant.q2q4Imatrix.defaultStreamingCacheGB)
         a1.ssdStreamingCacheGB = 80
         let a2 = AppState(defaults: UserDefaults(suiteName: name)!)
         XCTAssertEqual(a2.ssdStreamingCacheGB, 80)  // persisted, not re-defaulted
