@@ -32,10 +32,10 @@ final class ModelTests: XCTestCase {
             "laguna-s-2.1-RoutedQ2_K-Last27Q3_K.gguf")
         XCTAssertNil(Model.lagunaS21.routedExpertGiB)  // SSD streaming N/A
     }
-    func testCtxCeilingAndPrefill() {
+    func testCtxCeilingAndPowerCap() {
         XCTAssertEqual(Model.lagunaS21.ctxCeiling, 262_144)  // GGUF laguna.context_length
         XCTAssertEqual(Model.v4FlashQ2Q4.ctxCeiling, 1_000_000)
-        XCTAssertEqual(Model.lagunaS21.defaultPrefillChunk, 4096)
-        XCTAssertNil(Model.v4FlashQ2Q4.defaultPrefillChunk)
+        XCTAssertFalse(Model.lagunaS21.supportsPowerCap)  // ds4 standard-graph-only gate
+        XCTAssertTrue(Model.v4FlashQ2Q4.supportsPowerCap)
     }
 }

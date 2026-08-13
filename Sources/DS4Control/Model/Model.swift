@@ -102,6 +102,8 @@ enum Model: String, CaseIterable, Identifiable, Codable {
     var supportsSSDStreaming: Bool { quant != nil }
     /// v1: thinking-mode picker is DS4F-only (Laguna uses native interleaved reasoning).
     var supportsThinkingModes: Bool { quant != nil }
+    /// ds4 gates Laguna to the "standard local graph path only" — no `--power` cap.
+    var supportsPowerCap: Bool { quant != nil }
 
     var downloadRepo: String {
         switch self {
@@ -113,8 +115,4 @@ enum Model: String, CaseIterable, Identifiable, Codable {
     var ggufFilename: String {
         quant?.ggufFilename ?? "laguna-s-2.1-RoutedQ2_K-Last27Q3_K.gguf"
     }
-
-    /// Family launch tweak: Laguna bounds graph scratch on 64 GB-class machines
-    /// (measured: prefill 16384 → ~5.9 GiB scratch; 4096 → ~1.5 GiB).
-    var defaultPrefillChunk: Int? { self == .lagunaS21 ? 4096 : nil }
 }

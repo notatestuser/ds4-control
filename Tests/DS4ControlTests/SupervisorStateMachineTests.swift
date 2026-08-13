@@ -338,22 +338,25 @@ final class SupervisorStateMachineTests: XCTestCase {
         FileManager.default.createFile(atPath: gg.path, contents: Data("gguf".utf8))
         let r = FakeRunner()
         let s = SupervisorService(ds4Dir: dir, runner: r)
-        // The global SSD-streaming setting is ON — it must be inert for Laguna.
+        // ds4 gates Laguna to the standard local graph path: no SSD streaming, no power
+        // cap, no custom prefill chunk — any of them makes the server refuse to start.
         s.start(
-            model: .lagunaS21, ctx: 50_000, host: "127.0.0.1", port: 8000, power: nil,
+            model: .lagunaS21, ctx: 50_000, host: "127.0.0.1", port: 8000, power: 80,
             ssdStreaming: true, ssdStreamingCacheGB: 67)
-        XCTAssertTrue(r.lastArgs.contains("--prefill-chunk"))
-        XCTAssertEqual(r.lastArgs[r.lastArgs.firstIndex(of: "--prefill-chunk")! + 1], "4096")
         XCTAssertFalse(r.lastArgs.contains("--ssd-streaming"))
         XCTAssertFalse(r.lastArgs.contains("--ssd-streaming-cache-experts"))
+        XCTAssertFalse(r.lastArgs.contains("--power"))
+        XCTAssertFalse(r.lastArgs.contains("--prefill-chunk"))
         XCTAssertTrue(r.lastArgs.contains { $0.contains("laguna-s-2.1-RoutedQ2_K-Last27Q3_K.gguf") })
     }
     func testDs4fLaunchStillPassesSsdStreamingWhenEnabled() throws {
         let r = FakeRunner(); let s = try makeSupervisor(r)
         s.start(
-            model: .v4FlashQ2Q4, ctx: 250_000, host: "127.0.0.1", port: 8000, power: nil,
+            model: .v4FlashQ2Q4, ctx: 250_000, host: "127.0.0.1", port: 8000, power: 80,
             ssdStreaming: true, ssdStreamingCacheGB: 67)
         XCTAssertTrue(r.lastArgs.contains("--ssd-streaming"))
+        XCTAssertTrue(r.lastArgs.contains("--power"))
+        XCTAssertEqual(r.lastArgs[r.lastArgs.firstIndex(of: "--power")! + 1], "80")
         XCTAssertFalse(r.lastArgs.contains("--prefill-chunk"))
     }
     func testLagunaDownloadUsesLagunaFile() throws {

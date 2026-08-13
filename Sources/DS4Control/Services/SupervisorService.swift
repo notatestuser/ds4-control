@@ -228,12 +228,7 @@ final class SupervisorService: ObservableObject {
                 args += ["--ssd-streaming-cache-experts", "\(ssdStreamingCacheGB)GB"]
             }
         }
-        if let chunk = model.defaultPrefillChunk {
-            // Bounds the graph scratch on 64 GB-class machines (measured: ~1.5 GiB at
-            // 4096 vs ~5.9 GiB at Laguna's default 16384).
-            args += ["--prefill-chunk", "\(chunk)"]
-        }
-        if let power { args += ["--power", "\(power)"] }
+        if let power, model.supportsPowerCap { args += ["--power", "\(power)"] }
         // >1 preallocates N resident KV sessions so that many chats/agents generate at once.
         // 1 must omit the flag: ds4 treats even `--batched-session 1` as batched mode (MTP off).
         if sessions > 1 { args += ["--batched-session", "\(sessions)"] }
