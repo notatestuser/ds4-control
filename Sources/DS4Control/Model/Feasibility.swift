@@ -425,7 +425,7 @@ func defaultCtx(ramGiB: Double, model: Model) -> Int {
     case .lagunaS21: return 50_000
     case .v4Pro: return model.ctxCeiling
     case .v4FlashQ2, .v4FlashQ2Q4, .v4FlashQ4:
-        return ramGiB >= 128 ? model.ctxCeiling : thinkMaxMinCtx
+        return ramGiB >= 128 ? model.ctxCeiling : 256_000  // matches #15's 256K tier
     }
 }
 
@@ -521,7 +521,8 @@ func feasibility(ramGiB: Double, model: Model) -> Feasibility {
     case .lagunaS21:
         guard ramGiB >= 64 else {
             return .blocked(
-                reason: "Laguna S 2.1 needs ≥ 64 GiB unified memory — its ~45 GiB weights plus the OS reserve don't fit below that."
+                reason:
+                    "Laguna S 2.1 needs ≥ 64 GiB unified memory — its ~45 GiB weights plus the OS reserve don't fit below that."
             )
         }
         return .standard

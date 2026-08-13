@@ -17,7 +17,7 @@ struct ThinkingModePicker: View {
                 ForEach(availableModes) { mode in
                     Text(mode.label).tag(mode)
                 }
-            }            }
+            }
             .pickerStyle(.segmented)
         }
     }

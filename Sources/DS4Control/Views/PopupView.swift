@@ -142,7 +142,8 @@ struct PopupView: View {
                             contextWindow: supervisor.ctx,
                             allowMaxThink: app.selectedModel.supportsThinkingModes
                                 && supportsMaxThink(ramGiB: ram)
-                                && thinkMax(ctx: supervisor.ctx))                    } else {
+                                && thinkMax(ctx: supervisor.ctx))
+                    } else {
                         showStartHint = true
                     }
                 } label: {

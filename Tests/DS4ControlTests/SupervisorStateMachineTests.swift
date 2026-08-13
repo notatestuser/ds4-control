@@ -330,8 +330,7 @@ final class SupervisorStateMachineTests: XCTestCase {
             at: dir.appendingPathComponent("gguf"), withIntermediateDirectories: true)
         for f in ["ds4-server", "download_model.sh"] {
             let u = dir.appendingPathComponent(f);
-            FileManager.default.createFile(atPath: u.path, contents: Data("#!/bin/sh
-".utf8))
+            FileManager.default.createFile(atPath: u.path, contents: Data("#!/bin/sh\n".utf8))
             try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: u.path)
         }
         let gg = dir.appendingPathComponent("gguf").appendingPathComponent(Model.lagunaS21.ggufFilename)
@@ -365,8 +364,7 @@ final class SupervisorStateMachineTests: XCTestCase {
             at: dir.appendingPathComponent("gguf"), withIntermediateDirectories: true)
         for f in ["ds4-server", "download_model.sh"] {
             let u = dir.appendingPathComponent(f)
-            FileManager.default.createFile(atPath: u.path, contents: Data("#!/bin/sh
-".utf8))
+            FileManager.default.createFile(atPath: u.path, contents: Data("#!/bin/sh\n".utf8))
             try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: u.path)
         }
         let s = SupervisorService(
@@ -383,8 +381,7 @@ final class SupervisorStateMachineTests: XCTestCase {
             at: dir.appendingPathComponent("gguf"), withIntermediateDirectories: true)
         for f in ["ds4-server", "download_model.sh"] {
             let u = dir.appendingPathComponent(f)
-            FileManager.default.createFile(atPath: u.path, contents: Data("#!/bin/sh
-".utf8))
+            FileManager.default.createFile(atPath: u.path, contents: Data("#!/bin/sh\n".utf8))
             try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: u.path)
         }
         let ggufDir = dir.appendingPathComponent("gguf")

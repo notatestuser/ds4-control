@@ -95,7 +95,8 @@ struct SettingsView: View {
     private var ctxText: Binding<String> {
         Binding(
             get: {
-                String(app.effectiveCtx(ramGiB: ram))            },
+                String(app.effectiveCtx(ramGiB: ram))
+            },
             set: {
                 let digits = $0.filter(\.isNumber)
                 guard !digits.isEmpty else { app.ctxOverride = 0; return }
@@ -300,7 +301,7 @@ struct SettingsView: View {
     private func restart(overrideWiredLimitGate: Bool = false) {
         let host = app.normalizeHostForLaunch()
         let result = supervisor.restart(
-            model: app.selectedModel,            ctx: app.effectiveCtx(ramGiB: ram),
+            model: app.selectedModel, ctx: app.effectiveCtx(ramGiB: ram),
             host: host, port: app.port, power: app.power,
             sessions: app.concurrentSessions,
             kvDiskDir: app.kvDiskCache ? supervisor.kvDiskCacheURL : nil,
