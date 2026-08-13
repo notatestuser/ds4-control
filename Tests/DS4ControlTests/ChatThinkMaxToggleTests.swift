@@ -42,5 +42,16 @@ final class ChatThinkMaxToggleTests: XCTestCase {
         XCTAssertTrue(settings.contains("if !supportsMaxThink(ramGiB: ram)"))
         XCTAssertTrue(settings.contains("Max Think requires at least 128 GiB unified memory."))
         XCTAssertTrue(settings.contains("Max Think is unavailable below 128 GiB unified memory."))
+    func testModelRowStartThreadsSsdStreamingSetting() throws {
+        let modelRow = try source("Sources/DS4Control/Views/ModelRowView.swift")
+        // Both Start paths route through startServer(_:), which carries the setting.
+        XCTAssertTrue(modelRow.contains("ssdStreaming: app.ssdStreaming, ssdStreamingCacheGB: app.ssdStreamingCacheGB"))
+    }
+    func testRestartCallSitesThreadSsdStreamingSetting() throws {
+        let thinking = try source("Sources/DS4Control/Views/ThinkingModeControls.swift")
+        let settings = try source("Sources/DS4Control/Views/SettingsView.swift")
+        let pattern = "ssdStreaming: app.ssdStreaming, ssdStreamingCacheGB: app.ssdStreamingCacheGB"
+        XCTAssertTrue(thinking.contains(pattern))
+        XCTAssertTrue(settings.contains(pattern))
     }
 }

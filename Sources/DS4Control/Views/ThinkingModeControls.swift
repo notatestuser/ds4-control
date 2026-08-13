@@ -132,7 +132,8 @@ enum ThinkingModePrompt {
             host: app.normalizeHostForLaunch(), port: app.port, power: app.power,
             sessions: app.concurrentSessions,
             kvDiskDir: app.kvDiskCache ? supervisor.kvDiskCacheURL : nil,
-            overrideWiredLimitGate: overrideWiredLimitGate)
+            overrideWiredLimitGate: overrideWiredLimitGate,
+            ssdStreaming: app.ssdStreaming, ssdStreamingCacheGB: app.ssdStreamingCacheGB)
         if result == .accepted { app.applyMaxThinkCtxBump(ramGiB: ramGiB) }
         return result
     }
