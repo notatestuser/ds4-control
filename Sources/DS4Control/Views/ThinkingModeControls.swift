@@ -10,12 +10,16 @@ struct ThinkingModePicker: View {
     private let ram = systemRamGiB()
 
     var body: some View {
-        Picker("Thinking:", selection: binding) {
-            ForEach(availableModes) { mode in
-                Text(mode.label).tag(mode)
-            }
+        // Thinking tiers (Instant/Standard/Max Think) are DS4F semantics. Laguna S 2.1
+        // uses its own native interleaved reasoning — no picker, ds4's default stands.
+        if app.selectedModel.supportsThinkingModes {
+            Picker("Thinking:", selection: binding) {
+                ForEach(availableModes) { mode in
+                    Text(mode.label).tag(mode)
+                }
+            }            }
+            .pickerStyle(.segmented)
         }
-        .pickerStyle(.segmented)
     }
 
     private var serverRunning: Bool { supervisor.state == .ready || supervisor.state == .starting }

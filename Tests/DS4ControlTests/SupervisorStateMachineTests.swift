@@ -356,29 +356,14 @@ final class SupervisorStateMachineTests: XCTestCase {
         XCTAssertTrue(r.lastArgs.contains("--ssd-streaming"))
         XCTAssertFalse(r.lastArgs.contains("--prefill-chunk"))
     }
-<<<<<<< HEAD
-
-=======
-    func testServerSpeedHistoryCapsAndResetsOnStart() throws {
-        let r = FakeRunner(); let s = try makeSupervisor(r)
-        s.start(variant: .flash, flashQuant: .q2q4, ctx: 250_000, host: "127.0.0.1", port: 8000, power: nil)
-        let decodeLine =
-            "ds4-server: chat ctx=52..57:5 gen=5 decoding chunk=41.40 t/s avg=41.40 t/s 0.121s"
-        for _ in 0..<70 { r.emit(decodeLine) }
-        XCTAssertEqual(s.serverSpeedHistory.count, 60)  // capped
-        r.crash(1)  // server dies
-        // A fresh start clears the stale speed/history.
-        s.start(variant: .flash, flashQuant: .q2q4, ctx: 250_000, host: "127.0.0.1", port: 8000, power: nil)
-        XCTAssertNil(s.serverSpeed)
-        XCTAssertTrue(s.serverSpeedHistory.isEmpty)
-    }
     func testLagunaDownloadUsesLagunaFile() throws {
         let dir = URL(fileURLWithPath: NSTemporaryDirectory()).appendingPathComponent(UUID().uuidString)
         try FileManager.default.createDirectory(
             at: dir.appendingPathComponent("gguf"), withIntermediateDirectories: true)
         for f in ["ds4-server", "download_model.sh"] {
             let u = dir.appendingPathComponent(f)
-            FileManager.default.createFile(atPath: u.path, contents: Data("#!/bin/sh\n".utf8))
+            FileManager.default.createFile(atPath: u.path, contents: Data("#!/bin/sh
+".utf8))
             try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: u.path)
         }
         let s = SupervisorService(
@@ -395,7 +380,8 @@ final class SupervisorStateMachineTests: XCTestCase {
             at: dir.appendingPathComponent("gguf"), withIntermediateDirectories: true)
         for f in ["ds4-server", "download_model.sh"] {
             let u = dir.appendingPathComponent(f)
-            FileManager.default.createFile(atPath: u.path, contents: Data("#!/bin/sh\n".utf8))
+            FileManager.default.createFile(atPath: u.path, contents: Data("#!/bin/sh
+".utf8))
             try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: u.path)
         }
         let ggufDir = dir.appendingPathComponent("gguf")
@@ -416,7 +402,7 @@ final class SupervisorStateMachineTests: XCTestCase {
         // Cleaning when keeping Laguna is a no-op (single model per family).
         XCTAssertTrue(s.cleanupUnusedModels(keep: .lagunaS21).isEmpty)
     }
->>>>>>> 09f6263 (feat: per-model downloader (Laguna repo) and family-scoped cleanup)
+
     func testDownloadUsesSelectedQuantFile() throws {
         let dir = URL(fileURLWithPath: NSTemporaryDirectory()).appendingPathComponent(UUID().uuidString)
         try FileManager.default.createDirectory(

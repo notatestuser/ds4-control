@@ -4,14 +4,20 @@ import XCTest
 
 final class AgentLauncherTests: XCTestCase {
     func testModelIdPrefersRunningModel() {
-        XCTAssertEqual(AgentLauncher.modelId(for: "deepseek-v4-pro", fallback: .flash), "deepseek-v4-pro")
-        XCTAssertEqual(AgentLauncher.modelId(for: "deepseek-v4-flash", fallback: .pro), "deepseek-v4-flash")
+        XCTAssertEqual(AgentLauncher.modelId(for: "deepseek-v4-pro", fallback: .v4FlashQ2Q4), "deepseek-v4-pro")
+        XCTAssertEqual(AgentLauncher.modelId(for: "deepseek-v4-flash", fallback: .v4Pro), "deepseek-v4-flash")
+        XCTAssertEqual(AgentLauncher.modelId(for: "laguna-s-2.1", fallback: .v4Pro), "laguna-s-2.1")
     }
 
     func testModelIdFallsBackWhenNilOrUnknown() {
-        XCTAssertEqual(AgentLauncher.modelId(for: nil, fallback: .pro), "deepseek-v4-pro")
+        XCTAssertEqual(AgentLauncher.modelId(for: nil, fallback: .v4Pro), "deepseek-v4-pro")
         // Orphan-attach case: activeModel is a server display name, not a known model id.
-        XCTAssertEqual(AgentLauncher.modelId(for: "ds4-server", fallback: .flash), "deepseek-v4-flash")
+        XCTAssertEqual(AgentLauncher.modelId(for: "ds4-server", fallback: .v4FlashQ2Q4), "deepseek-v4-flash")
+        XCTAssertEqual(AgentLauncher.modelId(for: nil, fallback: .lagunaS21), "laguna-s-2.1")
+    }
+
+    func testKnownModelIdsIncludesLaguna() {
+        XCTAssertTrue(AgentLauncher.knownModelIds.contains("laguna-s-2.1"))
     }
 
     func testPiModelsJSONValidAndPointsAtLocalServer() throws {
@@ -22,6 +28,7 @@ final class AgentLauncherTests: XCTestCase {
         XCTAssertTrue(s.contains("openai-completions"))
         XCTAssertTrue(s.contains("deepseek-v4-pro"))
         XCTAssertTrue(s.contains("deepseek-v4-flash"))
+        XCTAssertTrue(s.contains("\"id\": \"laguna-s-2.1\""))
         XCTAssertTrue(s.contains("thinkingLevelMap"))
         XCTAssertTrue(s.contains("\"xhigh\": \"max\""))  // Max mode (pi xhigh) → ds4 reasoning_effort "max"
     }

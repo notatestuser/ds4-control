@@ -6,12 +6,12 @@ import Foundation
 /// (`PI_CODING_AGENT_DIR`). Port and context window are baked in at click time.
 enum AgentLauncher {
     /// Model ids ds4-server exposes; used to prefer the server's reported model.
-    static let knownModelIds = ["deepseek-v4-pro", "deepseek-v4-flash"]
+    static let knownModelIds = ["deepseek-v4-pro", "deepseek-v4-flash", "laguna-s-2.1"]
 
     /// The running model id (e.g. "deepseek-v4-flash"). Prefers the server's reported
-    /// `activeModel` when it is a known id; otherwise the selected variant's id (covers the
+    /// `activeModel` when it is a known id; otherwise the selected model's id (covers the
     /// orphan-attach case where `activeModel` is a server display name).
-    static func modelId(for activeModel: String?, fallback: Variant) -> String {
+    static func modelId(for activeModel: String?, fallback: Model) -> String {
         activeModel.flatMap { knownModelIds.contains($0) ? $0 : nil } ?? fallback.modelId
     }
 
@@ -62,6 +62,16 @@ enum AgentLauncher {
                       "input": ["text"],
                       "contextWindow": \(contextWindow),
                       "maxTokens": 393216,
+                      "cost": { "input": 0, "output": 0, "cacheRead": 0, "cacheWrite": 0 }
+                    },
+                    {
+                      "id": "laguna-s-2.1",
+                      "name": "Laguna S 2.1 (ds4.c local)",
+                      "reasoning": true,
+                      "thinkingLevelMap": \(levelMap),
+                      "input": ["text"],
+                      "contextWindow": \(contextWindow),
+                      "maxTokens": 262144,
                       "cost": { "input": 0, "output": 0, "cacheRead": 0, "cacheWrite": 0 }
                     }
                   ]

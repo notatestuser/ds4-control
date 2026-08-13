@@ -21,7 +21,7 @@ struct DS4ControlApp: App {
         let service = ChatService()
         _chat = StateObject(
             wrappedValue: ChatViewModel(
-                model: app.selectedVariant.modelId,
+                model: app.selectedModel.modelId,
                 port: { [weak supervisor] in supervisor?.port ?? app.port },
                 streamProvider: { port, model, messages in
                     service.stream(port: port, model: model, messages: messages, mode: app.thinkingMode)

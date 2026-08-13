@@ -65,4 +65,10 @@ final class ChatThinkMaxToggleTests: XCTestCase {
         // Caption shows the freed amount for the selected quant.
         XCTAssertTrue(settings.contains("frees ~"))
     }
+    func testThinkingPickerGatedForLaguna() throws {
+        let picker = try source("Sources/DS4Control/Views/ThinkingModeControls.swift")
+        XCTAssertTrue(picker.contains("supportsThinkingModes"))
+        XCTAssertTrue(picker.contains("selectedModel"))
+    }
+
 }
