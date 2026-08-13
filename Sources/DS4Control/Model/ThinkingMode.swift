@@ -18,5 +18,6 @@ enum ThinkingMode: String, CaseIterable, Identifiable, Codable {
 }
 
 /// Result of `AppState.requestThinkingMode`: the mode was applied, or the caller must
-/// first ask the user about bumping the context to 393,216 (`.max` below the floor).
-enum ThinkingModeGate { case applied, needsCtxBump }
+/// first ask the user about bumping the context to 393,216 (`.max` below the floor), or
+/// Max Think is unavailable on this machine tier.
+enum ThinkingModeGate { case applied, needsCtxBump, unavailable }

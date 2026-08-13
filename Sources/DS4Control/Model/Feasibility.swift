@@ -4,7 +4,7 @@ import Metal
 enum Feasibility: Equatable {
     case standard
     /// The launch config's GPU-wired working set (weights + resident context allocations
-    /// + shared graph workspace) exceeds the machine's effective Metal wired limit.
+    /// + shared graph/backend workspace) exceeds the machine's effective Metal wired limit.
     /// Starting anyway pages the model and hangs the machine, so Start is gated until
     /// the limit is raised (an explicit "Start anyway" override remains). `advisoryMB`
     /// is the sysctl value that makes this config fit.
@@ -72,8 +72,10 @@ func effectiveWiredLimitMB(ramGiB: Double) -> Int {
 
 /// Minimum context ds4 needs to engage Think Max (`DS4_THINK_MAX_MIN_CONTEXT`).
 let thinkMaxMinCtx = 393_216
+let thinkMaxMinRamGiB = 128.0
 
 func thinkMax(ctx: Int) -> Bool { ctx >= thinkMaxMinCtx }
+func supportsMaxThink(ramGiB: Double) -> Bool { ramGiB >= thinkMaxMinRamGiB }
 
 /// Headroom left for macOS and other processes — also the buffer the Metal
 /// wired-limit advisory leaves below total RAM.
@@ -81,11 +83,12 @@ let osReserveGiB = 4.0
 let maxConcurrentSessions = 16
 
 /// Suggested `iogpu.wired_limit_mb`: total RAM minus the OS reserve, so the GPU-wired
-/// working set (weights + resident context allocations + graph allocations) fits.
+/// working set (weights + resident context allocations + graph/backend allocations) fits.
 /// A percentage heuristic under-shoots the largest models. The 4 GiB reserve is
 /// intentional: the real-model harness measured Flash q2 weights at ~80.8 GiB and
-/// confirmed context memory is additive; pinned ds4 sizing puts its 393,216-token
-/// default at 93,546 MiB, below the 94,208 MiB ceiling on a 96 GiB Mac.
+/// confirmed context memory is additive; pinned ds4 sizing plus a conservative bound
+/// for its persistent indexer scratch puts the 256,000-token default at 93,382 MiB,
+/// below the 94,208 MiB ceiling on a 96 GiB Mac.
 func wiredLimitAdvisoryMB(ramGiB: Double) -> Int { Int((ramGiB - osReserveGiB) * 1024) }
 
 private let bytesPerMiB = 1024 * 1024
@@ -314,10 +317,41 @@ private func metalSessionGraphBytes(variant: Variant, ctx: Int) -> Int? {
     return checkedProduct([totalElements, 4])
 }
 
+/// Server-wide scratch retained by ds4's Metal indexer top-k implementation after a
+/// long prefill reaches the configured context frontier. The runtime allocation depends
+/// on the compute pipeline's threadgroup limit; two banks of `nComp * nTokens` UInt32s
+/// are an upper bound for every limit, so feasibility does not assume the best-case 1,024
+/// threads reported by recent Apple GPUs.
+private func metalIndexerTopKScratchBytes(variant: Variant, ctx: Int) -> Int? {
+    guard ctx >= 0, ctx <= variant.ctxCeiling else { return nil }
+    guard ctx > 0 else { return 0 }
+
+    let shape = metalShape(for: variant)
+    let prefillCap = metalPrefillCap(shape: shape, ctx: ctx)
+    guard prefillCap > 0 else { return nil }
+
+    func upperBound(endPosition: Int, tokens: Int) -> Int? {
+        let compressedRows = endPosition / 4
+        guard compressedRows > shape.indexerTopK else { return 0 }
+        return checkedProduct([2, compressedRows, tokens, MemoryLayout<UInt32>.size])
+    }
+
+    let partialTokens = ctx % prefillCap
+    let lastFullEnd = ctx - partialTokens
+    guard
+        let fullChunkBytes = lastFullEnd > 0
+            ? upperBound(endPosition: lastFullEnd, tokens: prefillCap) : 0,
+        let partialChunkBytes = partialTokens > 0
+            ? upperBound(endPosition: ctx, tokens: partialTokens) : 0
+    else { return nil }
+    return max(fullChunkBytes, partialChunkBytes)
+}
+
 /// The GPU-wired working set ds4 needs for this launch config (MB): exact resident
 /// GGUF bytes, ds4's Metal context and graph allocations for every resident session, and
-/// one prefill workspace shared across sessions. Context counts regardless of the disk KV
-/// cache: disk storage checkpoints resident tensors; it does not replace them.
+/// one prefill workspace plus persistent backend scratch shared across sessions. Context
+/// counts regardless of the disk KV cache: disk storage checkpoints resident tensors; it
+/// does not replace them.
 func requiredWiredMB(variant: Variant, flashQuant: FlashQuant, ctx: Int, sessions: Int = 1) -> Int {
     let quant = Quant.for(variant, flashQuant: flashQuant)
     guard
@@ -325,13 +359,16 @@ func requiredWiredMB(variant: Variant, flashQuant: FlashQuant, ctx: Int, session
         let sessionBytes = metalContextBytes(variant: variant, ctx: ctx),
         let sessionGraphBytes = metalSessionGraphBytes(variant: variant, ctx: ctx),
         let sharedGraphBytes = metalSharedGraphWorkspaceBytes(variant: variant, ctx: ctx),
+        let indexerScratchBytes = metalIndexerTopKScratchBytes(variant: variant, ctx: ctx),
         let perSessionBytes = checkedSum([sessionBytes, sessionGraphBytes])
     else { return Int.max }
     let (residentSessionBytes, sessionOverflow) = perSessionBytes.multipliedReportingOverflow(
         by: max(sessions, 1))
     guard
         !sessionOverflow,
-        let allocationBytes = checkedSum([residentSessionBytes, sharedGraphBytes]),
+        let allocationBytes = checkedSum([
+            residentSessionBytes, sharedGraphBytes, indexerScratchBytes,
+        ]),
         let allocationMB = roundedUpMiB(allocationBytes)
     else { return Int.max }
     let (requiredMB, totalOverflow) = weightsMB.addingReportingOverflow(allocationMB)
@@ -349,12 +386,12 @@ func launchBoundsError(variant: Variant, ctx: Int, sessions: Int) -> String? {
 }
 
 /// Default context, tiered by machine memory: V4 Pro and ≥128 GiB Flash (q2-q4 quant)
-/// run the full 1M window all-resident; 96–127 GiB Flash (q2) is capped at 393K
-/// ("Think-Max") because q2 at 1M exceeds a 96 GiB machine once all Metal allocations
-/// are included. `flashQuant` is accepted for API symmetry; the tier keys on RAM.
+/// run the full 1M window all-resident; 96–127 GiB Flash (q2) is capped at 256K so its
+/// complete Metal working set fits while preserving the macOS reserve. `flashQuant` is
+/// accepted for API symmetry; the tier keys on RAM.
 func defaultCtx(ramGiB: Double, variant: Variant, flashQuant: FlashQuant) -> Int {
     if variant == .pro { return variant.ctxCeiling }  // Pro: full 1M
-    return ramGiB >= 128 ? variant.ctxCeiling : 393_216  // Flash: 1M on ≥128 GiB, else 393K
+    return ramGiB >= 128 ? variant.ctxCeiling : 256_000  // Flash: 1M on ≥128 GiB, else 256K
 }
 
 /// Whether a Flash quant's default launch fits while preserving the OS reserve.
@@ -373,7 +410,7 @@ func defaultFlashQuant(ramGiB: Double) -> FlashQuant {
 
 /// Feasibility gate (spec §5.2). ds4 itself enforces no floor, so the app does. The RAM
 /// tiers block outright; the Metal wired-limit check then gates the launch config's
-/// exact weights-plus-context-plus-graph working set against the machine's effective
+/// exact weights-plus-context-plus-graph/backend working set against the machine's effective
 /// ceiling (`wiredLimitMB` — inject `effectiveWiredLimitMB(ramGiB:)` at the call site).
 func feasibility(
     ramGiB: Double, variant: Variant, flashQuant: FlashQuant,

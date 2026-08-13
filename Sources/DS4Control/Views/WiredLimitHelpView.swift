@@ -1,5 +1,13 @@
 import SwiftUI
 
+func wiredLimitPersistenceScript(advisoryMB: Int) -> String {
+    "touch \"$1\" && tmp=$(mktemp) && trap \"rm -f \\\"$tmp\\\"\" 0 && awk \"!/^[[:space:]]*iogpu[.]wired_limit_mb[[:space:]]*=/\" \"$1\" > \"$tmp\" && printf \"%s\\n\" \"iogpu.wired_limit_mb=\(advisoryMB)\" >> \"$tmp\" && cat \"$tmp\" > \"$1\""
+}
+
+func wiredLimitPersistenceCommand(advisoryMB: Int) -> String {
+    "sudo sh -c '\(wiredLimitPersistenceScript(advisoryMB: advisoryMB))' sh /etc/sysctl.conf"
+}
+
 /// Walkthrough window for the Metal wired memory limit: why the gate fired, the exact
 /// sysctl to fix it, and how to make it survive reboots (the sysctl resets on every
 /// restart — the classic "it worked before, now it hangs" trap). Opened from the popup's
@@ -21,7 +29,7 @@ struct WiredLimitHelpView: View {
     }
     private var sysctlCommand: String { "sudo sysctl iogpu.wired_limit_mb=\(advisoryMB)" }
     private var persistCommand: String {
-        "sudo sh -c \"touch /etc/sysctl.conf && sed -i '' '/^[[:space:]]*iogpu\\.wired_limit_mb[[:space:]]*=/d' /etc/sysctl.conf && echo 'iogpu.wired_limit_mb=\(advisoryMB)' >> /etc/sysctl.conf\""
+        wiredLimitPersistenceCommand(advisoryMB: advisoryMB)
     }
 
     private var requiredMB: Int {
@@ -108,7 +116,7 @@ struct WiredLimitHelpView: View {
     @ViewBuilder private var wiredLimitInstructions: some View {
         Text(
             "macOS only lets the GPU wire a limited share of unified memory. ds4 wires the whole model "
-                + "(weights + every resident session's context + graph allocations, with one prefill workspace shared across sessions) for the GPU, so if that working set exceeds the limit, macOS pages it "
+                + "(weights + every resident session's context + graph and persistent backend allocations shared across sessions) for the GPU, so if that working set exceeds the limit, macOS pages it "
                 + "and the server hangs while memory pegs near 100%. DS4 Control blocks Start until the limit "
                 + "is high enough — raise it once and you're set."
         )

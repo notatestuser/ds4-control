@@ -48,7 +48,7 @@ final class AppState: ObservableObject {
         didSet { d.set(selectedFlashQuant.rawValue, forKey: "selectedFlashQuant") }
     }
 
-    init(defaults: UserDefaults = .standard) {
+    init(defaults: UserDefaults = .standard, ramGiB: Double = systemRamGiB()) {
         self.d = defaults
         port = d.object(forKey: "port") as? Int ?? 8000
         host = d.string(forKey: "host") ?? Self.defaultHost
@@ -57,21 +57,28 @@ final class AppState: ObservableObject {
         let sessions = d.integer(forKey: "concurrentSessions")
         concurrentSessions = sessions >= 1 ? min(sessions, maxConcurrentSessions) : 1
         kvDiskCache = d.object(forKey: "kvDiskCache") as? Bool ?? true  // default on
+        let requestedThinkingMode: ThinkingMode
         if let storedMode = d.string(forKey: "thinkingMode").flatMap(ThinkingMode.init(rawValue:)) {
-            thinkingMode = storedMode
+            requestedThinkingMode = storedMode
         } else if d.object(forKey: "thinkMaxChat") != nil {
-            thinkingMode = d.bool(forKey: "thinkMaxChat") ? .max : .off  // legacy toggle migration
+            requestedThinkingMode = d.bool(forKey: "thinkMaxChat") ? .max : .off
         } else {
-            thinkingMode = .standard  // fresh-install default
+            requestedThinkingMode = .standard
+        }
+        let resolvedThinkingMode =
+            requestedThinkingMode == .max && !supportsMaxThink(ramGiB: ramGiB)
+            ? .standard : requestedThinkingMode
+        thinkingMode = resolvedThinkingMode
+        if resolvedThinkingMode != requestedThinkingMode {
+            d.set(resolvedThinkingMode.rawValue, forKey: "thinkingMode")
         }
         highPerformanceDownload = d.bool(forKey: "highPerformanceDownload")  // default off
         launchAtLogin = SMAppService.mainApp.status == .enabled  // OS is the source of truth
         legacyWeightsPromptDismissed = d.bool(forKey: "legacyWeightsPromptDismissed0731")  // default false
-        let ram = systemRamGiB()
         let stored = d.string(forKey: "selectedVariant").flatMap(Variant.init(rawValue:))
-        selectedVariant = stored ?? (ram >= 512 ? .pro : .flash)  // default Pro on ≥512 GiB
+        selectedVariant = stored ?? (ramGiB >= 512 ? .pro : .flash)  // default Pro on ≥512 GiB
         let storedQuant = d.string(forKey: "selectedFlashQuant").flatMap(FlashQuant.init(rawValue:))
-        selectedFlashQuant = storedQuant ?? defaultFlashQuant(ramGiB: ram)  // default q2-q4-imatrix
+        selectedFlashQuant = storedQuant ?? defaultFlashQuant(ramGiB: ramGiB)  // default q2-q4-imatrix
     }
 
     func effectiveCtx(ramGiB: Double) -> Int {
@@ -80,20 +87,26 @@ final class AppState: ObservableObject {
             : defaultCtx(ramGiB: ramGiB, variant: selectedVariant, flashQuant: selectedFlashQuant)
     }
 
-    /// Set the chat's thinking level. `.max` needs a context ≥ 393,216 (ds4's floor); below
-    /// it this returns `.needsCtxBump` WITHOUT changing the mode, so the caller can ask the
-    /// user about bumping the context first.
-    func requestThinkingMode(_ mode: ThinkingMode, currentCtx: Int) -> ThinkingModeGate {
+    /// Set the chat's thinking level. Max is unavailable below 128 GiB and otherwise needs
+    /// context ≥ 393,216. Rejections leave the current mode unchanged.
+    func requestThinkingMode(
+        _ mode: ThinkingMode, currentCtx: Int, ramGiB: Double = systemRamGiB()
+    ) -> ThinkingModeGate {
+        if mode == .max && !supportsMaxThink(ramGiB: ramGiB) { return .unavailable }
         if mode == .max && !thinkMax(ctx: currentCtx) { return .needsCtxBump }
         thinkingMode = mode
         return .applied
     }
 
     /// The user confirmed the context bump: pin the override to ds4's Max Think floor and
-    /// enable `.max`. (Restarting a running server is the caller's job.)
-    func applyMaxThinkCtxBump() {
+    /// enable `.max`. Returns false when the machine tier cannot safely offer Max Think.
+    /// Restarting a running server is the caller's job.
+    @discardableResult
+    func applyMaxThinkCtxBump(ramGiB: Double = systemRamGiB()) -> Bool {
+        guard supportsMaxThink(ramGiB: ramGiB) else { return false }
         ctxOverride = thinkMaxMinCtx
         thinkingMode = .max
+        return true
     }
 
     func normalizeHostForLaunch() -> String {

@@ -227,7 +227,7 @@ final class SupervisorStateMachineTests: XCTestCase {
         app.kvDiskCache = false
 
         XCTAssertEqual(
-            ThinkingModePrompt.restartWithMaxThink(app: app, supervisor: s),
+            ThinkingModePrompt.restartWithMaxThink(app: app, supervisor: s, ramGiB: 128),
             .rejected(rejection))
         XCTAssertEqual(app.ctxOverride, 100_000)
         XCTAssertEqual(app.thinkingMode, .standard)
@@ -236,12 +236,45 @@ final class SupervisorStateMachineTests: XCTestCase {
 
         XCTAssertEqual(
             ThinkingModePrompt.restartWithMaxThink(
-                app: app, supervisor: s, overrideWiredLimitGate: true),
+                app: app, supervisor: s, overrideWiredLimitGate: true, ramGiB: 128),
             .accepted)
         XCTAssertEqual(app.ctxOverride, thinkMaxMinCtx)
         XCTAssertEqual(app.thinkingMode, .max)
         XCTAssertEqual(s.state, .starting)
         XCTAssertTrue(r.lastArgs.contains(String(thinkMaxMinCtx)))
+    }
+    func testMaxThinkRestartIsUnavailableBelow128GiB() throws {
+        let r = FakeRunner()
+        var gateCalls = 0
+        let s = try makeSupervisor(
+            r,
+            wiredLimitGate: { _, _, _, _ in
+                gateCalls += 1
+                return .standard
+            })
+        s.start(
+            variant: .flash, flashQuant: .q2q4, ctx: 100_000,
+            host: "127.0.0.1", port: 8000, power: nil)
+        r.emit("ds4-server: listening on http://127.0.0.1:8000")
+        let callsAfterStart = gateCalls
+
+        let app = AppState(
+            defaults: UserDefaults(suiteName: "test.\(UUID().uuidString)")!, ramGiB: 96)
+        app.selectedVariant = .flash
+        app.selectedFlashQuant = .q2q4
+        app.ctxOverride = 100_000
+
+        let result = ThinkingModePrompt.restartWithMaxThink(
+            app: app, supervisor: s, overrideWiredLimitGate: true, ramGiB: 96)
+
+        guard case .rejected(.blocked) = result else {
+            return XCTFail("expected Max Think to be blocked below 128 GiB, got \(result)")
+        }
+        XCTAssertEqual(gateCalls, callsAfterStart)
+        XCTAssertEqual(app.ctxOverride, 100_000)
+        XCTAssertEqual(app.thinkingMode, .standard)
+        XCTAssertEqual(s.state, .ready)
+        XCTAssertEqual(s.ctx, 100_000)
     }
     func testMissingModel() throws {
         let dir = URL(fileURLWithPath: NSTemporaryDirectory()).appendingPathComponent(UUID().uuidString)

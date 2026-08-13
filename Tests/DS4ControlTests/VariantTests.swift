@@ -65,7 +65,7 @@ final class VariantTests: XCTestCase {
         XCTAssertTrue(flashQuantFits(.q2q4, ramGiB: 128))
         XCTAssertTrue(flashQuantFits(.q4, ramGiB: 512))
         XCTAssertFalse(flashQuantFits(.q4, ramGiB: 128))
-        XCTAssertFalse(flashQuantFits(.q4, ramGiB: 177))  // full default launch needs ~173.2 GiB
-        XCTAssertTrue(flashQuantFits(.q4, ramGiB: 178))
+        XCTAssertFalse(flashQuantFits(.q4, ramGiB: 184))
+        XCTAssertTrue(flashQuantFits(.q4, ramGiB: 185))
     }
 }

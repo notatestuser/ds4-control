@@ -18,11 +18,13 @@ enum AgentLauncher {
     /// pi's `ds4` provider config, written to `PI_CODING_AGENT_DIR/models.json`. Mirrors the
     /// upstream schema; `baseUrl` port and per-model `contextWindow` are substituted live so
     /// pi tracks the running server without depending on the user's `~/.pi`.
-    static func piModelsJSON(port: Int, contextWindow: Int) -> String {
+    static func piModelsJSON(port: Int, contextWindow: Int, allowMaxThink: Bool = true) -> String {
         // pi's thinking level → ds4 `reasoning_effort`. "xhigh" maps to "max" so the launcher's
         // Max mode (pi --thinking xhigh) reaches ds4 Think Max; "off" disables thinking.
         let levelMap =
-            #"{ "off": null, "minimal": "low", "low": "low", "medium": "medium", "high": "high", "xhigh": "max" }"#
+            allowMaxThink
+            ? #"{ "off": null, "minimal": "low", "low": "low", "medium": "medium", "high": "high", "xhigh": "max" }"#
+            : #"{ "off": null, "minimal": "low", "low": "low", "medium": "medium", "high": "high", "xhigh": "high" }"#
         return """
             {
               "providers": {
@@ -77,64 +79,73 @@ enum AgentLauncher {
     /// Yes → claude `CLAUDE_CODE_EFFORT_LEVEL=max` (→ output_config.effort, which ds4 honors as Think
     /// Max) / pi `--thinking xhigh` (the bundled models.json maps xhigh → reasoning_effort "max").
     /// `port`/`modelId`/`contextWindow`/`piConfigDir` are baked in.
-    static func wrapperScript(port: Int, modelId: String, contextWindow: Int, piConfigDir: String) -> String {
-        """
-        #!/bin/sh
-        echo "Launcher script: $0"
-        echo
-        printf 'Agent [pi/claude] (pi): '
-        read agent
-        [ -n "$agent" ] || agent=pi
-        case "$agent" in pi|claude|testoption) ;; *) echo "unknown agent '$agent' — using pi"; agent=pi ;; esac
-        # testoption is a hidden choice (never installed) for exercising this not-installed path.
-        if ! command -v "$agent" >/dev/null 2>&1; then
-          echo "'$agent' is not installed or not on your PATH. Please install it, then run this again."
-          exit 1
-        fi
-        printf 'Enable Max Think? [y/N]: '
-        read maxthink_in
-        case "$maxthink_in" in [Yy]*) maxthink=1 ;; *) maxthink=0 ;; esac
-        printf 'Start in [%s]: ' "$PWD"
-        read dir
-        [ -n "$dir" ] || dir=$PWD
-        case "$dir" in
-          "~") dir=$HOME ;;
-          "~/"*) dir=$HOME/${dir#"~/"} ;;
-        esac
-        cd "$dir" || { echo "cd failed: $dir"; exit 1; }
-        if [ "$agent" = claude ]; then
-          # Optionally use --bare: skips hooks, plugins, LSP and MCP (CLAUDE_CODE_SIMPLE=1) —
-          # much faster against a local model. In bare mode auth is strictly ANTHROPIC_API_KEY
-          # or apiKeyHelper (your OAuth login is ignored), so we unset ANTHROPIC_API_KEY (no
-          # "custom API key" prompt) and feed a dummy key via apiKeyHelper — seamless; the local
-          # server ignores the key. Non-bare keeps your normal login.
-          printf 'Use claude --bare for speed? Skips MCP/hooks/plugins/memory — faster on a local model [Y/n]: '
-          read bare
-          unset ANTHROPIC_API_KEY
-          export ANTHROPIC_BASE_URL="http://127.0.0.1:\(port)"
-          export ANTHROPIC_MODEL="\(modelId)"
-          export CLAUDE_CODE_MAX_CONTEXT_TOKENS=\(contextWindow)
-          export DISABLE_COMPACT=1
-          # Effort high by default; max when Max Think is chosen (ds4 honors output_config.effort=max
-          # as Think Max). Explicit high because claude's own default for this model is xhigh — ds4
-          # collapses high/xhigh to the same tier, but high is the truer baseline.
-          export CLAUDE_CODE_EFFORT_LEVEL=high
-          [ "$maxthink" = 1 ] && export CLAUDE_CODE_EFFORT_LEVEL=max
-          case "$bare" in
-            [Nn]*) exec claude --exclude-dynamic-system-prompt-sections "say hi (first prompt will take some time)" ;;
-            *) exec claude --bare --settings '{"apiKeyHelper":"echo dsv4-local"}' --exclude-dynamic-system-prompt-sections "say hi (first prompt will take some time)" ;;
-          esac
-        else
-          export PI_CODING_AGENT_DIR="\(piConfigDir)"
-          # Max Think → pi xhigh (models.json maps it to reasoning_effort "max" = ds4 Think Max).
-          # Otherwise omit --thinking so pi uses its default (changeable in its TUI).
-          if [ "$maxthink" = 1 ]; then
-            exec pi --model ds4/\(modelId) --thinking xhigh "say hi (first prompt will take some time)"
-          else
-            exec pi --model ds4/\(modelId) "say hi (first prompt will take some time)"
-          fi
-        fi
-        """
+    static func wrapperScript(
+        port: Int, modelId: String, contextWindow: Int, piConfigDir: String,
+        allowMaxThink: Bool = true
+    ) -> String {
+        let maxThinkSetup =
+            allowMaxThink
+            ? """
+            printf 'Enable Max Think? [y/N]: '
+            read maxthink_in
+            case "$maxthink_in" in [Yy]*) maxthink=1 ;; *) maxthink=0 ;; esac
+            """
+            : "maxthink=0"
+        return """
+            #!/bin/sh
+            echo "Launcher script: $0"
+            echo
+            printf 'Agent [pi/claude] (pi): '
+            read agent
+            [ -n "$agent" ] || agent=pi
+            case "$agent" in pi|claude|testoption) ;; *) echo "unknown agent '$agent' — using pi"; agent=pi ;; esac
+            # testoption is a hidden choice (never installed) for exercising this not-installed path.
+            if ! command -v "$agent" >/dev/null 2>&1; then
+              echo "'$agent' is not installed or not on your PATH. Please install it, then run this again."
+              exit 1
+            fi
+            \(maxThinkSetup)
+            printf 'Start in [%s]: ' "$PWD"
+            read dir
+            [ -n "$dir" ] || dir=$PWD
+            case "$dir" in
+              "~") dir=$HOME ;;
+              "~/"*) dir=$HOME/${dir#"~/"} ;;
+            esac
+            cd "$dir" || { echo "cd failed: $dir"; exit 1; }
+            if [ "$agent" = claude ]; then
+              # Optionally use --bare: skips hooks, plugins, LSP and MCP (CLAUDE_CODE_SIMPLE=1) —
+              # much faster against a local model. In bare mode auth is strictly ANTHROPIC_API_KEY
+              # or apiKeyHelper (your OAuth login is ignored), so we unset ANTHROPIC_API_KEY (no
+              # "custom API key" prompt) and feed a dummy key via apiKeyHelper — seamless; the local
+              # server ignores the key. Non-bare keeps your normal login.
+              printf 'Use claude --bare for speed? Skips MCP/hooks/plugins/memory — faster on a local model [Y/n]: '
+              read bare
+              unset ANTHROPIC_API_KEY
+              export ANTHROPIC_BASE_URL="http://127.0.0.1:\(port)"
+              export ANTHROPIC_MODEL="\(modelId)"
+              export CLAUDE_CODE_MAX_CONTEXT_TOKENS=\(contextWindow)
+              export DISABLE_COMPACT=1
+              # Effort high by default; max when Max Think is chosen (ds4 honors output_config.effort=max
+              # as Think Max). Explicit high because claude's own default for this model is xhigh — ds4
+              # collapses high/xhigh to the same tier, but high is the truer baseline.
+              export CLAUDE_CODE_EFFORT_LEVEL=high
+              [ "$maxthink" = 1 ] && export CLAUDE_CODE_EFFORT_LEVEL=max
+              case "$bare" in
+                [Nn]*) exec claude --exclude-dynamic-system-prompt-sections "say hi (first prompt will take some time)" ;;
+                *) exec claude --bare --settings '{"apiKeyHelper":"echo dsv4-local"}' --exclude-dynamic-system-prompt-sections "say hi (first prompt will take some time)" ;;
+              esac
+            else
+              export PI_CODING_AGENT_DIR="\(piConfigDir)"
+              # Max Think → pi xhigh (models.json maps it to reasoning_effort "max" = ds4 Think Max).
+              # Otherwise omit --thinking so pi uses its default (changeable in its TUI).
+              if [ "$maxthink" = 1 ]; then
+                exec pi --model ds4/\(modelId) --thinking xhigh "say hi (first prompt will take some time)"
+              else
+                exec pi --model ds4/\(modelId) "say hi (first prompt will take some time)"
+              fi
+            fi
+            """
     }
 
     /// AppleScript that opens Terminal and runs the wrapper at `scriptPath`. The path is
@@ -151,16 +162,23 @@ enum AgentLauncher {
 
     /// Regenerate the pi provider config + the wrapper (so port/context track the running
     /// server), then open Terminal running the wrapper via `osascript`.
-    static func launch(port: Int, modelId: String, contextWindow: Int) {
+    static func launch(
+        port: Int, modelId: String, contextWindow: Int, allowMaxThink: Bool
+    ) {
         let support = ds4AppSupportDir()
         let piDir = support.appendingPathComponent("pi-agent", isDirectory: true)
         try? FileManager.default.createDirectory(at: piDir, withIntermediateDirectories: true)
-        try? piModelsJSON(port: port, contextWindow: contextWindow)
-            .write(to: piDir.appendingPathComponent("models.json"), atomically: true, encoding: .utf8)
+        try? piModelsJSON(
+            port: port, contextWindow: contextWindow, allowMaxThink: allowMaxThink
+        )
+        .write(to: piDir.appendingPathComponent("models.json"), atomically: true, encoding: .utf8)
         let url = support.appendingPathComponent("agent-launch.sh")
         do {
-            try wrapperScript(port: port, modelId: modelId, contextWindow: contextWindow, piConfigDir: piDir.path)
-                .write(to: url, atomically: true, encoding: .utf8)
+            try wrapperScript(
+                port: port, modelId: modelId, contextWindow: contextWindow,
+                piConfigDir: piDir.path, allowMaxThink: allowMaxThink
+            )
+            .write(to: url, atomically: true, encoding: .utf8)
             try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: url.path)
         } catch {
             return

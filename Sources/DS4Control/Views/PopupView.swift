@@ -139,7 +139,9 @@ struct PopupView: View {
                             port: supervisor.port,
                             modelId: AgentLauncher.modelId(
                                 for: supervisor.activeModel, fallback: app.selectedVariant),
-                            contextWindow: supervisor.ctx)
+                            contextWindow: supervisor.ctx,
+                            allowMaxThink: supportsMaxThink(ramGiB: ram)
+                                && thinkMax(ctx: supervisor.ctx))
                     } else {
                         showStartHint = true
                     }
@@ -295,7 +297,6 @@ struct PopupView: View {
         case .starting: return "Starting"
         case .ready:
             return "\(supervisor.activeModel ?? "") · :\(supervisor.port)"
-                + (supervisor.thinkMaxActive ? " · Think-Max" : "")
         case .stopping: return "Stopping"
         case .error: return "Error"
         }

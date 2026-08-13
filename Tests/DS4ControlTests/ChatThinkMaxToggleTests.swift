@@ -28,4 +28,15 @@ final class ChatThinkMaxToggleTests: XCTestCase {
 
         XCTAssertLessThan(applyIndex.lowerBound, chatIndex.lowerBound)
     }
+
+    func testLowMemoryPickerOmitsMaxThinkAndPopupPortHasNoModeSuffix() throws {
+        let thinking = try source("Sources/DS4Control/Views/ThinkingModeControls.swift")
+        let popup = try source("Sources/DS4Control/Views/PopupView.swift")
+
+        XCTAssertTrue(
+            thinking.contains(
+                "supportsMaxThink(ramGiB: ram) ? ThinkingMode.allCases : [.off, .standard]"))
+        XCTAssertFalse(popup.contains("· Think-Max"))
+        XCTAssertFalse(popup.contains("thinkMaxActive"))
+    }
 }

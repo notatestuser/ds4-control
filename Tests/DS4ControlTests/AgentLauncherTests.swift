@@ -67,6 +67,19 @@ final class AgentLauncherTests: XCTestCase {
         XCTAssertTrue(s.contains("exec pi --model ds4/deepseek-v4-flash \"say hi"))
     }
 
+    func testLowMemoryLauncherOmitsMaxThink() {
+        let models = AgentLauncher.piModelsJSON(
+            port: 8137, contextWindow: 256_000, allowMaxThink: false)
+        XCTAssertTrue(models.contains("\"xhigh\": \"high\""))
+        XCTAssertFalse(models.contains("\"xhigh\": \"max\""))
+
+        let script = AgentLauncher.wrapperScript(
+            port: 8137, modelId: "deepseek-v4-flash", contextWindow: 256_000,
+            piConfigDir: "/tmp/x/pi-agent", allowMaxThink: false)
+        XCTAssertFalse(script.contains("Enable Max Think?"))
+        XCTAssertTrue(script.contains("maxthink=0"))
+    }
+
     func testAppleScriptRunsWrapperAndActivatesTerminal() {
         let script = AgentLauncher.appleScript(scriptPath: "/tmp/x/agent-launch.sh")
         XCTAssertTrue(script.contains("tell application \"Terminal\""))

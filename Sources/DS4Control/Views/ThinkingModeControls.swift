@@ -2,9 +2,8 @@ import AppKit
 import SwiftUI
 
 /// The shared Thinking: segmented picker (Instant / Standard / Max Think), used by Settings and
-/// the chat status bar. Selecting Max Think below ds4's 393,216-context floor does NOT apply
-/// the mode — ThinkingModePrompt first asks whether to bump the context (and restart, when a
-/// server is running). Cancelling leaves the mode untouched.
+/// the chat status bar. Max Think is omitted below 128 GiB. On supported machines, selecting
+/// it below ds4's 393,216-context floor asks whether to bump the context and restart.
 struct ThinkingModePicker: View {
     @EnvironmentObject var app: AppState
     @EnvironmentObject var supervisor: SupervisorService
@@ -12,7 +11,7 @@ struct ThinkingModePicker: View {
 
     var body: some View {
         Picker("Thinking:", selection: binding) {
-            ForEach(ThinkingMode.allCases) { mode in
+            ForEach(availableModes) { mode in
                 Text(mode.label).tag(mode)
             }
         }
@@ -20,14 +19,21 @@ struct ThinkingModePicker: View {
     }
 
     private var serverRunning: Bool { supervisor.state == .ready || supervisor.state == .starting }
+    private var availableModes: [ThinkingMode] {
+        supportsMaxThink(ramGiB: ram) ? ThinkingMode.allCases : [.off, .standard]
+    }
 
     private var binding: Binding<ThinkingMode> {
         Binding(
             get: { app.thinkingMode },
             set: { mode in
                 let ctx = serverRunning ? supervisor.ctx : app.effectiveCtx(ramGiB: ram)
-                guard app.requestThinkingMode(mode, currentCtx: ctx) == .needsCtxBump else { return }
-                ThinkingModePrompt.confirmAndApply(serverRunning: serverRunning, app: app, supervisor: supervisor)
+                guard
+                    app.requestThinkingMode(mode, currentCtx: ctx, ramGiB: ram) == .needsCtxBump
+                else { return }
+                ThinkingModePrompt.confirmAndApply(
+                    serverRunning: serverRunning, app: app, supervisor: supervisor,
+                    ramGiB: ram)
             }
         )
     }
@@ -82,7 +88,16 @@ enum ThinkingModePrompt {
     /// WindowChrome). On confirm: pin the context to 393,216 + enable Max — and, when a
     /// server is running, restart it with the new context (same parameters as Settings →
     /// Apply & Restart Server).
-    static func confirmAndApply(serverRunning: Bool, app: AppState, supervisor: SupervisorService) {
+    static func confirmAndApply(
+        serverRunning: Bool, app: AppState, supervisor: SupervisorService,
+        ramGiB: Double = systemRamGiB()
+    ) {
+        guard supportsMaxThink(ramGiB: ramGiB) else {
+            RestartRejectionAlert.show(
+                .blocked(reason: maxThinkUnavailableReason),
+                contextSentence: "Max Think remains disabled.", restartAnyway: {})
+            return
+        }
         let alert = NSAlert()
         alert.messageText = "Max Think requires a context of at least 393,216."
         alert.informativeText =
@@ -94,10 +109,10 @@ enum ThinkingModePrompt {
         alert.addButton(withTitle: serverRunning ? "Set Context & Restart" : "Set Context & Enable")
         alert.addButton(withTitle: "Cancel")
         guard alert.runModal() == .alertFirstButtonReturn else { return }
-        guard serverRunning else { app.applyMaxThinkCtxBump(); return }
+        guard serverRunning else { app.applyMaxThinkCtxBump(ramGiB: ramGiB); return }
         handleRestartResult(
-            restartWithMaxThink(app: app, supervisor: supervisor),
-            app: app, supervisor: supervisor)
+            restartWithMaxThink(app: app, supervisor: supervisor, ramGiB: ramGiB),
+            app: app, supervisor: supervisor, ramGiB: ramGiB)
     }
 
     /// Keep the preference change transactional with the restart gate: chat must not
@@ -105,8 +120,12 @@ enum ThinkingModePrompt {
     @discardableResult
     static func restartWithMaxThink(
         app: AppState, supervisor: SupervisorService,
-        overrideWiredLimitGate: Bool = false
+        overrideWiredLimitGate: Bool = false,
+        ramGiB: Double = systemRamGiB()
     ) -> RestartResult {
+        guard supportsMaxThink(ramGiB: ramGiB) else {
+            return .rejected(.blocked(reason: maxThinkUnavailableReason))
+        }
         let result = supervisor.restart(
             variant: app.selectedVariant, flashQuant: app.selectedFlashQuant,
             ctx: thinkMaxMinCtx,
@@ -114,12 +133,13 @@ enum ThinkingModePrompt {
             sessions: app.concurrentSessions,
             kvDiskDir: app.kvDiskCache ? supervisor.kvDiskCacheURL : nil,
             overrideWiredLimitGate: overrideWiredLimitGate)
-        if result == .accepted { app.applyMaxThinkCtxBump() }
+        if result == .accepted { app.applyMaxThinkCtxBump(ramGiB: ramGiB) }
         return result
     }
 
     private static func handleRestartResult(
-        _ result: RestartResult, app: AppState, supervisor: SupervisorService
+        _ result: RestartResult, app: AppState, supervisor: SupervisorService,
+        ramGiB: Double
     ) {
         switch result {
         case .accepted:
@@ -133,16 +153,18 @@ enum ThinkingModePrompt {
                 handleRestartResult(
                     restartWithMaxThink(
                         app: app, supervisor: supervisor,
-                        overrideWiredLimitGate: true),
-                    app: app, supervisor: supervisor)
+                        overrideWiredLimitGate: true, ramGiB: ramGiB),
+                    app: app, supervisor: supervisor, ramGiB: ramGiB)
             }
         case .ignored:
             // The server may have stopped while the confirmation was open. The setting
             // is still valid and will apply on the next Start.
             if supervisor.state != .ready && supervisor.state != .starting {
-                app.applyMaxThinkCtxBump()
+                app.applyMaxThinkCtxBump(ramGiB: ramGiB)
             }
         }
     }
 
+    private static let maxThinkUnavailableReason =
+        "Max Think requires at least 128 GiB unified memory. Use Standard thinking on this Mac."
 }

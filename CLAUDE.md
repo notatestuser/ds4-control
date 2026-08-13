@@ -15,9 +15,9 @@ supervises that process and surfaces system metrics + a chat/agent front end.
 
 The current 0731 DeepSeek V4 GGUFs are preview artifacts, not the final GA release. When V4
 leaves preview, update the pinned GGUF names/URLs and `external/ds4` revision together. Re-read
-the GA files' exact byte sizes into `Quant.ggufBytes`, verify the Metal context-allocation formula
-and shared graph-workspace formula against that ds4 revision, and refresh the feasibility/variant
-tests and documented memory tiers.
+the GA files' exact byte sizes into `Quant.ggufBytes`, verify the Metal context-allocation formula,
+shared graph-workspace formula, and persistent backend-scratch bounds against that ds4 revision,
+and refresh the feasibility/variant tests and documented memory tiers.
 Do not carry the preview size constants or allocator assumptions into a GA release unchanged.
 
 ## Stack

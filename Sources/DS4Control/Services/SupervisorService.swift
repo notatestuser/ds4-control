@@ -32,8 +32,6 @@ final class SupervisorService: ObservableObject {
     /// `isFlashQuantDownloaded` (the Settings picker) re-render.
     @Published private(set) var ggufStoreVersion = 0
 
-    var thinkMaxActive: Bool { thinkMax(ctx: ctx) }
-
     let ds4Dir: URL
     let runner: ProcessRunner
     /// Probes a port for a running ds4-server; returns the /v1/models body on HTTP 200,

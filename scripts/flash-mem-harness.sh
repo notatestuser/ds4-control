@@ -7,7 +7,7 @@
 # on-disk KV cache checkpoints resident tensors rather than replacing them, so we test it and
 # (at the largest ctx) a no-disk control to verify that the memory requirement is unchanged.
 #
-# Usage: scripts/flash-mem-harness.sh ["ctx1 ctx2 …"]   (default: 131072 393216 1000000)
+# Usage: scripts/flash-mem-harness.sh ["ctx1 ctx2 …"]   (default: 131072 256000 1000000)
 # Exit non-zero if a run exceeds 96 GiB or disk KV reduces the measured resident allocation.
 set -u
 
@@ -20,7 +20,7 @@ LIMIT_GIB=96          # hard machine ceiling
 USABLE_GIB=92         # 96 − 4 GiB OS reserve (practical limit)
 GRAPH_GIB=4.22        # pinned ds4 Flash graph allocation beyond its public context estimate
 KVDISK="/tmp/ds4-memharness-kv"
-CTXS="${1:-131072 393216 1000000}"
+CTXS="${1:-131072 256000 1000000}"
 
 [ -x "$DS4/ds4-server" ] || { echo "ds4-server not built at $DS4"; exit 2; }
 [ -s "$Q2" ] || { echo "q2 gguf missing: $Q2  (run: DS4_GGUF_DIR=\"$GGUF_DIR\" $DS4/download_model.sh q2-imatrix)"; exit 2; }
@@ -69,16 +69,27 @@ run_one() {
   done
   kill "$pid" 2>/dev/null; wait "$pid" 2>/dev/null; rm -f "$log"; sleep 2   # free the port
 
+  # A short prompt does not grow ds4's persistent indexer top-k buffer to its context-bound
+  # peak. Include the same conservative bound as Feasibility: two UInt32 banks over the
+  # largest final full/partial 4096-token prefill chunk.
+  indexer_gib="$(awk -v ctx="$ctx" 'BEGIN {
+    cap=(ctx<4096)?ctx:4096; partial=ctx%cap; last_full=ctx-partial
+    full=(last_full>0 && int(last_full/4)>512)?2*int(last_full/4)*cap*4:0
+    tail=(partial>0 && int(ctx/4)>512)?2*int(ctx/4)*partial*4:0
+    printf "%.9f", ((full>tail)?full:tail)/1024/1024/1024
+  }')"
+
   # Total resident = mmap'd weights (RSS) + GPU-wired context allocation + the shared graph
-  # workspace. The Metal allocations are not in RSS, so these values are additive.
+  # workspace + persistent Metal backend scratch. Metal allocations are not in RSS, so the
+  # values are additive.
   rss_gib="$(awk "BEGIN{printf \"%.1f\", $peak_rss/1024/1024}")"
   kv_gib="$(awk "BEGIN{printf \"%.1f\", $kvest/1024}")"
-  total_raw="$(awk "BEGIN{printf \"%.9f\", $peak_rss/1024/1024 + $kvest/1024 + $GRAPH_GIB}")"
+  total_raw="$(awk "BEGIN{printf \"%.9f\", $peak_rss/1024/1024 + $kvest/1024 + $GRAPH_GIB + $indexer_gib}")"
   total_gib="$(awk "BEGIN{printf \"%.1f\", $total_raw}")"
   ok="$(awk "BEGIN{print ($total_raw<=$LIMIT_GIB)?\"YES\":\"NO\"}")"
   warn="$(awk "BEGIN{print ($total_raw> $USABLE_GIB && $total_raw<=$LIMIT_GIB)?\" (>${USABLE_GIB} usable, will page)\":\"\"}")"
-  printf '  %-9s %s weights_RSS=%-7s context=%-7s graph=%-6s total≈%-7s GiB  fits_96=%s%s\n' \
-    "$ctx" "$label" "$rss_gib" "${kv_gib}GiB" "${GRAPH_GIB}GiB" "$total_gib" "$ok" "$warn"
+  printf '  %-9s %s weights_RSS=%-7s context=%-7s graph=%-6s indexer=%-7s total≈%-7s GiB  fits_96=%s%s\n' \
+    "$ctx" "$label" "$rss_gib" "${kv_gib}GiB" "${GRAPH_GIB}GiB" "${indexer_gib}GiB" "$total_gib" "$ok" "$warn"
   awk "BEGIN{exit !($total_raw<=$LIMIT_GIB)}"
 }
 
