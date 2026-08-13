@@ -33,10 +33,22 @@ struct SettingsView: View {
 
     private var ctxHint: String {
         if app.ctxOverride > 0 {
+            if !supportsMaxThink(ramGiB: ram) {
+                return "Max Think is unavailable below 128 GiB unified memory."
+            }
             return "Max Think is available when context ≥ 393,216."
         }
         return
             "Auto: \(defaultCtx(ramGiB: ram, variant: app.selectedVariant, flashQuant: app.selectedFlashQuant).formatted()) tokens (based on \(Int(ram)) GiB RAM)."
+    }
+
+    private var thinkingHint: String {
+        if !supportsMaxThink(ramGiB: ram) {
+            return "Max Think requires at least 128 GiB unified memory. Coding agents set their own level; this only affects the built-in chat."
+        }
+        return
+            "Max Think needs a context of at least 393,216 — you'll be asked to raise it. "
+            + "Coding agents set their own level; this only affects the built-in chat."
     }
 
     private var restartHint: String {
@@ -164,9 +176,7 @@ struct SettingsView: View {
             } header: {
                 Text("Chat")
             } footer: {
-                Text(
-                    "Max Think needs a context of at least 393,216 — you'll be asked to raise it. "
-                        + "Coding agents set their own level; this only affects the built-in chat.")
+                Text(thinkingHint)
             }
 
             Section {

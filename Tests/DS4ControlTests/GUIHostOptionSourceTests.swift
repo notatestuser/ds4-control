@@ -77,4 +77,12 @@ final class GUIHostOptionSourceTests: XCTestCase {
         XCTAssertTrue(help.contains("cannot fit safely while leaving memory for macOS"))
         XCTAssertTrue(help.contains("roundedUpGiB(fromMB: requiredMB)"))
     }
+
+    func testWiredLimitHelpCopyFeedbackTracksCommandValue() throws {
+        let help = try source("Sources/DS4Control/Views/WiredLimitHelpView.swift")
+
+        XCTAssertTrue(help.contains("copiedCommand == text ? \"Copied\" : \"Copy\""))
+        XCTAssertTrue(help.contains("copiedCommand = text"))
+        XCTAssertFalse(help.contains("copied == id"))
+    }
 }

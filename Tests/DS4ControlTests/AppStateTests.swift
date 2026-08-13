@@ -94,11 +94,15 @@ final class AppStateTests: XCTestCase {
     func testMaxThinkingModeDowngradesBelow128GiB() {
         let defaults = UserDefaults(suiteName: "test.\(UUID().uuidString)")!
         defaults.set(ThinkingMode.max.rawValue, forKey: "thinkingMode")
+        defaults.set(thinkMaxMinCtx, forKey: "ctxOverride")
 
         let app = AppState(defaults: defaults, ramGiB: 96)
 
         XCTAssertEqual(app.thinkingMode, .standard)
+        XCTAssertEqual(app.ctxOverride, 0)
+        XCTAssertEqual(app.effectiveCtx(ramGiB: 96), 256_000)
         XCTAssertEqual(defaults.string(forKey: "thinkingMode"), ThinkingMode.standard.rawValue)
+        XCTAssertEqual(defaults.integer(forKey: "ctxOverride"), 0)
     }
 
     func testThinkingModeGateAndCtxBump() {

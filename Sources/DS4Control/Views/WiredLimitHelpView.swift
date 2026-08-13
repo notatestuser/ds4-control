@@ -19,7 +19,7 @@ func boundedWiredRequirementMB(_ requiredMB: Int) -> Int? {
 struct WiredLimitHelpView: View {
     @EnvironmentObject var app: AppState
     private let ramGiB = systemRamGiB()
-    @State private var copied: String?
+    @State private var copiedCommand: String?
     /// Measured content height — the window opens tall enough to show everything at once.
     @State private var contentHeight: CGFloat = 0
 
@@ -136,7 +136,7 @@ struct WiredLimitHelpView: View {
         machineSummary
 
         Text("1 · Raise the limit (takes effect immediately)").font(.headline)
-        codeBlock(sysctlCommand, id: "raise")
+        codeBlock(sysctlCommand)
         Text(
             advisoryNote + " The value resets on every reboot — "
                 + "if you ran this before and it hangs again now, a restart wiped it."
@@ -149,7 +149,7 @@ struct WiredLimitHelpView: View {
                 + "The command replaces any existing iogpu.wired_limit_mb setting:"
         )
         .font(.callout)
-        codeBlock(persistCommand, id: "persist")
+        codeBlock(persistCommand)
         Text(
             "Other settings in the file are preserved. To undo later: delete the "
                 + "iogpu.wired_limit_mb line and run `sudo sysctl iogpu.wired_limit_mb=0`."
@@ -165,18 +165,18 @@ struct WiredLimitHelpView: View {
         .font(.callout)
     }
 
-    @ViewBuilder private func codeBlock(_ text: String, id: String) -> some View {
+    @ViewBuilder private func codeBlock(_ text: String) -> some View {
         HStack(alignment: .firstTextBaseline, spacing: 8) {
             Text(text)
                 .font(.system(.callout, design: .monospaced))
                 .textSelection(.enabled)
                 .frame(maxWidth: .infinity, alignment: .leading)
-            Button(copied == id ? "Copied" : "Copy") {
+            Button(copiedCommand == text ? "Copied" : "Copy") {
                 NSPasteboard.general.clearContents()
                 NSPasteboard.general.setString(text, forType: .string)
-                copied = id
+                copiedCommand = text
                 DispatchQueue.main.asyncAfter(deadline: .now() + 2) {
-                    if copied == id { copied = nil }
+                    if copiedCommand == text { copiedCommand = nil }
                 }
             }
         }

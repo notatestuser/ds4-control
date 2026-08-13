@@ -32,10 +32,10 @@ final class FeasibilityTests: XCTestCase {
         // Fixed values from the pinned ds4 Metal context, graph, and persistent backend
         // allocators plus exact Hugging Face GGUF byte sizes. Keep these independent of
         // the Swift formula.
-        XCTAssertEqual(requiredWiredMB(variant: .flash, flashQuant: .q2, ctx: 256_000), 93_382)
-        XCTAssertEqual(requiredWiredMB(variant: .flash, flashQuant: .q2, ctx: 393_216), 96_618)
-        XCTAssertEqual(requiredWiredMB(variant: .flash, flashQuant: .q4, ctx: 1_000_000), 185_158)
-        XCTAssertEqual(requiredWiredMB(variant: .pro, flashQuant: .q2, ctx: 1_000_000), 501_605)
+        XCTAssertEqual(requiredWiredMB(variant: .flash, flashQuant: .q2, ctx: 256_000), 93_390)
+        XCTAssertEqual(requiredWiredMB(variant: .flash, flashQuant: .q2, ctx: 393_216), 96_626)
+        XCTAssertEqual(requiredWiredMB(variant: .flash, flashQuant: .q4, ctx: 1_000_000), 185_166)
+        XCTAssertEqual(requiredWiredMB(variant: .pro, flashQuant: .q2, ctx: 1_000_000), 501_637)
         // Pro ignores the Flash quant choice; ctx 0 → weights only.
         XCTAssertEqual(requiredWiredMB(variant: .pro, flashQuant: .q2, ctx: 0), 443_104)
     }
@@ -55,17 +55,17 @@ final class FeasibilityTests: XCTestCase {
     func testRequiredWiredMBScalesResidentKVBySessions() {
         XCTAssertEqual(
             requiredWiredMB(variant: .flash, flashQuant: .q2, ctx: 256_000, sessions: 1),
-            93_382)
+            93_390)
         XCTAssertEqual(
             requiredWiredMB(variant: .flash, flashQuant: .q2, ctx: 256_000, sessions: 2),
-            97_779)
+            97_787)
     }
 
     func testWiredLimitRejectsFractionalKVOverage() {
         // Exact q2 weights round to 82,703 MiB. At 256K, pinned ds4's context,
         // graph, and conservative persistent-scratch allocations total
-        // 11,197,338,640 bytes, whose fractional MiB must round upward.
-        let truncatedRequiredMB = 82_703 + 11_197_338_640 / (1024 * 1024)
+        // 11,205,727,248 bytes, whose fractional MiB must round upward.
+        let truncatedRequiredMB = 82_703 + 11_205_727_248 / (1024 * 1024)
         guard
             case let .wiredLimitTooLow(requiredMB, _) = feasibility(
                 ramGiB: 96, variant: .flash, flashQuant: .q2, ctx: 256_000,
@@ -81,18 +81,32 @@ final class FeasibilityTests: XCTestCase {
                 ramGiB: 96, variant: .flash, flashQuant: .q2, ctx: 256_000,
                 wiredLimitMB: weightsAndContextOnlyMB)
         else { return XCTFail("a limit that omits shared graph/backend allocations must be rejected") }
-        XCTAssertEqual(requiredMB, 93_382)
+        XCTAssertEqual(requiredMB, 93_390)
         XCTAssertEqual(advisoryMB, 94_208)
     }
 
-    func testPersistentIndexerScratchIsIncludedInWiredRequirement() {
+    func testPersistentIndexerScratchBuffersAreIncludedInWiredRequirement() {
         let requirementWithoutIndexerScratch = 91_398
         guard
             case let .wiredLimitTooLow(requiredMB, _) = feasibility(
                 ramGiB: 96, variant: .flash, flashQuant: .q2, ctx: 256_000,
                 wiredLimitMB: requirementWithoutIndexerScratch)
         else { return XCTFail("the persistent indexer scratch must be part of the wired gate") }
-        XCTAssertEqual(requiredMB, requirementWithoutIndexerScratch + 1_984)
+        XCTAssertEqual(requiredMB, requirementWithoutIndexerScratch + 1_992)
+    }
+
+    func testSortedIndexerBufferBlocksProAtReserveBoundary() {
+        let usableMB = wiredLimitAdvisoryMB(ramGiB: 512)
+        XCTAssertEqual(usableMB, 520_192)
+        XCTAssertEqual(
+            requiredWiredMB(
+                variant: .pro, flashQuant: .q2, ctx: 867_452, sessions: 2),
+            520_224)
+        guard
+            case .blocked = feasibility(
+                ramGiB: 512, variant: .pro, flashQuant: .q2, ctx: 867_452,
+                wiredLimitMB: usableMB, sessions: 2)
+        else { return XCTFail("the separately retained sorted-index buffer must consume reserve") }
     }
 
     func testRequiredWiredMBSaturatesOnOverflow() {
@@ -113,7 +127,7 @@ final class FeasibilityTests: XCTestCase {
     func testWorkingSetThatConsumesOSReserveBlocks() {
         let required = requiredWiredMB(variant: .flash, flashQuant: .q2, ctx: 300_000)
         let usableMB = wiredLimitAdvisoryMB(ramGiB: 96)
-        XCTAssertEqual(required, 94_423)
+        XCTAssertEqual(required, 94_431)
         XCTAssertGreaterThan(required, usableMB)
         XCTAssertLessThan(required, 96 * 1024)
 
@@ -132,7 +146,7 @@ final class FeasibilityTests: XCTestCase {
                 ramGiB: 512, variant: .pro, flashQuant: .q2, ctx: 1_000_000,
                 wiredLimitMB: 516_096, sessions: 3)
         else { return XCTFail("three Pro sessions exceed 512 GiB with ds4's real context allocation") }
-        XCTAssertEqual(requiredWiredMB(variant: .pro, flashQuant: .q2, ctx: 1_000_000, sessions: 3), 557_365)
+        XCTAssertEqual(requiredWiredMB(variant: .pro, flashQuant: .q2, ctx: 1_000_000, sessions: 3), 557_397)
         XCTAssertTrue(reason.contains("Reduce context or concurrent sessions"))
     }
 
@@ -198,7 +212,7 @@ final class FeasibilityTests: XCTestCase {
             XCTFail("98,304 MB cap must gate q2-q4 @1M")
         }
         let required = requiredWiredMB(variant: .flash, flashQuant: .q2q4, ctx: 1_000_000)
-        XCTAssertEqual(required, 121_222)
+        XCTAssertEqual(required, 121_230)
         if case .wiredLimitTooLow = feasibility(
             ramGiB: 128, variant: .flash, flashQuant: .q2q4, ctx: 1_000_000,
             wiredLimitMB: 110_000)

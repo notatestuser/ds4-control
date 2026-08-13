@@ -1,7 +1,8 @@
 #!/bin/sh
 # flash-mem-harness.sh — measure V4 Flash (q2) resident memory across context sizes to verify
 # it fits a 96 GiB machine. Spins up the REAL ds4-server (loads the ~81 GB model) at each ctx,
-# warms the weights, sends one short prompt, and records peak RSS + Metal allocations.
+# warms the weights, prefills to the configured context frontier, and records peak RSS + Metal
+# allocations.
 #
 # Resident weights are measured externally with ps; context and Metal allocation telemetry
 # come from ds4-server. The on-disk KV cache checkpoints resident tensors rather than replacing
@@ -9,7 +10,7 @@
 # requirement is unchanged.
 #
 # Usage: scripts/flash-mem-harness.sh ["ctx1 ctx2 …"]   (default: 131072 256000 1000000)
-# Exit non-zero if a run exceeds 96 GiB or disk KV reduces the measured resident allocation.
+# Exit non-zero if a run exceeds 96 GiB or disk KV materially reduces resident allocation.
 set -u
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
@@ -19,6 +20,8 @@ Q2="$GGUF_DIR/DeepSeek-V4-Flash-IQ2XXS-w2Q2K-AProjQ8-SExpQ8-OutQ8-chat-v2-imatri
 PORT=8137
 LIMIT_GIB=96          # hard machine ceiling
 USABLE_GIB=92         # 96 − 4 GiB OS reserve (practical limit)
+FRONTIER_MARGIN_TOKENS=64
+RSS_COMPARISON_TOLERANCE_MIB=64  # independent ps samples can vary slightly between launches
 KVDISK="/tmp/ds4-memharness-kv"
 CTXS="${1:-131072 256000 1000000}"
 
@@ -61,9 +64,24 @@ run_one() {
     return 1
   fi
 
-  # exercise the model briefly, sampling peak RSS (KB) throughout
+  # Repeated tokenizer special tokens give a known one-token-per-marker payload. Drive prefill
+  # to the configured context frontier so lazy Metal scratch reaches its real long-prompt peak.
+  prompt_target=$((ctx - FRONTIER_MARGIN_TOKENS))
+  if [ "$prompt_target" -le 0 ]; then
+    echo "ctx=$ctx $label: context must exceed $FRONTIER_MARGIN_TOKENS tokens"
+    kill "$pid" 2>/dev/null; wait "$pid" 2>/dev/null; rm -f "$log"; sleep 2
+    return 1
+  fi
+  request="$(mktemp)"; response="$(mktemp)"
+  {
+    printf '%s' '{"model":"deepseek-v4-flash","messages":[{"role":"user","content":"'
+    awk -v count="$prompt_target" 'BEGIN { for (i=0; i<count; i++) printf "<think>" }'
+    printf '%s' '"}],"max_tokens":1,"temperature":0,"thinking":{"type":"disabled"}}'
+  } > "$request"
+
+  # Exercise the model while sampling peak RSS (KB) throughout.
   curl -fsS "http://127.0.0.1:$PORT/v1/chat/completions" -H 'Content-Type: application/json' \
-    -d '{"model":"deepseek-v4-flash","messages":[{"role":"user","content":"Say hi in one word."}],"max_tokens":16,"thinking":{"type":"disabled"}}' >/dev/null 2>>"$log" &
+    -H 'Expect:' --data-binary "@$request" >"$response" 2>>"$log" &
   cpid=$!
   peak_rss=0; n=0
   while kill -0 "$cpid" 2>/dev/null || [ "$n" -lt 6 ]; do   # at least ~3 s of samples
@@ -74,9 +92,25 @@ run_one() {
   if ! wait "$cpid"; then
     echo "ctx=$ctx $label: inference request failed"
     kill "$pid" 2>/dev/null; wait "$pid" 2>/dev/null
-    tail -8 "$log"; rm -f "$log"; sleep 2
+    tail -8 "$log"; rm -f "$log" "$request" "$response"; sleep 2
     return 1
   fi
+  prompt_tokens="$(grep -o '"prompt_tokens":[0-9][0-9]*' "$response" | head -1 | cut -d: -f2)"
+  case "$prompt_tokens" in
+    ''|*[!0-9]*)
+      echo "ctx=$ctx $label: response prompt-token measurement missing"
+      kill "$pid" 2>/dev/null; wait "$pid" 2>/dev/null
+      rm -f "$log" "$request" "$response"; sleep 2
+      return 1
+      ;;
+  esac
+  if [ "$prompt_tokens" -lt "$prompt_target" ]; then
+    echo "ctx=$ctx $label: prompt reached $prompt_tokens tokens, below frontier target $prompt_target"
+    kill "$pid" 2>/dev/null; wait "$pid" 2>/dev/null
+    rm -f "$log" "$request" "$response"; sleep 2
+    return 1
+  fi
+  rm -f "$request" "$response"
   # Graceful shutdown emits ds4's Metal cleanup report. Its tensor peak captures the graph and
   # resident context allocations; its scratch total captures the backend buffers actually
   # allocated by this run. Both are required so a telemetry change cannot produce a false pass.
@@ -86,7 +120,7 @@ run_one() {
   metal_indexer_mib="$(awk '$1 == "ds4:" && $2 == "scratch" { for (i=1; i<NF; i++) if ($i == "indexer") { value=$(i+1); sub(/,$/, "", value) } } END { print value }' "$log")"
   if [ -z "$metal_tensors_mib" ] || [ -z "$metal_scratch_mib" ] || [ -z "$metal_indexer_mib" ] || \
       ! awk -v tensors="$metal_tensors_mib" -v scratch="$metal_scratch_mib" -v indexer="$metal_indexer_mib" \
-        'BEGIN { number="^[0-9]+([.][0-9]+)?$"; exit !(tensors ~ number && scratch ~ number && indexer ~ number) }'; then
+        'BEGIN { number="^[0-9]+([.][0-9]+)?$"; exit !(tensors ~ number && scratch ~ number && indexer ~ number && tensors > 0 && scratch > 0 && indexer > 0) }'; then
     echo "ctx=$ctx $label: Metal tensor or scratch allocation telemetry missing"
     tail -8 "$log"; rm -f "$log"; sleep 2
     return 1
@@ -122,14 +156,14 @@ echo "  --- control (no disk KV) ---"
 run_one "$last" 0 || fail=1
 no_disk_total_raw="$total_raw"
 if [ -n "$disk_total_raw" ] && [ -n "$no_disk_total_raw" ] \
-    && awk "BEGIN{exit !($disk_total_raw < $no_disk_total_raw)}"; then
-  echo "FAIL: disk KV measured ${disk_total_raw} GiB, below no-disk ${no_disk_total_raw} GiB."
+    && awk "BEGIN{exit !(($disk_total_raw + $RSS_COMPARISON_TOLERANCE_MIB/1024) < $no_disk_total_raw)}"; then
+  echo "FAIL: disk KV measured ${disk_total_raw} GiB, more than ${RSS_COMPARISON_TOLERANCE_MIB} MiB below no-disk ${no_disk_total_raw} GiB."
   fail=1
 fi
 
 rm -rf "$KVDISK"
 if [ "$fail" = 0 ]; then
-  echo "PASS: every run fits within ${LIMIT_GIB} GiB and disk KV does not reduce resident allocation."
+  echo "PASS: every run fits within ${LIMIT_GIB} GiB and disk KV does not materially reduce resident allocation."
 else
   echo "FAIL: a memory measurement or resident-allocation check failed."
 fi

@@ -87,7 +87,7 @@ let maxConcurrentSessions = 16
 /// A percentage heuristic under-shoots the largest models. The 4 GiB reserve is
 /// intentional: the real-model harness measured Flash q2 weights at ~80.8 GiB and
 /// confirmed context memory is additive; pinned ds4 sizing plus a conservative bound
-/// for its persistent indexer scratch puts the 256,000-token default at 93,382 MiB,
+/// for its persistent indexer scratch puts the 256,000-token default at 93,390 MiB,
 /// below the 94,208 MiB ceiling on a 96 GiB Mac.
 func wiredLimitAdvisoryMB(ramGiB: Double) -> Int { Int((ramGiB - osReserveGiB) * 1024) }
 
@@ -317,12 +317,11 @@ private func metalSessionGraphBytes(variant: Variant, ctx: Int) -> Int? {
     return checkedProduct([totalElements, 4])
 }
 
-/// Server-wide scratch retained by ds4's Metal indexer top-k implementation after a
-/// long prefill reaches the configured context frontier. The runtime allocation depends
-/// on the compute pipeline's threadgroup limit; two banks of `nComp * nTokens` UInt32s
-/// are an upper bound for every limit, so feasibility does not assume the best-case 1,024
-/// threads reported by recent Apple GPUs.
-private func metalIndexerTopKScratchBytes(variant: Variant, ctx: Int) -> Int? {
+/// Server-wide scratch retained by ds4's Metal indexer after a long prefill reaches the
+/// configured context frontier. The top-k selection allocation depends on the compute
+/// pipeline's threadgroup limit; two banks of `nComp * nTokens` UInt32s are an upper bound
+/// for every limit. Indexed attention simultaneously retains a second, sorted top-k buffer.
+private func metalIndexerScratchBytes(variant: Variant, ctx: Int) -> Int? {
     guard ctx >= 0, ctx <= variant.ctxCeiling else { return nil }
     guard ctx > 0 else { return 0 }
 
@@ -330,21 +329,32 @@ private func metalIndexerTopKScratchBytes(variant: Variant, ctx: Int) -> Int? {
     let prefillCap = metalPrefillCap(shape: shape, ctx: ctx)
     guard prefillCap > 0 else { return nil }
 
-    func upperBound(endPosition: Int, tokens: Int) -> Int? {
+    func upperBounds(endPosition: Int, tokens: Int) -> (selection: Int, sorted: Int)? {
         let compressedRows = endPosition / 4
-        guard compressedRows > shape.indexerTopK else { return 0 }
-        return checkedProduct([2, compressedRows, tokens, MemoryLayout<UInt32>.size])
+        guard compressedRows > shape.indexerTopK else { return (0, 0) }
+        guard
+            let selection = checkedProduct([
+                2, compressedRows, tokens, MemoryLayout<UInt32>.size,
+            ]),
+            let sorted = checkedProduct([
+                shape.indexerTopK, tokens, MemoryLayout<UInt32>.size,
+            ])
+        else { return nil }
+        return (selection, sorted)
     }
 
     let partialTokens = ctx % prefillCap
     let lastFullEnd = ctx - partialTokens
     guard
-        let fullChunkBytes = lastFullEnd > 0
-            ? upperBound(endPosition: lastFullEnd, tokens: prefillCap) : 0,
-        let partialChunkBytes = partialTokens > 0
-            ? upperBound(endPosition: ctx, tokens: partialTokens) : 0
+        let fullChunk = lastFullEnd > 0
+            ? upperBounds(endPosition: lastFullEnd, tokens: prefillCap) : (0, 0),
+        let partialChunk = partialTokens > 0
+            ? upperBounds(endPosition: ctx, tokens: partialTokens) : (0, 0)
     else { return nil }
-    return max(fullChunkBytes, partialChunkBytes)
+    return checkedSum([
+        max(fullChunk.selection, partialChunk.selection),
+        max(fullChunk.sorted, partialChunk.sorted),
+    ])
 }
 
 /// The GPU-wired working set ds4 needs for this launch config (MB): exact resident
@@ -359,7 +369,7 @@ func requiredWiredMB(variant: Variant, flashQuant: FlashQuant, ctx: Int, session
         let sessionBytes = metalContextBytes(variant: variant, ctx: ctx),
         let sessionGraphBytes = metalSessionGraphBytes(variant: variant, ctx: ctx),
         let sharedGraphBytes = metalSharedGraphWorkspaceBytes(variant: variant, ctx: ctx),
-        let indexerScratchBytes = metalIndexerTopKScratchBytes(variant: variant, ctx: ctx),
+        let indexerScratchBytes = metalIndexerScratchBytes(variant: variant, ctx: ctx),
         let perSessionBytes = checkedSum([sessionBytes, sessionGraphBytes])
     else { return Int.max }
     let (residentSessionBytes, sessionOverflow) = perSessionBytes.multipliedReportingOverflow(

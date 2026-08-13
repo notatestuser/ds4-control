@@ -52,7 +52,7 @@ final class AppState: ObservableObject {
         self.d = defaults
         port = d.object(forKey: "port") as? Int ?? 8000
         host = d.string(forKey: "host") ?? Self.defaultHost
-        ctxOverride = d.integer(forKey: "ctxOverride")
+        let storedCtxOverride = d.integer(forKey: "ctxOverride")
         let p = d.integer(forKey: "power"); power = p > 0 ? p : nil
         let sessions = d.integer(forKey: "concurrentSessions")
         concurrentSessions = sessions >= 1 ? min(sessions, maxConcurrentSessions) : 1
@@ -68,9 +68,14 @@ final class AppState: ObservableObject {
         let resolvedThinkingMode =
             requestedThinkingMode == .max && !supportsMaxThink(ramGiB: ramGiB)
             ? .standard : requestedThinkingMode
+        let resetMaxCreatedContext =
+            resolvedThinkingMode != requestedThinkingMode
+            && storedCtxOverride == thinkMaxMinCtx
+        ctxOverride = resetMaxCreatedContext ? 0 : storedCtxOverride
         thinkingMode = resolvedThinkingMode
         if resolvedThinkingMode != requestedThinkingMode {
             d.set(resolvedThinkingMode.rawValue, forKey: "thinkingMode")
+            if resetMaxCreatedContext { d.set(0, forKey: "ctxOverride") }
         }
         highPerformanceDownload = d.bool(forKey: "highPerformanceDownload")  // default off
         launchAtLogin = SMAppService.mainApp.status == .enabled  // OS is the source of truth
