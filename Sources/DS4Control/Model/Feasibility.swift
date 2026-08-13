@@ -418,6 +418,18 @@ func defaultCtx(ramGiB: Double, variant: Variant, flashQuant: FlashQuant) -> Int
 }
 
 /// Whether a Flash quant's default launch fits while preserving the OS reserve.
+/// Default context keyed on the runnable model. Laguna defaults to 50,000 (SWA-capped
+/// KV is cheap; scratch is bounded by --prefill-chunk 4096); DS4F keeps its tiers.
+func defaultCtx(ramGiB: Double, model: Model) -> Int {
+    switch model {
+    case .lagunaS21: return 50_000
+    case .v4Pro: return model.ctxCeiling
+    case .v4FlashQ2, .v4FlashQ2Q4, .v4FlashQ4:
+        return ramGiB >= 128 ? model.ctxCeiling : thinkMaxMinCtx
+    }
+}
+
+/// Whether a Flash quant's resident weights fit this machine (weights + OS reserve ≤ RAM).
 /// Drives which options the Settings quant picker offers.
 func flashQuantFits(_ q: FlashQuant, ramGiB: Double) -> Bool {
     let ctx = defaultCtx(ramGiB: ramGiB, variant: .flash, flashQuant: q)
@@ -473,4 +485,34 @@ func feasibility(
         return .wiredLimitTooLow(requiredMB: required, advisoryMB: usableMB)
     }
     return .standard
+}
+
+/// Feasibility gate keyed on the runnable model. Laguna S 2.1 (q2-q3, 44.95 GiB
+/// weights) targets 64 GB-class machines: ≥96 GiB is comfortable; 64–95 GiB fits
+/// only with the Metal wired limit raised (default ~0.67×RAM ≈ 43 GiB < weights);
+/// below 64 GiB the weights + 8 GiB OS reserve don't fit.
+/// RAM-tier feasibility for the model picker: which models can run on this machine at
+/// all. The config-specific Metal wired-limit gate lives in `feasibility(variant:…ctx:wiredLimitMB:sessions:)`
+/// and is applied at Start time by the supervisor (and by the popup's Start-anyway flow).
+func feasibility(ramGiB: Double, model: Model) -> Feasibility {
+    switch model {
+    case .v4Pro:
+        guard ramGiB >= 512 else { return .blocked(reason: "V4 Pro needs ≥ 512 GiB unified memory.") }
+        return .standard
+    case .v4FlashQ2, .v4FlashQ2Q4, .v4FlashQ4:
+        guard ramGiB >= 96 else {
+            return .blocked(
+                reason:
+                    "V4 Flash needs ≥ 96 GiB unified memory. Below that, the ~\(Int(model.weightsGiB)) GiB model plus its KV cache exceed RAM, so it can't run."
+            )
+        }
+        return .standard
+    case .lagunaS21:
+        guard ramGiB >= 64 else {
+            return .blocked(
+                reason: "Laguna S 2.1 needs ≥ 64 GiB unified memory — its ~45 GiB weights plus the OS reserve don't fit below that."
+            )
+        }
+        return .standard
+    }
 }
