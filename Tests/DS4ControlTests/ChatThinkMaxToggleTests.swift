@@ -43,4 +43,12 @@ final class ChatThinkMaxToggleTests: XCTestCase {
         XCTAssertTrue(settings.contains("Max Think requires at least 128 GiB unified memory."))
         XCTAssertTrue(settings.contains("Max Think is unavailable below 128 GiB unified memory."))
     }
+
+    func testPopupHasServerSpeedCard() throws {
+        let popup = try source("Sources/DS4Control/Views/PopupView.swift")
+        XCTAssertTrue(popup.contains(#""Server", icon: "speedometer""#))
+        XCTAssertTrue(popup.contains("serverSpeedHistory"))
+        XCTAssertTrue(popup.contains("serverSpeedValue"))
+        XCTAssertTrue(popup.contains("serverSpeedSubtitle"))
+    }
 }

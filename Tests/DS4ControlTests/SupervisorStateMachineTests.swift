@@ -290,6 +290,38 @@ final class SupervisorStateMachineTests: XCTestCase {
         s.start(variant: .flash, flashQuant: .q2q4, ctx: 250_000, host: "127.0.0.1", port: 8000, power: nil)
         if case .error(.modelMissing) = s.state {} else { XCTFail("expected modelMissing, got \(s.state)") }
     }
+    func testServerSpeedParsedFromStderrLines() throws {
+        let r = FakeRunner(); let s = try makeSupervisor(r)
+        s.start(variant: .flash, flashQuant: .q2q4, ctx: 250_000, host: "127.0.0.1", port: 8000, power: nil)
+        XCTAssertNil(s.serverSpeed)  // nothing parsed yet
+        r.emit("ds4-server: chat ctx=0..52:52 prefill chunk 52/52 (100.0%) chunk=0.00 t/s avg=67.91 t/s 0.766s")
+        XCTAssertEqual(s.serverSpeed?.phase, .prefill)
+        XCTAssertEqual(s.serverSpeed?.tokensPerSecond ?? 0, 67.91, accuracy: 0.01)
+        r.emit("ds4-server: chat ctx=52..57:5 gen=5 decoding chunk=41.40 t/s avg=41.40 t/s 0.121s")
+        XCTAssertEqual(s.serverSpeed?.phase, .decode)
+        XCTAssertEqual(s.serverSpeed?.tokens, 5)
+        XCTAssertEqual(s.serverSpeed?.tokensPerSecond ?? 0, 41.40, accuracy: 0.01)
+        XCTAssertEqual(s.serverSpeedHistory.count, 2)  // prefill + decode samples
+        r.emit("ds4-server: chat ctx=0..52:52 gen=5 finish=stop 0.887s")
+        XCTAssertEqual(s.serverSpeed?.phase, .idle)
+        // Non-timing lines leave the snapshot untouched.
+        r.emit("ds4-server: some other log line")
+        XCTAssertEqual(s.serverSpeed?.phase, .idle)
+    }
+    func testServerSpeedHistoryCapsAndResetsOnStart() throws {
+        let r = FakeRunner(); let s = try makeSupervisor(r)
+        s.start(variant: .flash, flashQuant: .q2q4, ctx: 250_000, host: "127.0.0.1", port: 8000, power: nil)
+        let decodeLine =
+            "ds4-server: chat ctx=52..57:5 gen=5 decoding chunk=41.40 t/s avg=41.40 t/s 0.121s"
+        for _ in 0..<70 { r.emit(decodeLine) }
+        XCTAssertEqual(s.serverSpeedHistory.count, 60)  // capped
+        r.crash(1)  // server dies
+        // A fresh start clears the stale speed/history.
+        s.start(variant: .flash, flashQuant: .q2q4, ctx: 250_000, host: "127.0.0.1", port: 8000, power: nil)
+        XCTAssertNil(s.serverSpeed)
+        XCTAssertTrue(s.serverSpeedHistory.isEmpty)
+    }
+
     func testDownloadUsesSelectedQuantFile() throws {
         let dir = URL(fileURLWithPath: NSTemporaryDirectory()).appendingPathComponent(UUID().uuidString)
         try FileManager.default.createDirectory(
