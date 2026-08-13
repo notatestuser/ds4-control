@@ -54,4 +54,14 @@ final class ChatThinkMaxToggleTests: XCTestCase {
         XCTAssertTrue(thinking.contains(pattern))
         XCTAssertTrue(settings.contains(pattern))
     }
+
+    func testSettingsHasSsdStreamingSection() throws {
+        let settings = try source("Sources/DS4Control/Views/SettingsView.swift")
+        XCTAssertTrue(settings.contains(#""Stream expert weights from SSD""#))
+        XCTAssertTrue(settings.contains(#"Text("SSD streaming")"#))
+        XCTAssertTrue(settings.contains("ssdStreamingCacheGB"))
+        XCTAssertTrue(settings.contains("routedExpertGiB"))
+        // Caption shows the freed amount for the selected quant.
+        XCTAssertTrue(settings.contains("frees ~"))
+    }
 }
