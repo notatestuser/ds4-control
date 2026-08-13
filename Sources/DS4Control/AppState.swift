@@ -120,7 +120,8 @@ final class AppState: ObservableObject {
     /// Flash q2 96–127, Laguna below — the only feasible model on 64 GB-class machines).
     static func migrateLegacySelection(defaults d: UserDefaults, ramGiB: Double) -> Model {
         if let v = d.string(forKey: "selectedVariant").flatMap(Variant.init(rawValue:)),
-            let f = d.string(forKey: "selectedFlashQuant").flatMap(FlashQuant.init(rawValue:)) {
+            let f = d.string(forKey: "selectedFlashQuant").flatMap(FlashQuant.init(rawValue:))
+        {
             if v == .pro { return .v4Pro }
             switch f {
             case .q2: return .v4FlashQ2
