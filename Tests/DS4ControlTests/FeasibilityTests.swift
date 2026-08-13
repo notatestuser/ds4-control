@@ -287,8 +287,14 @@ final class FeasibilityTests: XCTestCase {
 
     func testLagunaFeasibilityTiers() {
         if case .blocked = feasibility(ramGiB: 63, model: .lagunaS21) {} else { XCTFail("63 GiB must block") }
-        if case .warnWiredLimit = feasibility(ramGiB: 64, model: .lagunaS21) {} else { XCTFail("64 GiB must warn wired limit") }
-        if case .warnWiredLimit = feasibility(ramGiB: 95, model: .lagunaS21) {} else { XCTFail("95 GiB must warn wired limit") }
+        if case .warnWiredLimit = feasibility(ramGiB: 64, model: .lagunaS21) {
+        } else {
+            XCTFail("64 GiB must warn wired limit")
+        }
+        if case .warnWiredLimit = feasibility(ramGiB: 95, model: .lagunaS21) {
+        } else {
+            XCTFail("95 GiB must warn wired limit")
+        }
         XCTAssertEqual(feasibility(ramGiB: 96, model: .lagunaS21), .standard)
         // Wired-limit advisory leaves the 8 GiB OS buffer, like the DS4F tiers.
         if case let .warnWiredLimit(mb) = feasibility(ramGiB: 64, model: .lagunaS21) {
