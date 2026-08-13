@@ -21,7 +21,8 @@ struct ModelRowView: View {
                 ramGiB: ramGiB, variant: app.selectedVariant, flashQuant: app.selectedFlashQuant,
                 ctx: app.effectiveCtx(ramGiB: ramGiB),
                 wiredLimitMB: effectiveWiredLimitMB(ramGiB: ramGiB),
-                sessions: app.concurrentSessions)
+                sessions: app.concurrentSessions,
+                ssdStreamingCacheGB: app.ssdStreaming ? app.ssdStreamingCacheGB : 0)
             actionButton(feas)
             feasibilityNote(feas)
         }

@@ -171,7 +171,7 @@ final class SupervisorIntegrationTests: XCTestCase {
 
         let s = SupervisorService(
             ds4Dir: dir, runner: RealProcessRunner(),
-            wiredLimitGate: { _, _, _, _ in .standard })  // host-independent: skip the RAM/sysctl gate
+            wiredLimitGate: { _, _, _, _, _ in .standard })  // host-independent: skip the RAM/sysctl gate
         s.start(variant: .flash, flashQuant: .q2q4, ctx: 250_000, host: "127.0.0.1", port: 8137, power: nil)
         let ready = expectation(description: "ready")
         let token = s.$state.sink { if $0 == .ready { ready.fulfill() } }
@@ -194,7 +194,7 @@ final class SupervisorIntegrationTests: XCTestCase {
         let expectedAdvisory = expectedRequired + 1024
         let s = SupervisorService(
             ds4Dir: dir, runner: RealProcessRunner(),
-            wiredLimitGate: { _, _, _, _ in
+            wiredLimitGate: { _, _, _, _, _ in
                 .wiredLimitTooLow(requiredMB: expectedRequired, advisoryMB: expectedAdvisory)
             })
         s.start(variant: .flash, flashQuant: .q2, ctx: 393_216, host: "127.0.0.1", port: 8137, power: nil)
@@ -225,7 +225,7 @@ final class SupervisorIntegrationTests: XCTestCase {
         let rejection = Feasibility.wiredLimitTooLow(requiredMB: 100_000, advisoryMB: 110_000)
         let s = SupervisorService(
             ds4Dir: dir, runner: RealProcessRunner(),
-            wiredLimitGate: { _, _, _, _ in gateOpen ? .standard : rejection })
+            wiredLimitGate: { _, _, _, _, _ in gateOpen ? .standard : rejection })
         s.start(variant: .flash, flashQuant: .q2, ctx: 393_216, host: "127.0.0.1", port: 8137, power: nil)
         guard case .starting = s.state else { return XCTFail("expected .starting, got \(s.state)") }
         gateOpen = false

@@ -285,3 +285,17 @@ final class FeasibilityTests: XCTestCase {
     func testSystemRam() { XCTAssertGreaterThan(systemRamGiB(), 0) }
     func testWiredLimitReadable() { XCTAssertGreaterThanOrEqual(currentWiredLimitMB(), 0) }
 }
+
+extension FeasibilityTests {
+    func testRequiredWiredMBShrinksWhenSsdStreaming() {
+        // SSD streaming keeps only the expert-cache budget + non-routed weights resident,
+        // so the gate must not charge the full GGUF for routed experts.
+        let full = requiredWiredMB(variant: .flash, flashQuant: .q2, ctx: 1_000_000)
+        let streamed = requiredWiredMB(
+            variant: .flash, flashQuant: .q2, ctx: 1_000_000, ssdStreamingCacheGB: 67)
+        // q2: routed experts 73 GiB, cache 67 → ~6 GiB less resident; full is ~80.8 GiB
+        // weights vs ~74.8 resident. Expect a meaningful drop, not a full-weights charge.
+        XCTAssertLessThan(streamed, full)
+        XCTAssertGreaterThan(full - streamed, 4 * 1024)  // > ~4 GiB freed
+    }
+}

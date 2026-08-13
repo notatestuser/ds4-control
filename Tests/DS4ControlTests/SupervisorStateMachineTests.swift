@@ -32,7 +32,7 @@ final class SupervisorStateMachineTests: XCTestCase {
     // adoption probe, and the real default would hit a live ds4-server on the dev machine.
     fileprivate func makeSupervisor(
         _ runner: FakeRunner, probe: @escaping (Int) async -> Data? = { _ in nil },
-        wiredLimitGate: @escaping SupervisorService.WiredLimitGate = { _, _, _, _ in .standard }
+        wiredLimitGate: @escaping SupervisorService.WiredLimitGate = { _, _, _, _, _ in .standard }
     ) throws -> SupervisorService {
         let dir = URL(fileURLWithPath: NSTemporaryDirectory()).appendingPathComponent(UUID().uuidString)
         try FileManager.default.createDirectory(
@@ -141,7 +141,7 @@ final class SupervisorStateMachineTests: XCTestCase {
         var gatedSessions: [Int] = []
         let s = try makeSupervisor(
             r,
-            wiredLimitGate: { _, _, _, sessions in
+            wiredLimitGate: { _, _, _, sessions, _ in
                 gatedSessions.append(sessions)
                 return .standard
             })
@@ -213,7 +213,7 @@ final class SupervisorStateMachineTests: XCTestCase {
         let rejection = Feasibility.wiredLimitTooLow(requiredMB: 100_000, advisoryMB: 110_000)
         let s = try makeSupervisor(
             r,
-            wiredLimitGate: { _, _, ctx, _ in ctx == thinkMaxMinCtx ? rejection : .standard })
+            wiredLimitGate: { _, _, ctx, _, _ in ctx == thinkMaxMinCtx ? rejection : .standard })
         s.start(
             variant: .flash, flashQuant: .q2q4, ctx: 100_000,
             host: "127.0.0.1", port: 8000, power: nil)
@@ -248,7 +248,7 @@ final class SupervisorStateMachineTests: XCTestCase {
         var gateCalls = 0
         let s = try makeSupervisor(
             r,
-            wiredLimitGate: { _, _, _, _ in
+            wiredLimitGate: { _, _, _, _, _ in
                 gateCalls += 1
                 return .standard
             })
@@ -286,7 +286,7 @@ final class SupervisorStateMachineTests: XCTestCase {
         }
         let s = SupervisorService(
             ds4Dir: dir, runner: FakeRunner(),
-            wiredLimitGate: { _, _, _, _ in .standard })
+            wiredLimitGate: { _, _, _, _, _ in .standard })
         s.start(variant: .flash, flashQuant: .q2q4, ctx: 250_000, host: "127.0.0.1", port: 8000, power: nil)
         if case .error(.modelMissing) = s.state {} else { XCTFail("expected modelMissing, got \(s.state)") }
     }

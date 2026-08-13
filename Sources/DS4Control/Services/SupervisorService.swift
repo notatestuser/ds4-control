@@ -68,12 +68,14 @@ final class SupervisorService: ObservableObject {
     /// Returns the launch config's feasibility. Injectable so tests don't depend on the
     /// host's RAM/sysctl state (CI runners are far smaller than any supported machine).
     typealias WiredLimitGate =
-        (_ variant: Variant, _ flashQuant: FlashQuant, _ ctx: Int, _ sessions: Int) -> Feasibility
-    static let defaultWiredLimitGate: WiredLimitGate = { variant, flashQuant, ctx, sessions in
+        (_ variant: Variant, _ flashQuant: FlashQuant, _ ctx: Int, _ sessions: Int, _ ssdStreamingCacheGB: Int) ->
+        Feasibility
+    static let defaultWiredLimitGate: WiredLimitGate = { variant, flashQuant, ctx, sessions, ssdStreamingCacheGB in
         let ram = systemRamGiB()
         return feasibility(
             ramGiB: ram, variant: variant, flashQuant: flashQuant, ctx: ctx,
-            wiredLimitMB: effectiveWiredLimitMB(ramGiB: ram), sessions: sessions)
+            wiredLimitMB: effectiveWiredLimitMB(ramGiB: ram), sessions: sessions,
+            ssdStreamingCacheGB: ssdStreamingCacheGB)
     }
     private let wiredLimitGate: WiredLimitGate
 
@@ -169,7 +171,7 @@ final class SupervisorService: ObservableObject {
         // Defense-in-depth for the popup gate: refuse configs whose GPU-wired working set
         // exceeds the effective Metal wired limit (starting anyway pages the model and
         // hangs the machine). The UI's confirmed "Start anyway" passes the override.
-        switch wiredLimitGate(variant, flashQuant, ctx, sessions) {
+        switch wiredLimitGate(variant, flashQuant, ctx, sessions, ssdStreaming ? ssdStreamingCacheGB : 0) {
         case let .blocked(reason):
             state = .error(.configurationBlocked(reason: reason))
             return
@@ -325,7 +327,7 @@ final class SupervisorService: ObservableObject {
             recentLog.append("ignored 'restart': \(reason)")
             return .rejected(.blocked(reason: reason))
         }
-        let feasibility = wiredLimitGate(variant, flashQuant, ctx, sessions)
+        let feasibility = wiredLimitGate(variant, flashQuant, ctx, sessions, ssdStreaming ? ssdStreamingCacheGB : 0)
         switch feasibility {
         case let .blocked(reason):
             recentLog.append("ignored 'restart': \(reason)")

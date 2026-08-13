@@ -362,10 +362,23 @@ private func metalIndexerScratchBytes(variant: Variant, ctx: Int) -> Int? {
 /// one prefill workspace plus persistent backend scratch shared across sessions. Context
 /// counts regardless of the disk KV cache: disk storage checkpoints resident tensors; it
 /// does not replace them.
-func requiredWiredMB(variant: Variant, flashQuant: FlashQuant, ctx: Int, sessions: Int = 1) -> Int {
+func requiredWiredMB(
+    variant: Variant, flashQuant: FlashQuant, ctx: Int, sessions: Int = 1,
+    ssdStreamingCacheGB: Int = 0
+) -> Int {
     let quant = Quant.for(variant, flashQuant: flashQuant)
+    // SSD streaming keeps only the expert-cache budget + non-routed weights resident;
+    // the routed experts beyond the budget stream from the GGUF on demand. Charge the
+    // resident set (not the full GGUF) when a budget is in effect.
+    let residentWeightsMB: Int?
+    if ssdStreamingCacheGB > 0 {
+        let residentGiB = quant.weightsGiB - quant.routedExpertGiB + Double(ssdStreamingCacheGB)
+        residentWeightsMB = roundedUpMiB(Int(residentGiB * 1_073_741_824))
+    } else {
+        residentWeightsMB = roundedUpMiB(quant.ggufBytes)
+    }
     guard
-        let weightsMB = roundedUpMiB(quant.ggufBytes),
+        let weightsMB = residentWeightsMB,
         let sessionBytes = metalContextBytes(variant: variant, ctx: ctx),
         let sessionGraphBytes = metalSessionGraphBytes(variant: variant, ctx: ctx),
         let sharedGraphBytes = metalSharedGraphWorkspaceBytes(variant: variant, ctx: ctx),
@@ -424,7 +437,7 @@ func defaultFlashQuant(ramGiB: Double) -> FlashQuant {
 /// ceiling (`wiredLimitMB` — inject `effectiveWiredLimitMB(ramGiB:)` at the call site).
 func feasibility(
     ramGiB: Double, variant: Variant, flashQuant: FlashQuant,
-    ctx: Int, wiredLimitMB: Int, sessions: Int = 1
+    ctx: Int, wiredLimitMB: Int, sessions: Int = 1, ssdStreamingCacheGB: Int = 0
 ) -> Feasibility {
     if let reason = launchBoundsError(variant: variant, ctx: ctx, sessions: sessions) {
         return .blocked(reason: reason)
@@ -441,7 +454,8 @@ func feasibility(
         }
     }
     let required = requiredWiredMB(
-        variant: variant, flashQuant: flashQuant, ctx: ctx, sessions: sessions)
+        variant: variant, flashQuant: flashQuant, ctx: ctx, sessions: sessions,
+        ssdStreamingCacheGB: ssdStreamingCacheGB)
     if required == Int.max {
         return .blocked(
             reason:
