@@ -210,10 +210,11 @@ struct SettingsView: View {
                 } else {
                     Text(
                         "SSD streaming isn't supported for Laguna S 2.1 on this ds4 yet — "
-                            + "passing the flag would make the server refuse to start.")
-                        .font(.caption2)
-                        .foregroundStyle(.secondary)
-                        .fixedSize(horizontal: false, vertical: true)
+                            + "passing the flag would make the server refuse to start."
+                    )
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
                 }
             } header: {
                 Text("SSD streaming")
