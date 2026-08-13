@@ -493,11 +493,15 @@ func feasibility(
 /// below 64 GiB the weights + 8 GiB OS reserve don't fit.
 /// Config-specific feasibility for the unified picker: DS4F routes through the full
 /// Metal wired-limit gate; Laguna (no Metal shape yet) is gated by its RAM floor.
-func feasibility(ramGiB: Double, model: Model, ctx: Int, wiredLimitMB: Int, sessions: Int = 1) -> Feasibility {
+func feasibility(
+    ramGiB: Double, model: Model, ctx: Int, wiredLimitMB: Int, sessions: Int = 1,
+    ssdStreamingCacheGB: Int = 0
+) -> Feasibility {
     if let v = model.variant, let f = model.flashQuant {
         return feasibility(
             ramGiB: ramGiB, variant: v, flashQuant: f, ctx: ctx,
-            wiredLimitMB: wiredLimitMB, sessions: sessions)
+            wiredLimitMB: wiredLimitMB, sessions: sessions,
+            ssdStreamingCacheGB: ssdStreamingCacheGB)
     }
     return feasibility(ramGiB: ramGiB, model: model)
 }

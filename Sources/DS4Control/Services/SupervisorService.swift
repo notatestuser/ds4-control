@@ -196,7 +196,7 @@ final class SupervisorService: ObservableObject {
             // working set exceeds the effective Metal wired limit. The confirmed
             // "Start anyway" path passes the override. Laguna has no variant, so it is
             // gated only by its RAM floor in feasibility(model:).
-            switch wiredLimitGate(v, f, ctx, sessions) {
+            switch wiredLimitGate(v, f, ctx, sessions, ssdStreaming ? ssdStreamingCacheGB : 0) {
             case let .blocked(reason):
                 state = .error(.configurationBlocked(reason: reason))
                 return
@@ -402,7 +402,7 @@ final class SupervisorService: ObservableObject {
         return .accepted
     }
 
-  func resumeRunningServerIfAny(port: Int) {
+    func resumeRunningServerIfAny(port: Int) {
         guard state == .idle else { return }
         adoptHealthyServerIfPresent(port: port)
     }
