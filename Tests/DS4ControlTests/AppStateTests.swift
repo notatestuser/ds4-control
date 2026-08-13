@@ -105,6 +105,34 @@ final class AppStateTests: XCTestCase {
         XCTAssertEqual(defaults.integer(forKey: "ctxOverride"), 0)
     }
 
+    func testSelectedModelDefaultsByRAM() {
+        let app = AppState(defaults: UserDefaults(suiteName: "test.\(UUID().uuidString)")!)
+        // On this machine (≥128 GiB) the default is v4FlashQ2Q4, matching the old
+        // defaultFlashQuant behavior (tiered by real system RAM like the existing tests).
+        XCTAssertEqual(app.selectedModel, .v4FlashQ2Q4)
+    }
+    func testSelectedModelPersists() {
+        let name = "test.\(UUID().uuidString)"
+        let a1 = AppState(defaults: UserDefaults(suiteName: name)!)
+        a1.selectedModel = .lagunaS21
+        let a2 = AppState(defaults: UserDefaults(suiteName: name)!)
+        XCTAssertEqual(a2.selectedModel, .lagunaS21)
+    }
+    func testSelectedModelMigratesLegacyVariantKeys() {
+        let d = UserDefaults(suiteName: "test.\(UUID().uuidString)")!
+        d.set(Variant.flash.rawValue, forKey: "selectedVariant")
+        d.set(FlashQuant.q2.rawValue, forKey: "selectedFlashQuant")
+        let app = AppState(defaults: d)
+        XCTAssertEqual(app.selectedModel, .v4FlashQ2)  // mapped from the legacy pair
+    }
+    func testSelectedModelShimsRoundTrip() {
+        let app = AppState(defaults: UserDefaults(suiteName: "test.\(UUID().uuidString)")!)
+        app.selectedVariant = .pro
+        XCTAssertEqual(app.selectedModel, .v4Pro)
+        app.selectedFlashQuant = .q2
+        XCTAssertEqual(app.selectedModel, .v4FlashQ2)
+    }
+
     func testThinkingModeGateAndCtxBump() {
         let lowMemoryApp = AppState(
             defaults: UserDefaults(suiteName: "test.\(UUID().uuidString)")!, ramGiB: 96)

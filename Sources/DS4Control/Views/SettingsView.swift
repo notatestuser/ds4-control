@@ -226,7 +226,7 @@ struct SettingsView: View {
             }
 
             Section {
-                Picker("Variant", selection: $app.selectedFlashQuant) {
+                Picker("Variant", selection: Binding(get: { app.selectedFlashQuant }, set: { app.selectedFlashQuant = $0 })) {
                     ForEach(FlashQuant.allCases) { q in
                         Text(q.label + (supervisor.isFlashQuantDownloaded(q) ? "  (downloaded)" : ""))
                             .tag(q)

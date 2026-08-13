@@ -10,7 +10,7 @@ struct ModelRowView: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
-            Picker("", selection: $app.selectedVariant) {
+            Picker("", selection: Binding(get: { app.selectedVariant }, set: { app.selectedVariant = $0 })) {
                 ForEach(variants) { Text($0.displayName).tag($0) }
             }
             .pickerStyle(.segmented)
