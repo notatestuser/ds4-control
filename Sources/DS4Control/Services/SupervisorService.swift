@@ -57,10 +57,10 @@ final class SupervisorService: ObservableObject {
 
     /// The pluggable file fetch — defaults to the native parallel `HFDownloader`. Tests inject a fake
     /// that simulates progress/completion/failure without touching the network. `highPerformance`
-    /// selects the worker count (8 vs 64).
+    /// selects the worker count (8 vs 64). The model supplies the repo/revision/filename.
     typealias FetchFile =
         @Sendable (
-            _ file: String, _ destDir: URL, _ token: String?, _ highPerformance: Bool,
+            _ model: Model, _ destDir: URL, _ token: String?, _ highPerformance: Bool,
             _ onProgress: @escaping @Sendable (Int64, Int64) -> Void
         ) async throws -> Void
     private let fetchFile: FetchFile
@@ -91,9 +91,10 @@ final class SupervisorService: ObservableObject {
         self.downloadRunner = downloadRunner ?? RealProcessRunner()
         self.wiredLimitGate = wiredLimitGate ?? Self.defaultWiredLimitGate
         self.fetchFile =
-            fetchFile ?? { file, dir, token, highPerformance, prog in
-                try await HFDownloader(repo: SupervisorService.ggufRepo).download(
-                    file: file, into: dir, token: token, highPerformance: highPerformance, onProgress: prog)
+            fetchFile ?? { model, dir, token, highPerformance, prog in
+                try await HFDownloader(repo: model.downloadRepo, revision: model.downloadRevision).download(
+                    file: model.ggufFilename, into: dir, token: token, highPerformance: highPerformance,
+                    onProgress: prog)
             }
     }
 
@@ -463,16 +464,18 @@ final class SupervisorService: ObservableObject {
     private var downloadGeneration = 0
     /// The native HF download in flight (nil when idle); cancelled by cancelDownload()/retry.
     private var downloadTask: Task<Void, Never>?
-    /// HuggingFace repo hosting the DS4 GGUF weights (single source for the resolve URL).
-    private static let ggufRepo = "antirez/deepseek-v4-gguf"
 
     func download(variant: Variant, flashQuant: FlashQuant, highPerformance: Bool = false) {
+        download(model: Model.from(variant: variant, flashQuant: flashQuant), highPerformance: highPerformance)
+    }
+
+    func download(model: Model, highPerformance: Bool = false) {
         guard state == .idle || isErrorState else { emitBadState("download"); return }
         if let e = validateDs4Dir() { state = .error(e); return }
-        let q = Quant.for(variant, flashQuant: flashQuant)
         let baseDir = ggufBaseDir()
-        let expectedBytes = Int64(q.ggufBytes)
-        download = DownloadProgress(pct: 0, file: q.ggufFilename, receivedBytes: 0, totalBytes: expectedBytes)
+        // #15's exact GGUF bytes for DS4F; the measured 44.95 GiB for Laguna.
+        let expectedBytes = Int64(model.quant?.ggufBytes ?? Int(model.weightsGiB * 1_073_741_824))
+        download = DownloadProgress(pct: 0, file: model.ggufFilename, receivedBytes: 0, totalBytes: expectedBytes)
         state = .downloading
         lastDownloadSample = nil
         downloadGeneration += 1
@@ -481,7 +484,7 @@ final class SupervisorService: ObservableObject {
             env: ProcessInfo.processInfo.environment,
             cacheFile: FileManager.default.homeDirectoryForCurrentUser
                 .appendingPathComponent(".cache/huggingface/token"))
-        let filename = q.ggufFilename
+        let filename = model.ggufFilename
         downloadProcessLive = true
         // Native parallel Swift download: N workers each GET …/resolve/main/<file> with a closed
         // HTTP Range straight to their offset in `<file>.part`, re-resolving each chunk so the signed
@@ -492,7 +495,7 @@ final class SupervisorService: ObservableObject {
         downloadTask?.cancel()
         downloadTask = Task { [weak self] in
             do {
-                try await fetch(filename, baseDir, token, highPerformance) { received, total in
+                try await fetch(model, baseDir, token, highPerformance) { received, total in
                     Self.onMain {
                         self?.updateDownloadProgress(gen: gen, file: filename, received: received, total: total)
                     }
@@ -608,25 +611,30 @@ final class SupervisorService: ObservableObject {
         download(variant: variant, flashQuant: flashQuant, highPerformance: highPerformance)
     }
 
-    /// True when the selected variant's gguf exists on disk.
+    /// True when the model's gguf exists on disk.
+    func isDownloaded(_ model: Model) -> Bool {
+        FileManager.default.fileExists(atPath: ggufURL(for: model).path)
+    }
     func isDownloaded(_ variant: Variant, flashQuant: FlashQuant) -> Bool {
-        FileManager.default.fileExists(atPath: ggufURL(for: variant, flashQuant: flashQuant).path)
+        isDownloaded(Model.from(variant: variant, flashQuant: flashQuant))
     }
 
-    // MARK: - Flash quant store (Settings: download markers + cleanup)
+    // MARK: - Model store (Settings: download markers + cleanup)
     func flashQuantURL(_ q: FlashQuant) -> URL {
         ggufBaseDir().appendingPathComponent(q.quant.ggufFilename)
     }
     func isFlashQuantDownloaded(_ q: FlashQuant) -> Bool {
         FileManager.default.fileExists(atPath: flashQuantURL(q).path)
     }
-    /// Delete on-disk Flash quant ggufs other than `keep`. V4 Pro is untouched by construction
-    /// (the loop only iterates `FlashQuant`). Gate the call site to idle/error so a loaded or
-    /// downloading model is never removed. Returns the removed filenames.
+    /// Delete on-disk Flash quant ggufs other than the kept model's. V4 Pro is untouched by
+    /// construction (the loop only iterates `FlashQuant`) and the Laguna file is never touched
+    /// (it isn't a FlashQuant). Returns the removed filenames. Gate the call site to idle/error
+    /// so a loaded or downloading model is never removed.
     @discardableResult
-    func cleanupUnusedFlashQuants(keep: FlashQuant) -> [String] {
+    func cleanupUnusedModels(keep: Model) -> [String] {
+        guard let keepQuant = keep.quant else { return [] }  // Laguna: single model per family
         var removed: [String] = []
-        for q in FlashQuant.allCases where q != keep {
+        for q in FlashQuant.allCases where q.quant != keepQuant {
             let url = flashQuantURL(q)
             if FileManager.default.fileExists(atPath: url.path) {
                 try? FileManager.default.removeItem(at: url)
@@ -635,6 +643,9 @@ final class SupervisorService: ObservableObject {
         }
         ggufStoreVersion += 1
         return removed
+    }
+    func cleanupUnusedFlashQuants(keep: FlashQuant) -> [String] {
+        cleanupUnusedModels(keep: Model.from(variant: .flash, flashQuant: keep))
     }
 
     // MARK: - Legacy preview weights (pre-0731)

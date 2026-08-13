@@ -169,4 +169,13 @@ final class HFDownloaderTests: XCTestCase {
         XCTAssertFalse(FileManager.default.fileExists(atPath: sidecar.path), "sidecar dropped on completion")
         XCTAssertFalse(FileManager.default.fileExists(atPath: part.path), ".part renamed away on completion")
     }
+
+    func testLagunaRepoResolveURL() {
+        let url = URL(
+            string:
+                "https://huggingface.co/antirez/Laguna-S-2.1-GGUF/resolve/main/laguna-s-2.1-RoutedQ2_K-Last27Q3_K.gguf")!
+        XCTAssertEqual(
+            url.path, "/antirez/Laguna-S-2.1-GGUF/resolve/main/laguna-s-2.1-RoutedQ2_K-Last27Q3_K.gguf")
+    }
+
 }
