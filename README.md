@@ -19,6 +19,9 @@ It launches, supervises, and monitors a local ds4 server, lets you pick **V4 Pro
   <a href="https://github.com/notatestuser/ds4-control/releases/latest">
     <img src="https://img.shields.io/badge/Download-DS4%20Control%20for%20macOS%20(.dmg)-1f6feb?style=for-the-badge&logo=apple&logoColor=white" alt="Download the latest DS4 Control .dmg for macOS" height="46">
   </a>
+  <a href="https://formulae.brew.sh/cask/ds4-control">
+    <img src="https://img.shields.io/homebrew/cask/v/ds4-control?style=for-the-badge&logo=homebrew&logoColor=white&color=4270e4" alt="Install DS4 Control Cask via Homebrew" height="46">
+  </a>
 </p>
 
 <p align="center">
