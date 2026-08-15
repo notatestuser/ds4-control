@@ -305,6 +305,13 @@ final class SupervisorStateMachineTests: XCTestCase {
 
         XCTAssertEqual(stopResult, false)
         XCTAssertEqual(s.state, .ready)
+        XCTAssertEqual(
+            s.restart(
+                variant: .flash, flashQuant: .q2q4, ctx: 393_216,
+                host: "127.0.0.1", port: 8000, power: nil),
+            .ignored)
+        XCTAssertEqual(s.state, .ready)
+        XCTAssertEqual(r.launchCallCount, 0)
     }
     func testAttachedStopWithNoPIDsFailsWhileServerStillResponds() async throws {
         let body = Data(#"{"data":[{"id":"deepseek-v4-flash"}]}"#.utf8)

@@ -138,7 +138,8 @@ final class SupervisorIntegrationTests: XCTestCase {
         let dir = URL(fileURLWithPath: NSTemporaryDirectory()).appendingPathComponent(UUID().uuidString)
         try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
         let s = SupervisorService(
-            ds4Dir: dir, runner: RealProcessRunner(), serverProbe: { _ in await probes.next() })
+            ds4Dir: dir, runner: RealProcessRunner(), serverProbe: { _ in await probes.next() },
+            listeningPIDLookup: { _ in .none })
         let ready = expectation(description: "attached ready")
         let token = s.$state.sink { if $0 == .ready { ready.fulfill() } }
         s.resumeRunningServerIfAny(port: 8251)

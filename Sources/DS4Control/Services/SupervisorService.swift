@@ -455,10 +455,14 @@ final class SupervisorService: ObservableObject {
                 sessions: sessions, kvDiskDir: kvDiskDir, overrideWiredLimitGate: overrideWiredLimitGate)
         }
         stop()
-        if state == .idle {
+        switch state {
+        case .idle:
             relaunch()  // stopped synchronously (the runner exited inline)
-        } else {
+        case .stopping:
             pendingRestart = relaunch  // deferred until stop drains (handleExit, or the attached-pid poll)
+        default:
+            pendingRestart = nil
+            return .ignored
         }
         return .accepted
     }
