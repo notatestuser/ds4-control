@@ -515,10 +515,12 @@ final class SupervisorService: ObservableObject {
         } catch {
             return .failure
         }
-        let output = String(
-            data: outputPipe.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8) ?? ""
-        let error = String(
-            data: errorPipe.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8) ?? ""
+        let output =
+            String(
+                data: outputPipe.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8) ?? ""
+        let error =
+            String(
+                data: errorPipe.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8) ?? ""
         let lines = output.split(whereSeparator: { $0 == "\n" })
         if lsof.terminationStatus != 0 {
             return error.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? .none : .failure

@@ -39,7 +39,9 @@ final class AppTerminationCoordinatorTests: XCTestCase {
             var promptCount = 0
             let coordinator = AppTerminationCoordinator(
                 app: app, supervisor: supervisor,
-                presentChoice: { promptCount += 1; return .alwaysStop })
+                presentChoice: {
+                    promptCount += 1; return .alwaysStop
+                })
 
             XCTAssertEqual(coordinator.applicationShouldTerminate { _ in XCTFail("unexpected reply") }, .terminateNow)
             XCTAssertEqual(promptCount, 0)
@@ -54,7 +56,9 @@ final class AppTerminationCoordinatorTests: XCTestCase {
         var promptCount = 0
         let coordinator = AppTerminationCoordinator(
             app: app, supervisor: supervisor,
-            presentChoice: { promptCount += 1; return .keepRunning })
+            presentChoice: {
+                promptCount += 1; return .keepRunning
+            })
 
         XCTAssertEqual(coordinator.applicationShouldTerminate { _ in XCTFail("unexpected reply") }, .terminateNow)
         XCTAssertEqual(promptCount, 1)
@@ -105,7 +109,9 @@ final class AppTerminationCoordinatorTests: XCTestCase {
         var replyValue: Bool?
         let coordinator = AppTerminationCoordinator(
             app: app, supervisor: supervisor,
-            presentChoice: { promptCount += 1; return .alwaysStop })
+            presentChoice: {
+                promptCount += 1; return .alwaysStop
+            })
 
         let result = coordinator.applicationShouldTerminate {
             replyValue = $0
@@ -131,7 +137,9 @@ final class AppTerminationCoordinatorTests: XCTestCase {
         var secondReplyCalled = false
         let coordinator = AppTerminationCoordinator(
             app: app, supervisor: supervisor,
-            presentChoice: { promptCount += 1; return .keepRunning })
+            presentChoice: {
+                promptCount += 1; return .keepRunning
+            })
 
         XCTAssertEqual(
             coordinator.applicationShouldTerminate { value in
@@ -157,7 +165,9 @@ final class AppTerminationCoordinatorTests: XCTestCase {
         let replied = expectation(description: "termination reply")
         let coordinator = AppTerminationCoordinator(
             app: app, supervisor: supervisor,
-            presentChoice: { promptCount += 1; return .keepRunning })
+            presentChoice: {
+                promptCount += 1; return .keepRunning
+            })
 
         XCTAssertEqual(
             coordinator.applicationShouldTerminate { value in
