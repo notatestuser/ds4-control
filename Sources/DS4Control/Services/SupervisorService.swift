@@ -53,6 +53,10 @@ final class SupervisorService: ObservableObject {
     /// Callers waiting for a confirmed stop (notably app termination). Multiple quit/stop
     /// requests coalesce onto the same in-flight shutdown and are drained exactly once.
     private var pendingStopCompletions: [(Bool) -> Void] = []
+    /// Foundation normally delivers `Process.terminationHandler` after SIGKILL, but an
+    /// unresolved owned process must not leave app termination waiting forever.
+    private var ownedStopWatchdog: Task<Void, Never>?
+    private let ownedStopWatchdogDelay: TimeInterval
 
     /// Where downloaded gguf models live when `DS4_GGUF_DIR` isn't set. Production passes
     /// the writable App Support dir; tests pass nil so it falls back to `ds4Dir/gguf`.
@@ -83,7 +87,7 @@ final class SupervisorService: ObservableObject {
     init(
         ds4Dir: URL, runner: ProcessRunner, serverProbe: ((Int) async -> Data?)? = nil,
         ggufBaseURL: URL? = nil, downloadRunner: ProcessRunner? = nil, fetchFile: FetchFile? = nil,
-        wiredLimitGate: WiredLimitGate? = nil
+        wiredLimitGate: WiredLimitGate? = nil, ownedStopWatchdogDelay: TimeInterval = 35
     ) {
         self.ds4Dir = ds4Dir
         self.runner = runner
@@ -91,6 +95,7 @@ final class SupervisorService: ObservableObject {
         self.ggufBaseOverride = ggufBaseURL
         self.downloadRunner = downloadRunner ?? RealProcessRunner()
         self.wiredLimitGate = wiredLimitGate ?? Self.defaultWiredLimitGate
+        self.ownedStopWatchdogDelay = ownedStopWatchdogDelay
         self.fetchFile =
             fetchFile ?? { file, dir, token, highPerformance, prog in
                 try await HFDownloader(repo: SupervisorService.ggufRepo).download(
@@ -234,6 +239,7 @@ final class SupervisorService: ObservableObject {
     }
 
     private func handleExit(_ code: Int32) {
+        ownedStopWatchdog?.cancel(); ownedStopWatchdog = nil
         healthTimer?.invalidate(); healthTimer = nil; startupTimer?.invalidate(); startupTimer = nil
         if expectingExit {
             completeStop()
@@ -276,6 +282,7 @@ final class SupervisorService: ObservableObject {
             for pid in pids { kill(pid, SIGTERM) }
             finishAttachedStopWhenExited(pids: pids, waited: 0, escalated: false)
         } else {
+            startOwnedStopWatchdog()
             runner.terminate(graceSeconds: 30)
         }
     }
@@ -309,12 +316,37 @@ final class SupervisorService: ObservableObject {
     }
 
     private func completeStop() {
+        ownedStopWatchdog?.cancel(); ownedStopWatchdog = nil
         expectingExit = false
         state = .idle
         let completions = pendingStopCompletions
         pendingStopCompletions.removeAll()
         for completion in completions { completion(true) }
         if let relaunch = pendingRestart { pendingRestart = nil; relaunch() }
+    }
+
+    private func startOwnedStopWatchdog() {
+        ownedStopWatchdog?.cancel()
+        let delay = ownedStopWatchdogDelay
+        ownedStopWatchdog = Task { @MainActor [weak self] in
+            try? await Task.sleep(for: .seconds(delay))
+            guard !Task.isCancelled else { return }
+            self?.failOwnedStop()
+        }
+    }
+
+    private func failOwnedStop() {
+        guard state == .stopping, expectingExit else { return }
+        ownedStopWatchdog = nil
+        pendingRestart = nil
+        recentLog.append("Owned ds4-server exit was not confirmed after SIGTERM/SIGKILL; stop failed")
+        state = .ready
+        startHealthPolling()
+        let completions = pendingStopCompletions
+        pendingStopCompletions.removeAll()
+        for completion in completions { completion(false) }
+        // Keep `expectingExit` set: if Foundation delivers a late exit notification, it is
+        // still the requested stop and should settle the supervisor in `.idle`, not `.error`.
     }
 
     private func failAttachedStop() {

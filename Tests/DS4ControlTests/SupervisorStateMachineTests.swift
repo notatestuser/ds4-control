@@ -41,7 +41,8 @@ final class SupervisorStateMachineTests: XCTestCase {
     // adoption probe, and the real default would hit a live ds4-server on the dev machine.
     fileprivate func makeSupervisor(
         _ runner: FakeRunner, probe: @escaping (Int) async -> Data? = { _ in nil },
-        wiredLimitGate: @escaping SupervisorService.WiredLimitGate = { _, _, _, _ in .standard }
+        wiredLimitGate: @escaping SupervisorService.WiredLimitGate = { _, _, _, _ in .standard },
+        ownedStopWatchdogDelay: TimeInterval = 35
     ) throws -> SupervisorService {
         let dir = URL(fileURLWithPath: NSTemporaryDirectory()).appendingPathComponent(UUID().uuidString)
         try FileManager.default.createDirectory(
@@ -58,7 +59,9 @@ final class SupervisorStateMachineTests: XCTestCase {
         FileManager.default.createFile(atPath: gg.path, contents: Data("gguf".utf8))
         return SupervisorService(
             ds4Dir: dir, runner: runner, serverProbe: probe,
-            wiredLimitGate: wiredLimitGate)  // tests are host-independent: skip the RAM/sysctl gate
+            wiredLimitGate: wiredLimitGate,
+            ownedStopWatchdogDelay: ownedStopWatchdogDelay
+        )  // tests are host-independent: skip the RAM/sysctl gate
     }
 
     func testStartReachesReady() throws {
@@ -212,6 +215,32 @@ final class SupervisorStateMachineTests: XCTestCase {
         r.finishTermination()
         XCTAssertEqual(s.state, .idle)
         XCTAssertEqual(results, [true, true])
+    }
+    func testOwnedStopWatchdogReportsFailureAndAllowsRetry() async throws {
+        let r = FakeRunner(); r.exitsOnTerminate = false
+        let s = try makeSupervisor(r, ownedStopWatchdogDelay: 0.01)
+        s.start(variant: .flash, flashQuant: .q2q4, ctx: 250_000, host: "127.0.0.1", port: 8000, power: nil)
+        r.emit("ds4-server: listening on http://127.0.0.1:8000")
+        let failed = expectation(description: "owned stop watchdog")
+        var firstResult: Bool?
+
+        s.stop {
+            firstResult = $0
+            failed.fulfill()
+        }
+
+        await fulfillment(of: [failed], timeout: 1)
+        XCTAssertEqual(firstResult, false)
+        XCTAssertEqual(s.state, .ready)
+        XCTAssertEqual(r.terminateCallCount, 1)
+
+        var retryResult: Bool?
+        s.stop { retryResult = $0 }
+        XCTAssertEqual(r.terminateCallCount, 2)
+        r.finishTermination()
+
+        XCTAssertEqual(retryResult, true)
+        XCTAssertEqual(s.state, .idle)
     }
     func testTerminationStopCancelsPendingRestart() throws {
         let r = FakeRunner(); r.exitsOnTerminate = false
