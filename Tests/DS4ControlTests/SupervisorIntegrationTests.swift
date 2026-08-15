@@ -2,6 +2,18 @@ import XCTest
 import Combine
 @testable import DS4Control
 
+private actor IntegrationProbeSequence {
+    private var responses: [Data?]
+
+    init(_ responses: [Data?]) {
+        self.responses = responses
+    }
+
+    func next() -> Data? {
+        responses.isEmpty ? nil : responses.removeFirst()
+    }
+}
+
 @MainActor
 final class SupervisorIntegrationTests: XCTestCase {
     /// A fetch that never returns — keeps the download in flight without touching the network.
@@ -117,23 +129,30 @@ final class SupervisorIntegrationTests: XCTestCase {
         XCTAssertNil(loadedContextLength(from: Data("nope".utf8)))
     }
 
-    func testResumeAttachesToRunningServer() throws {
+    func testResumeAttachesToRunningServer() async throws {
         // Inject a deterministic probe — no live socket (nc fixtures are flaky on CI).
         let body = Data(
             #"{"object":"list","data":[{"id":"deepseek-v4-pro","name":"DeepSeek V4 Pro","context_length":1000000}]}"#
                 .utf8)
+        let probes = IntegrationProbeSequence([body, nil])
         let dir = URL(fileURLWithPath: NSTemporaryDirectory()).appendingPathComponent(UUID().uuidString)
         try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
-        let s = SupervisorService(ds4Dir: dir, runner: RealProcessRunner(), serverProbe: { _ in body })
+        let s = SupervisorService(
+            ds4Dir: dir, runner: RealProcessRunner(), serverProbe: { _ in await probes.next() })
         let ready = expectation(description: "attached ready")
         let token = s.$state.sink { if $0 == .ready { ready.fulfill() } }
         s.resumeRunningServerIfAny(port: 8251)
-        wait(for: [ready], timeout: 5)
+        await fulfillment(of: [ready], timeout: 5)
         token.cancel()
         XCTAssertEqual(s.activeModel, "DeepSeek V4 Pro")
         XCTAssertEqual(s.ctx, 1_000_000)  // adopted server's real context, not the 393_216 default
+        let stopped = expectation(description: "attached stop verified")
         var stopSucceeded: Bool?
-        s.stop { stopSucceeded = $0 }
+        s.stop {
+            stopSucceeded = $0
+            stopped.fulfill()
+        }
+        await fulfillment(of: [stopped], timeout: 5)
         XCTAssertEqual(s.state, .idle)
         XCTAssertEqual(stopSucceeded, true)
     }

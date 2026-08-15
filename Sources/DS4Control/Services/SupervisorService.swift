@@ -14,6 +14,12 @@ enum RestartResult: Equatable {
     case ignored
 }
 
+enum ListeningPIDResult: Equatable {
+    case found([pid_t])
+    case none
+    case failure
+}
+
 @MainActor
 final class SupervisorService: ObservableObject {
     @Published private(set) var state: ServerState = .idle
@@ -50,6 +56,10 @@ final class SupervisorService: ObservableObject {
     /// Deferred start used by `restart`: when stopping an owned process, the relaunch
     /// can't happen until it has fully exited (port freed). `handleExit` runs this.
     private var pendingRestart: (() -> Void)?
+    /// Identifies the runner callback belonging to the current owned server. A runner can
+    /// deliver an old process's exit after a replacement launch has already started.
+    private var serverGeneration = 0
+    private var activeServerGeneration: Int?
     /// Callers waiting for a confirmed stop (notably app termination). Multiple quit/stop
     /// requests coalesce onto the same in-flight shutdown and are drained exactly once.
     private var pendingStopCompletions: [(Bool) -> Void] = []
@@ -57,6 +67,8 @@ final class SupervisorService: ObservableObject {
     /// unresolved owned process must not leave app termination waiting forever.
     private var ownedStopWatchdog: Task<Void, Never>?
     private let ownedStopWatchdogDelay: TimeInterval
+    typealias ListeningPIDLookup = (Int) -> ListeningPIDResult
+    private let listeningPIDLookup: ListeningPIDLookup
 
     /// Where downloaded gguf models live when `DS4_GGUF_DIR` isn't set. Production passes
     /// the writable App Support dir; tests pass nil so it falls back to `ds4Dir/gguf`.
@@ -87,7 +99,8 @@ final class SupervisorService: ObservableObject {
     init(
         ds4Dir: URL, runner: ProcessRunner, serverProbe: ((Int) async -> Data?)? = nil,
         ggufBaseURL: URL? = nil, downloadRunner: ProcessRunner? = nil, fetchFile: FetchFile? = nil,
-        wiredLimitGate: WiredLimitGate? = nil, ownedStopWatchdogDelay: TimeInterval = 35
+        wiredLimitGate: WiredLimitGate? = nil, ownedStopWatchdogDelay: TimeInterval = 35,
+        listeningPIDLookup: ListeningPIDLookup? = nil
     ) {
         self.ds4Dir = ds4Dir
         self.runner = runner
@@ -96,6 +109,7 @@ final class SupervisorService: ObservableObject {
         self.downloadRunner = downloadRunner ?? RealProcessRunner()
         self.wiredLimitGate = wiredLimitGate ?? Self.defaultWiredLimitGate
         self.ownedStopWatchdogDelay = ownedStopWatchdogDelay
+        self.listeningPIDLookup = listeningPIDLookup ?? { Self.pidsListening(onPort: $0) }
         self.fetchFile =
             fetchFile ?? { file, dir, token, highPerformance, prog in
                 try await HFDownloader(repo: SupervisorService.ggufRepo).download(
@@ -212,6 +226,9 @@ final class SupervisorService: ObservableObject {
                 "--kv-disk-space-mb", "\(Self.kvDiskSpaceMB)",
             ]
         }
+        serverGeneration &+= 1
+        let generation = serverGeneration
+        activeServerGeneration = generation
         state = .starting
         do {
             try runner.launch(
@@ -219,8 +236,11 @@ final class SupervisorService: ObservableObject {
                 args: args, cwd: ds4Dir, env: [:],
                 removingEnvironmentKeys: Self.allocatorEnvironmentKeys,
                 onStderrLine: { [weak self] line in Self.onMain { self?.handleStderr(line) } },
-                onExit: { [weak self] code in Self.onMain { self?.handleExit(code) } })
+                onExit: { [weak self] code in
+                    Self.onMain { self?.handleExit(code, generation: generation) }
+                })
         } catch {
+            if activeServerGeneration == generation { activeServerGeneration = nil }
             state = .error(.crashed(tail: "\(error)")); return
         }
         startupTimer = Timer.scheduledTimer(withTimeInterval: 600, repeats: false) { [weak self] _ in
@@ -238,7 +258,9 @@ final class SupervisorService: ObservableObject {
         }
     }
 
-    private func handleExit(_ code: Int32) {
+    private func handleExit(_ code: Int32, generation: Int) {
+        guard activeServerGeneration == generation else { return }
+        activeServerGeneration = nil
         ownedStopWatchdog?.cancel(); ownedStopWatchdog = nil
         healthTimer?.invalidate(); healthTimer = nil; startupTimer?.invalidate(); startupTimer = nil
         if expectingExit {
@@ -278,9 +300,15 @@ final class SupervisorService: ObservableObject {
             // second instance while the old one lives — so .idle (and any pending restart)
             // must wait for the pids to actually exit, not just for the signal.
             serverAttached = false
-            let pids = pidsListening(onPort: port)
-            for pid in pids { kill(pid, SIGTERM) }
-            finishAttachedStopWhenExited(pids: pids, waited: 0, escalated: false)
+            switch listeningPIDLookup(port) {
+            case let .found(pids):
+                for pid in pids { kill(pid, SIGTERM) }
+                finishAttachedStopWhenExited(pids: pids, waited: 0, escalated: false)
+            case .none:
+                verifyAttachedServerAbsent(onPort: port)
+            case .failure:
+                failAttachedStop()
+            }
         } else {
             startOwnedStopWatchdog()
             runner.terminate(graceSeconds: 30)
@@ -317,6 +345,7 @@ final class SupervisorService: ObservableObject {
 
     private func completeStop() {
         ownedStopWatchdog?.cancel(); ownedStopWatchdog = nil
+        activeServerGeneration = nil
         expectingExit = false
         state = .idle
         let completions = pendingStopCompletions
@@ -338,6 +367,10 @@ final class SupervisorService: ObservableObject {
     private func failOwnedStop() {
         guard state == .stopping, expectingExit else { return }
         ownedStopWatchdog = nil
+        if !runner.isRunning {
+            completeStop()
+            return
+        }
         pendingRestart = nil
         recentLog.append("Owned ds4-server exit was not confirmed after SIGTERM/SIGKILL; stop failed")
         state = .ready
@@ -347,6 +380,21 @@ final class SupervisorService: ObservableObject {
         for completion in completions { completion(false) }
         // Keep `expectingExit` set: if Foundation delivers a late exit notification, it is
         // still the requested stop and should settle the supervisor in `.idle`, not `.error`.
+    }
+
+    private func verifyAttachedServerAbsent(onPort port: Int) {
+        Task { [weak self] in
+            guard let probe = self?.serverProbe else { return }
+            let response = await probe(port)
+            await MainActor.run {
+                guard let self, self.state == .stopping, self.expectingExit else { return }
+                if response == nil {
+                    self.completeStop()
+                } else {
+                    self.failAttachedStop()
+                }
+            }
+        }
     }
 
     private func failAttachedStop() {
@@ -449,22 +497,32 @@ final class SupervisorService: ObservableObject {
 
     /// PIDs of processes listening on `port` (via lsof). Used by the attached-server stop:
     /// we don't own the process object, so its exit is observed by polling, not callback.
-    private func pidsListening(onPort port: Int) -> [pid_t] {
+    private static func pidsListening(onPort port: Int) -> ListeningPIDResult {
         let lsof = Process()
         lsof.executableURL = URL(fileURLWithPath: "/usr/sbin/lsof")
         lsof.arguments = ["-ti", "tcp:\(port)", "-sTCP:LISTEN"]
-        let pipe = Pipe()
-        lsof.standardOutput = pipe
-        lsof.standardError = Pipe()
+        let outputPipe = Pipe()
+        let errorPipe = Pipe()
+        lsof.standardOutput = outputPipe
+        lsof.standardError = errorPipe
         do {
             try lsof.run()
             lsof.waitUntilExit()
         } catch {
-            return []
+            return .failure
         }
-        let out = String(data: pipe.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8) ?? ""
-        return out.split(whereSeparator: { $0 == "\n" })
-            .compactMap { Int32($0.trimmingCharacters(in: .whitespaces)) }
+        let output = String(
+            data: outputPipe.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8) ?? ""
+        let error = String(
+            data: errorPipe.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8) ?? ""
+        let lines = output.split(whereSeparator: { $0 == "\n" })
+        if lsof.terminationStatus != 0 {
+            return error.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? .none : .failure
+        }
+        guard !lines.isEmpty else { return .none }
+        let pids = lines.compactMap { Int32($0.trimmingCharacters(in: .whitespaces)) }
+        guard pids.count == lines.count else { return .failure }
+        return .found(pids)
     }
 
     // MARK: - Download

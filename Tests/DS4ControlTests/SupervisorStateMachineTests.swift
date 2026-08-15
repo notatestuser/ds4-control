@@ -11,7 +11,7 @@ private final class FakeRunner: ProcessRunner {
     var lastEnv: [String: String] = [:]
     var lastRemovedEnvironmentKeys: Set<String> = []
     private var stderr: (@Sendable (String) -> Void)?
-    private var exit: (@Sendable (Int32) -> Void)?
+    private var exits: [@Sendable (Int32) -> Void] = []
     func launch(
         executable: URL, args: [String], cwd: URL, env: [String: String],
         removingEnvironmentKeys: Set<String>,
@@ -23,7 +23,7 @@ private final class FakeRunner: ProcessRunner {
         lastRemovedEnvironmentKeys = removingEnvironmentKeys
         isRunning = true
         stderr = onStderrLine
-        exit = onExit
+        exits.append(onExit)
     }
     func terminate(graceSeconds: Double) {
         terminateCallCount += 1
@@ -31,8 +31,21 @@ private final class FakeRunner: ProcessRunner {
         finishTermination()
     }
     func emit(_ line: String) { stderr?(line) }
-    func crash(_ code: Int32) { isRunning = false; exit?(code) }
-    func finishTermination() { isRunning = false; exit?(0) }
+    func crash(_ code: Int32) { isRunning = false; exits.last?(code) }
+    func finishTermination() { isRunning = false; exits.last?(0) }
+    func emitExit(forLaunch index: Int, code: Int32 = 0) { exits[index](code) }
+}
+
+private actor ProbeSequence {
+    private var responses: [Data?]
+
+    init(_ responses: [Data?]) {
+        self.responses = responses
+    }
+
+    func next() -> Data? {
+        responses.isEmpty ? nil : responses.removeFirst()
+    }
 }
 
 @MainActor
@@ -42,7 +55,8 @@ final class SupervisorStateMachineTests: XCTestCase {
     fileprivate func makeSupervisor(
         _ runner: FakeRunner, probe: @escaping (Int) async -> Data? = { _ in nil },
         wiredLimitGate: @escaping SupervisorService.WiredLimitGate = { _, _, _, _ in .standard },
-        ownedStopWatchdogDelay: TimeInterval = 35
+        ownedStopWatchdogDelay: TimeInterval = 35,
+        listeningPIDLookup: SupervisorService.ListeningPIDLookup? = nil
     ) throws -> SupervisorService {
         let dir = URL(fileURLWithPath: NSTemporaryDirectory()).appendingPathComponent(UUID().uuidString)
         try FileManager.default.createDirectory(
@@ -60,7 +74,8 @@ final class SupervisorStateMachineTests: XCTestCase {
         return SupervisorService(
             ds4Dir: dir, runner: runner, serverProbe: probe,
             wiredLimitGate: wiredLimitGate,
-            ownedStopWatchdogDelay: ownedStopWatchdogDelay
+            ownedStopWatchdogDelay: ownedStopWatchdogDelay,
+            listeningPIDLookup: listeningPIDLookup
         )  // tests are host-independent: skip the RAM/sysctl gate
     }
 
@@ -240,6 +255,103 @@ final class SupervisorStateMachineTests: XCTestCase {
         r.finishTermination()
 
         XCTAssertEqual(retryResult, true)
+        XCTAssertEqual(s.state, .idle)
+    }
+    func testStaleOwnedExitDoesNotClobberSubsequentLaunch() async throws {
+        let r = FakeRunner(); r.exitsOnTerminate = false
+        let s = try makeSupervisor(r, ownedStopWatchdogDelay: 0.01)
+        s.start(variant: .flash, flashQuant: .q2q4, ctx: 250_000, host: "127.0.0.1", port: 8000, power: nil)
+        r.emit("ds4-server: listening on http://127.0.0.1:8000")
+        let firstStop = expectation(description: "first stop fails")
+        s.stop { result in
+            XCTAssertFalse(result)
+            firstStop.fulfill()
+        }
+        await fulfillment(of: [firstStop], timeout: 1)
+
+        // The old process disappears without its callback. A retry observes that fact via
+        // the watchdog, allowing a replacement launch while the old callback is delayed.
+        r.isRunning = false
+        let retry = expectation(description: "retry observes stopped process")
+        s.stop { result in
+            XCTAssertTrue(result)
+            retry.fulfill()
+        }
+        await fulfillment(of: [retry], timeout: 1)
+        XCTAssertEqual(s.state, .idle)
+
+        s.start(variant: .flash, flashQuant: .q2q4, ctx: 250_000, host: "127.0.0.1", port: 8000, power: nil)
+        r.emit("ds4-server: listening on http://127.0.0.1:8000")
+        XCTAssertEqual(s.state, .ready)
+
+        r.emitExit(forLaunch: 0)
+        XCTAssertEqual(s.state, .ready)
+    }
+    func testAttachedStopFailsWhenPIDDiscoveryFails() async throws {
+        let body = Data(#"{"data":[{"id":"deepseek-v4-flash"}]}"#.utf8)
+        let probes = ProbeSequence([body])
+        let r = FakeRunner()
+        let s = try makeSupervisor(
+            r, probe: { _ in await probes.next() },
+            listeningPIDLookup: { _ in .failure })
+        let ready = expectation(description: "attached server adopted")
+        let token = s.$state.sink { if $0 == .ready { ready.fulfill() } }
+        s.resumeRunningServerIfAny(port: 8000)
+        await fulfillment(of: [ready], timeout: 1)
+        token.cancel()
+
+        var stopResult: Bool?
+        s.stop { stopResult = $0 }
+
+        XCTAssertEqual(stopResult, false)
+        XCTAssertEqual(s.state, .ready)
+    }
+    func testAttachedStopWithNoPIDsFailsWhileServerStillResponds() async throws {
+        let body = Data(#"{"data":[{"id":"deepseek-v4-flash"}]}"#.utf8)
+        let probes = ProbeSequence([body, body])
+        let r = FakeRunner()
+        let s = try makeSupervisor(
+            r, probe: { _ in await probes.next() },
+            listeningPIDLookup: { _ in .none })
+        let ready = expectation(description: "attached server adopted")
+        let token = s.$state.sink { if $0 == .ready { ready.fulfill() } }
+        s.resumeRunningServerIfAny(port: 8000)
+        await fulfillment(of: [ready], timeout: 1)
+        token.cancel()
+        let stopped = expectation(description: "stop verification")
+        var stopResult: Bool?
+
+        s.stop {
+            stopResult = $0
+            stopped.fulfill()
+        }
+
+        await fulfillment(of: [stopped], timeout: 1)
+        XCTAssertEqual(stopResult, false)
+        XCTAssertEqual(s.state, .ready)
+    }
+    func testAttachedStopWithNoPIDsCompletesAfterServerStopsResponding() async throws {
+        let body = Data(#"{"data":[{"id":"deepseek-v4-flash"}]}"#.utf8)
+        let probes = ProbeSequence([body, nil])
+        let r = FakeRunner()
+        let s = try makeSupervisor(
+            r, probe: { _ in await probes.next() },
+            listeningPIDLookup: { _ in .none })
+        let ready = expectation(description: "attached server adopted")
+        let token = s.$state.sink { if $0 == .ready { ready.fulfill() } }
+        s.resumeRunningServerIfAny(port: 8000)
+        await fulfillment(of: [ready], timeout: 1)
+        token.cancel()
+        let stopped = expectation(description: "stop verification")
+        var stopResult: Bool?
+
+        s.stop {
+            stopResult = $0
+            stopped.fulfill()
+        }
+
+        await fulfillment(of: [stopped], timeout: 1)
+        XCTAssertEqual(stopResult, true)
         XCTAssertEqual(s.state, .idle)
     }
     func testTerminationStopCancelsPendingRestart() throws {
