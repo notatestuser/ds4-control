@@ -28,7 +28,8 @@ It launches, supervises, and monitors a local ds4 server, lets you pick **V4 Pro
 ## What it does
 
 - **Start / stop / monitor** the local `ds4-server` child process — spawn, stderr readiness detection, health polling, graceful stop, and crash detection.
-- **Pro / Flash selector** with a RAM feasibility gate.
+- **Model selector** — V4 Pro / V4 Flash / Laguna S 2.1, with a RAM feasibility gate.
+- **SSD streaming** (on by default): keeps ~15 GiB less of the model resident by caching only part of the routed experts; budget adjustable in Settings.
 - **Model downloads** via a built-in native parallel downloader, with a live progress bar and resume across restarts.
 - **Mini resource widgets**: unified memory, GPU, power, and CPU, sampled on a timer.
 - **Launch Chat** to talk to the model.
@@ -68,6 +69,7 @@ DeepSeek V4 is memory-hungry so DS4 Control gates feasibility before launching.
 | V4 Pro | pro-imatrix | **≥ 512 GiB required** | Anything below is blocked. |
 | V4 Flash (0731) | q4-imatrix | ≥ 256 GiB | Standard. |
 | V4 Flash (0731) | q2-imatrix | 96 GiB minimum | 96–127 GiB requires raising the Metal wired limit (see below). |
+| Laguna S 2.1 | q2-q3 | 64 GiB minimum | The 64 GB-laptop option; 64–95 GiB requires raising the Metal wired limit. |
 
 On any machine where the model's GPU-wired working set (the exact GGUF plus ds4's resident context, Metal graph allocations, and persistent backend scratch, including one prefill workspace and one indexer top-k scratch buffer shared across concurrent sessions) exceeds the **effective Metal wired limit**, Start is gated. Configurations that cannot fit while leaving ~4 GiB for macOS are blocked instead of being offered an unsafe wired-limit increase. The disk KV cache does not shrink this working set: ds4 preallocates every resident session's context, while disk caching only checkpoints those sessions for reuse after a slot switch or server restart. The effective limit is your `iogpu.wired_limit_mb` when raised, else the macOS default — a machine-specific fraction of RAM (~75–84% depending on macOS version) that DS4 Control queries from Metal rather than assumes. When gated, the popup shows the required fix:
 

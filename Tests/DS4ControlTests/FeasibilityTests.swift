@@ -284,4 +284,31 @@ final class FeasibilityTests: XCTestCase {
     }
     func testSystemRam() { XCTAssertGreaterThan(systemRamGiB(), 0) }
     func testWiredLimitReadable() { XCTAssertGreaterThanOrEqual(currentWiredLimitMB(), 0) }
+
+    func testLagunaFeasibilityTiers() {
+        // RAM-tier only (the config-specific Metal wired-limit gate is DS4F-only for now):
+        // Laguna q2-q3 fits 64 GiB+, blocked below.
+        if case .blocked = feasibility(ramGiB: 63, model: .lagunaS21) {} else { XCTFail("63 GiB must block") }
+        XCTAssertEqual(feasibility(ramGiB: 64, model: .lagunaS21), .standard)
+        XCTAssertEqual(feasibility(ramGiB: 95, model: .lagunaS21), .standard)
+        XCTAssertEqual(feasibility(ramGiB: 96, model: .lagunaS21), .standard)
+    }
+    func testLagunaDefaultCtx() {
+        XCTAssertEqual(defaultCtx(ramGiB: 64, model: .lagunaS21), 50_000)
+        XCTAssertEqual(defaultCtx(ramGiB: 128, model: .lagunaS21), 50_000)
+    }
+}
+
+extension FeasibilityTests {
+    func testRequiredWiredMBShrinksWhenSsdStreaming() {
+        // SSD streaming keeps only the expert-cache budget + non-routed weights resident,
+        // so the gate must not charge the full GGUF for routed experts.
+        let full = requiredWiredMB(variant: .flash, flashQuant: .q2, ctx: 1_000_000)
+        let streamed = requiredWiredMB(
+            variant: .flash, flashQuant: .q2, ctx: 1_000_000, ssdStreamingCacheGB: 67)
+        // q2: routed experts 73 GiB, cache 67 → ~6 GiB less resident; full is ~80.8 GiB
+        // weights vs ~74.8 resident. Expect a meaningful drop, not a full-weights charge.
+        XCTAssertLessThan(streamed, full)
+        XCTAssertGreaterThan(full - streamed, 4 * 1024)  // > ~4 GiB freed
+    }
 }

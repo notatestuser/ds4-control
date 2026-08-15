@@ -10,12 +10,16 @@ struct ThinkingModePicker: View {
     private let ram = systemRamGiB()
 
     var body: some View {
-        Picker("Thinking:", selection: binding) {
-            ForEach(availableModes) { mode in
-                Text(mode.label).tag(mode)
+        // Thinking tiers (Instant/Standard/Max Think) are DS4F semantics. Laguna S 2.1
+        // uses its own native interleaved reasoning — no picker, ds4's default stands.
+        if app.selectedModel.supportsThinkingModes {
+            Picker("Thinking:", selection: binding) {
+                ForEach(availableModes) { mode in
+                    Text(mode.label).tag(mode)
+                }
             }
+            .pickerStyle(.segmented)
         }
-        .pickerStyle(.segmented)
     }
 
     private var serverRunning: Bool { supervisor.state == .ready || supervisor.state == .starting }
@@ -127,12 +131,13 @@ enum ThinkingModePrompt {
             return .rejected(.blocked(reason: maxThinkUnavailableReason))
         }
         let result = supervisor.restart(
-            variant: app.selectedVariant, flashQuant: app.selectedFlashQuant,
+            model: app.selectedModel,
             ctx: thinkMaxMinCtx,
             host: app.normalizeHostForLaunch(), port: app.port, power: app.power,
             sessions: app.concurrentSessions,
             kvDiskDir: app.kvDiskCache ? supervisor.kvDiskCacheURL : nil,
-            overrideWiredLimitGate: overrideWiredLimitGate)
+            overrideWiredLimitGate: overrideWiredLimitGate,
+            ssdStreaming: app.ssdStreaming, ssdStreamingCacheGB: app.ssdStreamingCacheGB)
         if result == .accepted { app.applyMaxThinkCtxBump(ramGiB: ramGiB) }
         return result
     }

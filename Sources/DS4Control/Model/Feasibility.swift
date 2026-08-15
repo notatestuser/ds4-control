@@ -362,10 +362,23 @@ private func metalIndexerScratchBytes(variant: Variant, ctx: Int) -> Int? {
 /// one prefill workspace plus persistent backend scratch shared across sessions. Context
 /// counts regardless of the disk KV cache: disk storage checkpoints resident tensors; it
 /// does not replace them.
-func requiredWiredMB(variant: Variant, flashQuant: FlashQuant, ctx: Int, sessions: Int = 1) -> Int {
+func requiredWiredMB(
+    variant: Variant, flashQuant: FlashQuant, ctx: Int, sessions: Int = 1,
+    ssdStreamingCacheGB: Int = 0
+) -> Int {
     let quant = Quant.for(variant, flashQuant: flashQuant)
+    // SSD streaming keeps only the expert-cache budget + non-routed weights resident;
+    // the routed experts beyond the budget stream from the GGUF on demand. Charge the
+    // resident set (not the full GGUF) when a budget is in effect.
+    let residentWeightsMB: Int?
+    if ssdStreamingCacheGB > 0 {
+        let residentGiB = quant.weightsGiB - quant.routedExpertGiB + Double(ssdStreamingCacheGB)
+        residentWeightsMB = roundedUpMiB(Int(residentGiB * 1_073_741_824))
+    } else {
+        residentWeightsMB = roundedUpMiB(quant.ggufBytes)
+    }
     guard
-        let weightsMB = roundedUpMiB(quant.ggufBytes),
+        let weightsMB = residentWeightsMB,
         let sessionBytes = metalContextBytes(variant: variant, ctx: ctx),
         let sessionGraphBytes = metalSessionGraphBytes(variant: variant, ctx: ctx),
         let sharedGraphBytes = metalSharedGraphWorkspaceBytes(variant: variant, ctx: ctx),
@@ -405,6 +418,18 @@ func defaultCtx(ramGiB: Double, variant: Variant, flashQuant: FlashQuant) -> Int
 }
 
 /// Whether a Flash quant's default launch fits while preserving the OS reserve.
+/// Default context keyed on the runnable model. Laguna defaults to 50,000 (SWA-capped
+/// KV is cheap; scratch is bounded by --prefill-chunk 4096); DS4F keeps its tiers.
+func defaultCtx(ramGiB: Double, model: Model) -> Int {
+    switch model {
+    case .lagunaS21: return 50_000
+    case .v4Pro: return model.ctxCeiling
+    case .v4FlashQ2, .v4FlashQ2Q4, .v4FlashQ4:
+        return ramGiB >= 128 ? model.ctxCeiling : 256_000  // matches #15's 256K tier
+    }
+}
+
+/// Whether a Flash quant's resident weights fit this machine (weights + OS reserve ≤ RAM).
 /// Drives which options the Settings quant picker offers.
 func flashQuantFits(_ q: FlashQuant, ramGiB: Double) -> Bool {
     let ctx = defaultCtx(ramGiB: ramGiB, variant: .flash, flashQuant: q)
@@ -424,7 +449,7 @@ func defaultFlashQuant(ramGiB: Double) -> FlashQuant {
 /// ceiling (`wiredLimitMB` — inject `effectiveWiredLimitMB(ramGiB:)` at the call site).
 func feasibility(
     ramGiB: Double, variant: Variant, flashQuant: FlashQuant,
-    ctx: Int, wiredLimitMB: Int, sessions: Int = 1
+    ctx: Int, wiredLimitMB: Int, sessions: Int = 1, ssdStreamingCacheGB: Int = 0
 ) -> Feasibility {
     if let reason = launchBoundsError(variant: variant, ctx: ctx, sessions: sessions) {
         return .blocked(reason: reason)
@@ -441,7 +466,8 @@ func feasibility(
         }
     }
     let required = requiredWiredMB(
-        variant: variant, flashQuant: flashQuant, ctx: ctx, sessions: sessions)
+        variant: variant, flashQuant: flashQuant, ctx: ctx, sessions: sessions,
+        ssdStreamingCacheGB: ssdStreamingCacheGB)
     if required == Int.max {
         return .blocked(
             reason:
@@ -459,4 +485,50 @@ func feasibility(
         return .wiredLimitTooLow(requiredMB: required, advisoryMB: usableMB)
     }
     return .standard
+}
+
+/// Feasibility gate keyed on the runnable model. Laguna S 2.1 (q2-q3, 44.95 GiB
+/// weights) targets 64 GB-class machines: ≥96 GiB is comfortable; 64–95 GiB fits
+/// only with the Metal wired limit raised (default ~0.67×RAM ≈ 43 GiB < weights);
+/// below 64 GiB the weights + 8 GiB OS reserve don't fit.
+/// Config-specific feasibility for the unified picker: DS4F routes through the full
+/// Metal wired-limit gate; Laguna (no Metal shape yet) is gated by its RAM floor.
+func feasibility(
+    ramGiB: Double, model: Model, ctx: Int, wiredLimitMB: Int, sessions: Int = 1,
+    ssdStreamingCacheGB: Int = 0
+) -> Feasibility {
+    if let v = model.variant, let f = model.flashQuant {
+        return feasibility(
+            ramGiB: ramGiB, variant: v, flashQuant: f, ctx: ctx,
+            wiredLimitMB: wiredLimitMB, sessions: sessions,
+            ssdStreamingCacheGB: ssdStreamingCacheGB)
+    }
+    return feasibility(ramGiB: ramGiB, model: model)
+}
+
+/// RAM-tier feasibility for the model picker: which models can run on this machine at
+/// all. The config-specific Metal wired-limit gate lives in `feasibility(variant:…ctx:wiredLimitMB:sessions:)`
+/// and is applied at Start time by the supervisor (and by the popup's Start-anyway flow).
+func feasibility(ramGiB: Double, model: Model) -> Feasibility {
+    switch model {
+    case .v4Pro:
+        guard ramGiB >= 512 else { return .blocked(reason: "V4 Pro needs ≥ 512 GiB unified memory.") }
+        return .standard
+    case .v4FlashQ2, .v4FlashQ2Q4, .v4FlashQ4:
+        guard ramGiB >= 96 else {
+            return .blocked(
+                reason:
+                    "V4 Flash needs ≥ 96 GiB unified memory. Below that, the ~\(Int(model.weightsGiB)) GiB model plus its KV cache exceed RAM, so it can't run."
+            )
+        }
+        return .standard
+    case .lagunaS21:
+        guard ramGiB >= 64 else {
+            return .blocked(
+                reason:
+                    "Laguna S 2.1 needs ≥ 64 GiB unified memory — its ~45 GiB weights plus the OS reserve don't fit below that."
+            )
+        }
+        return .standard
+    }
 }

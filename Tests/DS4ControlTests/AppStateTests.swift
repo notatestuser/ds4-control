@@ -6,11 +6,11 @@ final class AppStateTests: XCTestCase {
     func testEffectiveCtxFallsBackToDefault() {
         let d = UserDefaults(suiteName: "test.\(UUID().uuidString)")!
         let app = AppState(defaults: d)
-        app.selectedVariant = .flash
+        app.selectedModel = .v4FlashQ2
         app.ctxOverride = 0
         XCTAssertEqual(
             app.effectiveCtx(ramGiB: 128),
-            defaultCtx(ramGiB: 128, variant: .flash, flashQuant: app.selectedFlashQuant))
+            defaultCtx(ramGiB: 128, model: app.selectedModel))
         app.ctxOverride = 50_000
         XCTAssertEqual(app.effectiveCtx(ramGiB: 128), 50_000)
         app.ctxOverride = Int.max
@@ -105,6 +105,26 @@ final class AppStateTests: XCTestCase {
         XCTAssertEqual(defaults.integer(forKey: "ctxOverride"), 0)
     }
 
+    func testSelectedModelDefaultsByRAM() {
+        let app = AppState(defaults: UserDefaults(suiteName: "test.\(UUID().uuidString)")!)
+        // On this machine (≥128 GiB) the default is v4FlashQ2Q4, matching the old
+        // defaultFlashQuant behavior (tiered by real system RAM like the existing tests).
+        XCTAssertEqual(app.selectedModel, .v4FlashQ2Q4)
+    }
+    func testSelectedModelPersists() {
+        let name = "test.\(UUID().uuidString)"
+        let a1 = AppState(defaults: UserDefaults(suiteName: name)!)
+        a1.selectedModel = .lagunaS21
+        let a2 = AppState(defaults: UserDefaults(suiteName: name)!)
+        XCTAssertEqual(a2.selectedModel, .lagunaS21)
+    }
+    func testSelectedModelMigratesLegacyVariantKeys() {
+        let d = UserDefaults(suiteName: "test.\(UUID().uuidString)")!
+        d.set(Variant.flash.rawValue, forKey: "selectedVariant")
+        d.set(FlashQuant.q2.rawValue, forKey: "selectedFlashQuant")
+        let app = AppState(defaults: d)
+        XCTAssertEqual(app.selectedModel, .v4FlashQ2)  // mapped from the legacy pair
+    }
     func testThinkingModeGateAndCtxBump() {
         let lowMemoryApp = AppState(
             defaults: UserDefaults(suiteName: "test.\(UUID().uuidString)")!, ramGiB: 96)
@@ -134,5 +154,23 @@ final class AppStateTests: XCTestCase {
         XCTAssertEqual(
             app2.requestThinkingMode(.max, currentCtx: 393_216, ramGiB: 128), .applied)
         XCTAssertEqual(app2.thinkingMode, .max)
+    }
+
+    func testSsdStreamingDefaultsOnAndPersists() {
+        let name = "test.\(UUID().uuidString)"
+        let a1 = AppState(defaults: UserDefaults(suiteName: name)!)
+        XCTAssertTrue(a1.ssdStreaming)  // default ON — frees ~15 GiB on fresh installs
+        a1.ssdStreaming = false
+        let a2 = AppState(defaults: UserDefaults(suiteName: name)!)
+        XCTAssertFalse(a2.ssdStreaming)  // persisted
+    }
+    func testSsdStreamingCacheGBDefaultsToFree15BudgetAndPersists() {
+        let name = "test.\(UUID().uuidString)"
+        let a1 = AppState(defaults: UserDefaults(suiteName: name)!)
+        // The fresh-install budget is the ~15 GiB-free value for the default DS4F quant.
+        XCTAssertEqual(a1.ssdStreamingCacheGB, Quant.q2q4Imatrix.defaultStreamingCacheGB)
+        a1.ssdStreamingCacheGB = 80
+        let a2 = AppState(defaults: UserDefaults(suiteName: name)!)
+        XCTAssertEqual(a2.ssdStreamingCacheGB, 80)  // persisted, not re-defaulted
     }
 }

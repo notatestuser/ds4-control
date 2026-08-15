@@ -138,9 +138,10 @@ struct PopupView: View {
                         AgentLauncher.launch(
                             port: supervisor.port,
                             modelId: AgentLauncher.modelId(
-                                for: supervisor.activeModel, fallback: app.selectedVariant),
+                                for: supervisor.activeModel, fallback: app.selectedModel),
                             contextWindow: supervisor.ctx,
-                            allowMaxThink: supportsMaxThink(ramGiB: ram)
+                            allowMaxThink: app.selectedModel.supportsThinkingModes
+                                && supportsMaxThink(ramGiB: ram)
                                 && thinkMax(ctx: supervisor.ctx))
                     } else {
                         showStartHint = true

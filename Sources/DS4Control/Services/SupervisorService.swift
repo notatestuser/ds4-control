@@ -57,10 +57,10 @@ final class SupervisorService: ObservableObject {
 
     /// The pluggable file fetch — defaults to the native parallel `HFDownloader`. Tests inject a fake
     /// that simulates progress/completion/failure without touching the network. `highPerformance`
-    /// selects the worker count (8 vs 64).
+    /// selects the worker count (8 vs 64). The model supplies the repo/revision/filename.
     typealias FetchFile =
         @Sendable (
-            _ file: String, _ destDir: URL, _ token: String?, _ highPerformance: Bool,
+            _ model: Model, _ destDir: URL, _ token: String?, _ highPerformance: Bool,
             _ onProgress: @escaping @Sendable (Int64, Int64) -> Void
         ) async throws -> Void
     private let fetchFile: FetchFile
@@ -68,12 +68,14 @@ final class SupervisorService: ObservableObject {
     /// Returns the launch config's feasibility. Injectable so tests don't depend on the
     /// host's RAM/sysctl state (CI runners are far smaller than any supported machine).
     typealias WiredLimitGate =
-        (_ variant: Variant, _ flashQuant: FlashQuant, _ ctx: Int, _ sessions: Int) -> Feasibility
-    static let defaultWiredLimitGate: WiredLimitGate = { variant, flashQuant, ctx, sessions in
+        (_ variant: Variant, _ flashQuant: FlashQuant, _ ctx: Int, _ sessions: Int, _ ssdStreamingCacheGB: Int) ->
+        Feasibility
+    static let defaultWiredLimitGate: WiredLimitGate = { variant, flashQuant, ctx, sessions, ssdStreamingCacheGB in
         let ram = systemRamGiB()
         return feasibility(
             ramGiB: ram, variant: variant, flashQuant: flashQuant, ctx: ctx,
-            wiredLimitMB: effectiveWiredLimitMB(ramGiB: ram), sessions: sessions)
+            wiredLimitMB: effectiveWiredLimitMB(ramGiB: ram), sessions: sessions,
+            ssdStreamingCacheGB: ssdStreamingCacheGB)
     }
     private let wiredLimitGate: WiredLimitGate
 
@@ -89,9 +91,10 @@ final class SupervisorService: ObservableObject {
         self.downloadRunner = downloadRunner ?? RealProcessRunner()
         self.wiredLimitGate = wiredLimitGate ?? Self.defaultWiredLimitGate
         self.fetchFile =
-            fetchFile ?? { file, dir, token, highPerformance, prog in
-                try await HFDownloader(repo: SupervisorService.ggufRepo).download(
-                    file: file, into: dir, token: token, highPerformance: highPerformance, onProgress: prog)
+            fetchFile ?? { model, dir, token, highPerformance, prog in
+                try await HFDownloader(repo: model.downloadRepo, revision: model.downloadRevision).download(
+                    file: model.ggufFilename, into: dir, token: token, highPerformance: highPerformance,
+                    onProgress: prog)
             }
     }
 
@@ -120,8 +123,11 @@ final class SupervisorService: ObservableObject {
         }
         return ggufBaseOverride ?? ds4Dir.appendingPathComponent("gguf")
     }
+    private func ggufURL(for model: Model) -> URL {
+        ggufBaseDir().appendingPathComponent(model.ggufFilename)
+    }
     private func ggufURL(for variant: Variant, flashQuant: FlashQuant) -> URL {
-        ggufBaseDir().appendingPathComponent(Quant.for(variant, flashQuant: flashQuant).ggufFilename)
+        ggufURL(for: Model.from(variant: variant, flashQuant: flashQuant))
     }
     private func validateDs4Dir() -> ServerError? {
         for f in ["ds4-server", "download_model.sh"] {
@@ -156,32 +162,56 @@ final class SupervisorService: ObservableObject {
         power: Int?,
         sessions: Int = 1,
         kvDiskDir: URL? = nil,
-        overrideWiredLimitGate: Bool = false
+        overrideWiredLimitGate: Bool = false,
+        ssdStreaming: Bool = false,
+        ssdStreamingCacheGB: Int = 0
+    ) {
+        start(
+            model: Model.from(variant: variant, flashQuant: flashQuant), ctx: ctx, host: host,
+            port: port, power: power, sessions: sessions, kvDiskDir: kvDiskDir,
+            overrideWiredLimitGate: overrideWiredLimitGate,
+            ssdStreaming: ssdStreaming, ssdStreamingCacheGB: ssdStreamingCacheGB)
+    }
+
+    func start(
+        model: Model,
+        ctx: Int,
+        host: String,
+        port: Int,
+        power: Int?,
+        sessions: Int = 1,
+        kvDiskDir: URL? = nil,
+        overrideWiredLimitGate: Bool = false,
+        ssdStreaming: Bool = false,
+        ssdStreamingCacheGB: Int = 0
     ) {
         guard state == .idle || isErrorState else { emitBadState("start"); return }
         if let e = validateDs4Dir() { state = .error(e); return }
-        if let reason = launchBoundsError(variant: variant, ctx: ctx, sessions: sessions) {
-            state = .error(.configurationBlocked(reason: reason))
-            return
+        if let v = model.variant, let f = model.flashQuant {
+            if let reason = launchBoundsError(variant: v, ctx: ctx, sessions: sessions) {
+                state = .error(.configurationBlocked(reason: reason))
+                return
+            }
+            // Defense-in-depth for the popup gate (DS4F): refuse configs whose GPU-wired
+            // working set exceeds the effective Metal wired limit. The confirmed
+            // "Start anyway" path passes the override. Laguna has no variant, so it is
+            // gated only by its RAM floor in feasibility(model:).
+            switch wiredLimitGate(v, f, ctx, sessions, ssdStreaming ? ssdStreamingCacheGB : 0) {
+            case let .blocked(reason):
+                state = .error(.configurationBlocked(reason: reason))
+                return
+            case let .wiredLimitTooLow(required, advisory) where !overrideWiredLimitGate:
+                state = .error(.wiredLimitTooLow(requiredMB: required, advisoryMB: advisory))
+                return
+            case .standard, .wiredLimitTooLow:
+                break
+            }
         }
-        // Defense-in-depth for the popup gate: refuse configs whose GPU-wired working set
-        // exceeds the effective Metal wired limit (starting anyway pages the model and
-        // hangs the machine). The UI's confirmed "Start anyway" passes the override.
-        switch wiredLimitGate(variant, flashQuant, ctx, sessions) {
-        case let .blocked(reason):
-            state = .error(.configurationBlocked(reason: reason))
-            return
-        case let .wiredLimitTooLow(required, advisory) where !overrideWiredLimitGate:
-            state = .error(.wiredLimitTooLow(requiredMB: required, advisoryMB: advisory))
-            return
-        case .standard, .wiredLimitTooLow:
-            break
-        }
-        let gguf = ggufURL(for: variant, flashQuant: flashQuant)
+        let gguf = ggufURL(for: model)
         guard FileManager.default.fileExists(atPath: gguf.path) else {
             state = .error(.modelMissing(filename: gguf.lastPathComponent)); return
         }
-        self.port = port; self.ctx = ctx; self.activeModel = variant.modelId
+        self.port = port; self.ctx = ctx; self.activeModel = model.modelId
         stderrTail = []; expectingExit = false; serverAttached = false
         var args = [
             "-m", gguf.path,
@@ -190,7 +220,15 @@ final class SupervisorService: ObservableObject {
             "--port", "\(port)",
             "--metal",
         ]
-        if let power { args += ["--power", "\(power)"] }
+        if model.supportsSSDStreaming && ssdStreaming {
+            // SSD-backed expert streaming (DS4F only). ds4 hard-refuses this flag for
+            // Laguna S 2.1, so it is never passed for that model.
+            args += ["--ssd-streaming"]
+            if ssdStreamingCacheGB > 0 {
+                args += ["--ssd-streaming-cache-experts", "\(ssdStreamingCacheGB)GB"]
+            }
+        }
+        if let power, model.supportsPowerCap { args += ["--power", "\(power)"] }
         // >1 preallocates N resident KV sessions so that many chats/agents generate at once.
         // 1 must omit the flag: ds4 treats even `--batched-session 1` as batched mode (MTP off).
         if sessions > 1 { args += ["--batched-session", "\(sessions)"] }
@@ -302,47 +340,68 @@ final class SupervisorService: ObservableObject {
         power: Int?,
         sessions: Int = 1,
         kvDiskDir: URL? = nil,
-        overrideWiredLimitGate: Bool = false
+        overrideWiredLimitGate: Bool = false,
+        ssdStreaming: Bool = false,
+        ssdStreamingCacheGB: Int = 0
+    ) -> RestartResult {
+        restart(
+            model: Model.from(variant: variant, flashQuant: flashQuant), ctx: ctx, host: host,
+            port: port, power: power, sessions: sessions, kvDiskDir: kvDiskDir,
+            overrideWiredLimitGate: overrideWiredLimitGate,
+            ssdStreaming: ssdStreaming, ssdStreamingCacheGB: ssdStreamingCacheGB)
+    }
+
+    @discardableResult
+    func restart(
+        model: Model,
+        ctx: Int,
+        host: String,
+        port: Int,
+        power: Int?,
+        sessions: Int = 1,
+        kvDiskDir: URL? = nil,
+        overrideWiredLimitGate: Bool = false,
+        ssdStreaming: Bool = false,
+        ssdStreamingCacheGB: Int = 0
     ) -> RestartResult {
         guard state == .ready || state == .starting else {
             emitBadState("restart")
             return .ignored
         }
-        if let reason = launchBoundsError(variant: variant, ctx: ctx, sessions: sessions) {
-            recentLog.append("ignored 'restart': \(reason)")
-            return .rejected(.blocked(reason: reason))
-        }
-        // Gate BEFORE stopping: a refused restart keeps the healthy running server instead
-        // of tearing it down into an error state.
-        let feasibility = wiredLimitGate(variant, flashQuant, ctx, sessions)
-        switch feasibility {
-        case let .blocked(reason):
-            recentLog.append("ignored 'restart': \(reason)")
-            return .rejected(feasibility)
-        case .wiredLimitTooLow where !overrideWiredLimitGate:
-            recentLog.append("ignored 'restart': Metal wired limit below the new config's working set")
-            return .rejected(feasibility)
-        case .standard, .wiredLimitTooLow:
-            break
+        if let v = model.variant, let f = model.flashQuant {
+            if let reason = launchBoundsError(variant: v, ctx: ctx, sessions: sessions) {
+                recentLog.append("ignored 'restart': \(reason)")
+                return .rejected(.blocked(reason: reason))
+            }
+            // Gate BEFORE stopping: a refused restart keeps the healthy running server.
+            let feasibility = wiredLimitGate(v, f, ctx, sessions, ssdStreaming ? ssdStreamingCacheGB : 0)
+            switch feasibility {
+            case let .blocked(reason):
+                recentLog.append("ignored 'restart': \(reason)")
+                return .rejected(feasibility)
+            case .wiredLimitTooLow where !overrideWiredLimitGate:
+                recentLog.append("ignored 'restart': Metal wired limit below the new config's working set")
+                return .rejected(feasibility)
+            case .standard, .wiredLimitTooLow:
+                break
+            }
         }
         let relaunch: () -> Void = { [weak self] in
             guard let self else { return }
             self.start(
-                variant: variant, flashQuant: flashQuant, ctx: ctx, host: host, port: port, power: power,
-                sessions: sessions, kvDiskDir: kvDiskDir, overrideWiredLimitGate: overrideWiredLimitGate)
+                model: model, ctx: ctx, host: host, port: port, power: power,
+                sessions: sessions, kvDiskDir: kvDiskDir, overrideWiredLimitGate: overrideWiredLimitGate,
+                ssdStreaming: ssdStreaming, ssdStreamingCacheGB: ssdStreamingCacheGB)
         }
         stop()
         if state == .idle {
             relaunch()  // stopped synchronously (the runner exited inline)
         } else {
-            pendingRestart = relaunch  // deferred until stop drains (handleExit, or the attached-pid poll)
+            pendingRestart = relaunch  // deferred until stop drains
         }
         return .accepted
     }
 
-    /// On launch, if a ds4-server is already serving on `port` (orphaned from a prior
-    /// session, model still loaded), attach to it as `.ready` instead of spawning a
-    /// new one — avoids a port conflict and a second multi-hundred-GB load.
     func resumeRunningServerIfAny(port: Int) {
         guard state == .idle else { return }
         adoptHealthyServerIfPresent(port: port)
@@ -400,16 +459,18 @@ final class SupervisorService: ObservableObject {
     private var downloadGeneration = 0
     /// The native HF download in flight (nil when idle); cancelled by cancelDownload()/retry.
     private var downloadTask: Task<Void, Never>?
-    /// HuggingFace repo hosting the DS4 GGUF weights (single source for the resolve URL).
-    private static let ggufRepo = "antirez/deepseek-v4-gguf"
 
     func download(variant: Variant, flashQuant: FlashQuant, highPerformance: Bool = false) {
+        download(model: Model.from(variant: variant, flashQuant: flashQuant), highPerformance: highPerformance)
+    }
+
+    func download(model: Model, highPerformance: Bool = false) {
         guard state == .idle || isErrorState else { emitBadState("download"); return }
         if let e = validateDs4Dir() { state = .error(e); return }
-        let q = Quant.for(variant, flashQuant: flashQuant)
         let baseDir = ggufBaseDir()
-        let expectedBytes = Int64(q.ggufBytes)
-        download = DownloadProgress(pct: 0, file: q.ggufFilename, receivedBytes: 0, totalBytes: expectedBytes)
+        // #15's exact GGUF bytes for DS4F; the measured 44.95 GiB for Laguna.
+        let expectedBytes = Int64(model.quant?.ggufBytes ?? Int(model.weightsGiB * 1_073_741_824))
+        download = DownloadProgress(pct: 0, file: model.ggufFilename, receivedBytes: 0, totalBytes: expectedBytes)
         state = .downloading
         lastDownloadSample = nil
         downloadGeneration += 1
@@ -418,7 +479,7 @@ final class SupervisorService: ObservableObject {
             env: ProcessInfo.processInfo.environment,
             cacheFile: FileManager.default.homeDirectoryForCurrentUser
                 .appendingPathComponent(".cache/huggingface/token"))
-        let filename = q.ggufFilename
+        let filename = model.ggufFilename
         downloadProcessLive = true
         // Native parallel Swift download: N workers each GET …/resolve/main/<file> with a closed
         // HTTP Range straight to their offset in `<file>.part`, re-resolving each chunk so the signed
@@ -429,7 +490,7 @@ final class SupervisorService: ObservableObject {
         downloadTask?.cancel()
         downloadTask = Task { [weak self] in
             do {
-                try await fetch(filename, baseDir, token, highPerformance) { received, total in
+                try await fetch(model, baseDir, token, highPerformance) { received, total in
                     Self.onMain {
                         self?.updateDownloadProgress(gen: gen, file: filename, received: received, total: total)
                     }
@@ -497,12 +558,15 @@ final class SupervisorService: ObservableObject {
     /// stuck/stalled or errored progress bar. The native downloader cancels through the cancelled
     /// task; `download` re-resumes from the on-disk bitmap.
     func retryDownload(variant: Variant, flashQuant: FlashQuant, highPerformance: Bool = false) {
+        retryDownload(model: Model.from(variant: variant, flashQuant: flashQuant), highPerformance: highPerformance)
+    }
+    func retryDownload(model: Model, highPerformance: Bool = false) {
         downloadTask?.cancel()
         downloadTask = nil
         lastDownloadSample = nil
         download = nil
         state = .idle
-        download(variant: variant, flashQuant: flashQuant, highPerformance: highPerformance)
+        download(model: model, highPerformance: highPerformance)
     }
 
     /// Cancel an in-progress download and return to idle without restarting. Bumping the generation
@@ -532,38 +596,46 @@ final class SupervisorService: ObservableObject {
     /// so this is just a normal `download()`. `highPerformance` (the persisted setting) is threaded
     /// through so the resumed download uses the user's chosen worker count.
     func resumeInFlightDownloadIfAny(variant: Variant, flashQuant: FlashQuant, highPerformance: Bool = false) {
+        resumeInFlightDownloadIfAny(
+            model: Model.from(variant: variant, flashQuant: flashQuant), highPerformance: highPerformance)
+    }
+    func resumeInFlightDownloadIfAny(model: Model, highPerformance: Bool = false) {
         guard state == .idle else { return }
         let base = ggufBaseDir()
-        let q = Quant.for(variant, flashQuant: flashQuant)
         // Already fully downloaded → nothing to resume.
-        if FileManager.default.fileExists(atPath: base.appendingPathComponent(q.ggufFilename).path) { return }
+        if FileManager.default.fileExists(atPath: base.appendingPathComponent(model.ggufFilename).path) { return }
         // Resume when the bitmap sidecar records durable bytes (parallel partial), or a legacy
         // contiguous `.part`/hf `.incomplete` has bytes on disk.
-        let resumable = resumableBytes(ggufDir: base, filename: q.ggufFilename) > 0
-        let legacy = downloadedBytes(ggufDir: base, filename: q.ggufFilename) > 0
+        let resumable = resumableBytes(ggufDir: base, filename: model.ggufFilename) > 0
+        let legacy = downloadedBytes(ggufDir: base, filename: model.ggufFilename) > 0
         guard resumable || legacy else { return }
-        download(variant: variant, flashQuant: flashQuant, highPerformance: highPerformance)
+        download(model: model, highPerformance: highPerformance)
     }
 
-    /// True when the selected variant's gguf exists on disk.
+    /// True when the model's gguf exists on disk.
+    func isDownloaded(_ model: Model) -> Bool {
+        FileManager.default.fileExists(atPath: ggufURL(for: model).path)
+    }
     func isDownloaded(_ variant: Variant, flashQuant: FlashQuant) -> Bool {
-        FileManager.default.fileExists(atPath: ggufURL(for: variant, flashQuant: flashQuant).path)
+        isDownloaded(Model.from(variant: variant, flashQuant: flashQuant))
     }
 
-    // MARK: - Flash quant store (Settings: download markers + cleanup)
+    // MARK: - Model store (Settings: download markers + cleanup)
     func flashQuantURL(_ q: FlashQuant) -> URL {
         ggufBaseDir().appendingPathComponent(q.quant.ggufFilename)
     }
     func isFlashQuantDownloaded(_ q: FlashQuant) -> Bool {
         FileManager.default.fileExists(atPath: flashQuantURL(q).path)
     }
-    /// Delete on-disk Flash quant ggufs other than `keep`. V4 Pro is untouched by construction
-    /// (the loop only iterates `FlashQuant`). Gate the call site to idle/error so a loaded or
-    /// downloading model is never removed. Returns the removed filenames.
+    /// Delete on-disk Flash quant ggufs other than the kept model's. V4 Pro is untouched by
+    /// construction (the loop only iterates `FlashQuant`) and the Laguna file is never touched
+    /// (it isn't a FlashQuant). Returns the removed filenames. Gate the call site to idle/error
+    /// so a loaded or downloading model is never removed.
     @discardableResult
-    func cleanupUnusedFlashQuants(keep: FlashQuant) -> [String] {
+    func cleanupUnusedModels(keep: Model) -> [String] {
+        guard let keepQuant = keep.quant else { return [] }  // Laguna: single model per family
         var removed: [String] = []
-        for q in FlashQuant.allCases where q != keep {
+        for q in FlashQuant.allCases where q.quant != keepQuant {
             let url = flashQuantURL(q)
             if FileManager.default.fileExists(atPath: url.path) {
                 try? FileManager.default.removeItem(at: url)
@@ -572,6 +644,9 @@ final class SupervisorService: ObservableObject {
         }
         ggufStoreVersion += 1
         return removed
+    }
+    func cleanupUnusedFlashQuants(keep: FlashQuant) -> [String] {
+        cleanupUnusedModels(keep: Model.from(variant: .flash, flashQuant: keep))
     }
 
     // MARK: - Legacy preview weights (pre-0731)

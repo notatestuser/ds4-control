@@ -15,20 +15,24 @@ struct SettingsView: View {
         default: return true
         }
     }
-    /// Downloaded Flash quants other than the selected one — candidates for cleanup.
-    private var removableFlashQuants: [FlashQuant] {
-        FlashQuant.allCases.filter { $0 != app.selectedFlashQuant && supervisor.isFlashQuantDownloaded($0) }
+    /// Downloaded same-family models other than the selected one — candidates for cleanup.
+    /// V4 Pro is excluded by construction (never deleted); Laguna is the only model in its
+    /// family, so nothing is ever removable there.
+    private var removableModels: [Model] {
+        Model.allCases.filter {
+            $0 != app.selectedModel && $0 != .v4Pro && $0.quant != nil && supervisor.isDownloaded($0)
+        }
     }
     private var removableFreedGiB: Int {
-        Int(removableFlashQuants.reduce(0.0) { $0 + $1.quant.weightsGiB })
+        Int(removableModels.reduce(0.0) { $0 + $1.weightsGiB })
     }
-    private var flashModelFooter: String {
+    private var modelFooter: String {
         let base =
-            "Which Flash weights to download and run. Sizes are running memory; "
+            "Which model to download and run. Sizes are running memory; "
             + "options that don't fit this Mac's RAM are unavailable."
         return isBusy
             ? base + " Stop the server to delete unused downloads."
-            : base + " Clean up deletes other downloaded Flash variants (V4 Pro is always kept)."
+            : base + " Clean up deletes other downloaded V4 Flash variants (V4 Pro and other families are always kept)."
     }
 
     private var ctxHint: String {
@@ -39,7 +43,7 @@ struct SettingsView: View {
             return "Max Think is available when context ≥ 393,216."
         }
         return
-            "Auto: \(defaultCtx(ramGiB: ram, variant: app.selectedVariant, flashQuant: app.selectedFlashQuant).formatted()) tokens (based on \(Int(ram)) GiB RAM)."
+            "Auto: \(defaultCtx(ramGiB: ram, model: app.selectedModel).formatted()) tokens (based on \(Int(ram)) GiB RAM)."
     }
 
     private var thinkingHint: String {
@@ -67,6 +71,23 @@ struct SettingsView: View {
     }
     private var sessionsBinding: Binding<Double> {
         Binding(get: { Double(app.concurrentSessions) }, set: { app.concurrentSessions = Int($0.rounded()) })
+    }
+    private var streamingCacheBinding: Binding<Double> {
+        Binding(get: { Double(app.ssdStreamingCacheGB) }, set: { app.ssdStreamingCacheGB = Int($0.rounded()) })
+    }
+    private var streamingCacheMaxGiB: Int {
+        let expertGiB = app.selectedModel.quant?.routedExpertGiB ?? Quant.q2q4Imatrix.routedExpertGiB
+        return max(17, Int(expertGiB) - 1)
+    }
+    private var streamingCaption: String {
+        guard let expertGiB = app.selectedModel.quant?.routedExpertGiB else { return "" }  // Laguna: N/A
+        let gb = app.ssdStreamingCacheGB
+        // Truncates (82.69 − 67 → ~15 GiB); clamps at 0 so a saved budget larger than
+        // the current quant's experts (e.g. after switching quant) never shows negative.
+        let freed = max(0, Int(expertGiB - Double(gb)))
+        return
+            "Expert cache \(gb) GiB — frees ~\(freed) GiB of RAM from model weights. "
+            + "Decode can be slower when the SSD must refill the cache."
     }
     /// Context-size field as text. Always shows the active window: the override if set, else the
     /// tiered default — so the box is never blank. Backspacing it away stores 0 (auto), which the
@@ -167,6 +188,45 @@ struct SettingsView: View {
             }
 
             Section {
+                Toggle("Stream expert weights from SSD", isOn: $app.ssdStreaming)
+                    .disabled(!app.selectedModel.supportsSSDStreaming)
+                if app.selectedModel.supportsSSDStreaming {
+                    if app.ssdStreaming {
+                        LabeledContent {
+                            HStack(spacing: 10) {
+                                Slider(value: streamingCacheBinding, in: 16...Double(streamingCacheMaxGiB), step: 1)
+                                Text("\(app.ssdStreamingCacheGB)")
+                                    .monospacedDigit().foregroundStyle(.secondary)
+                                    .frame(width: 30, alignment: .trailing)
+                            }
+                            .frame(width: 230)
+                        } label: {
+                            Text("Expert cache")
+                        }
+                        Text(streamingCaption)
+                            .font(.caption2)
+                            .foregroundStyle(.secondary)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
+                } else {
+                    Text(
+                        "SSD streaming isn't supported for Laguna S 2.1 on this ds4 yet — "
+                            + "passing the flag would make the server refuse to start."
+                    )
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+                }
+            } header: {
+                Text("SSD streaming")
+            } footer: {
+                Text(
+                    "Keeps only part of the routed expert weights in RAM and streams the rest "
+                        + "from disk on demand, freeing memory for other apps. "
+                        + "Applies on next server start or restart.")
+            }
+
+            Section {
                 Button("Apply & Restart Server") { restart() }
                     .disabled(!isRunning)
             } footer: {
@@ -182,34 +242,34 @@ struct SettingsView: View {
             }
 
             Section {
-                Picker("Variant", selection: $app.selectedFlashQuant) {
-                    ForEach(FlashQuant.allCases) { q in
-                        Text(q.label + (supervisor.isFlashQuantDownloaded(q) ? "  (downloaded)" : ""))
-                            .tag(q)
-                            .disabled(!flashQuantFits(q, ramGiB: ram))
+                Picker("Model", selection: $app.selectedModel) {
+                    ForEach(Model.allCases) { m in
+                        Text(m.label + (supervisor.isDownloaded(m) ? "  (downloaded)" : ""))
+                            .tag(m)
+                            .disabled(blocked(m))
                     }
                 }
                 .disabled(supervisor.state == .downloading)  // locked while a download is in progress
-                Button("Clean up unused Flash downloads") { confirmingCleanup = true }
-                    .disabled(removableFlashQuants.isEmpty || isBusy)
+                Button("Clean up unused downloads") { confirmingCleanup = true }
+                    .disabled(removableModels.isEmpty || isBusy)
             } header: {
-                Text("V4 Flash model")
+                Text("Model")
             } footer: {
-                Text(flashModelFooter)
+                Text(modelFooter)
             }
             .confirmationDialog(
                 "Delete other V4 Flash downloads?", isPresented: $confirmingCleanup,
                 titleVisibility: .visible
             ) {
                 Button(
-                    "Delete \(removableFlashQuants.count) file(s) · ~\(removableFreedGiB) GiB",
+                    "Delete \(removableModels.count) file(s) · ~\(removableFreedGiB) GiB",
                     role: .destructive
                 ) {
-                    supervisor.cleanupUnusedFlashQuants(keep: app.selectedFlashQuant)
+                    supervisor.cleanupUnusedModels(keep: app.selectedModel)
                 }
                 Button("Cancel", role: .cancel) {}
             } message: {
-                Text("Keeps the selected variant and V4 Pro. Deleted weights must be downloaded again.")
+                Text("Keeps the selected model, V4 Pro, and other families. Deleted weights must be downloaded again.")
             }
 
             Section {
@@ -241,12 +301,12 @@ struct SettingsView: View {
     private func restart(overrideWiredLimitGate: Bool = false) {
         let host = app.normalizeHostForLaunch()
         let result = supervisor.restart(
-            variant: app.selectedVariant, flashQuant: app.selectedFlashQuant,
-            ctx: app.effectiveCtx(ramGiB: ram),
+            model: app.selectedModel, ctx: app.effectiveCtx(ramGiB: ram),
             host: host, port: app.port, power: app.power,
             sessions: app.concurrentSessions,
             kvDiskDir: app.kvDiskCache ? supervisor.kvDiskCacheURL : nil,
-            overrideWiredLimitGate: overrideWiredLimitGate)
+            overrideWiredLimitGate: overrideWiredLimitGate,
+            ssdStreaming: app.ssdStreaming, ssdStreamingCacheGB: app.ssdStreamingCacheGB)
         if case let .rejected(feasibility) = result {
             RestartRejectionAlert.show(
                 feasibility,
@@ -255,5 +315,10 @@ struct SettingsView: View {
                 restart(overrideWiredLimitGate: true)
             }
         }
+    }
+
+    private func blocked(_ m: Model) -> Bool {
+        if case .blocked = feasibility(ramGiB: ram, model: m) { return true }
+        return false
     }
 }

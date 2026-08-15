@@ -32,7 +32,7 @@ final class SupervisorStateMachineTests: XCTestCase {
     // adoption probe, and the real default would hit a live ds4-server on the dev machine.
     fileprivate func makeSupervisor(
         _ runner: FakeRunner, probe: @escaping (Int) async -> Data? = { _ in nil },
-        wiredLimitGate: @escaping SupervisorService.WiredLimitGate = { _, _, _, _ in .standard }
+        wiredLimitGate: @escaping SupervisorService.WiredLimitGate = { _, _, _, _, _ in .standard }
     ) throws -> SupervisorService {
         let dir = URL(fileURLWithPath: NSTemporaryDirectory()).appendingPathComponent(UUID().uuidString)
         try FileManager.default.createDirectory(
@@ -141,7 +141,7 @@ final class SupervisorStateMachineTests: XCTestCase {
         var gatedSessions: [Int] = []
         let s = try makeSupervisor(
             r,
-            wiredLimitGate: { _, _, _, sessions in
+            wiredLimitGate: { _, _, _, sessions, _ in
                 gatedSessions.append(sessions)
                 return .standard
             })
@@ -213,7 +213,7 @@ final class SupervisorStateMachineTests: XCTestCase {
         let rejection = Feasibility.wiredLimitTooLow(requiredMB: 100_000, advisoryMB: 110_000)
         let s = try makeSupervisor(
             r,
-            wiredLimitGate: { _, _, ctx, _ in ctx == thinkMaxMinCtx ? rejection : .standard })
+            wiredLimitGate: { _, _, ctx, _, _ in ctx == thinkMaxMinCtx ? rejection : .standard })
         s.start(
             variant: .flash, flashQuant: .q2q4, ctx: 100_000,
             host: "127.0.0.1", port: 8000, power: nil)
@@ -248,7 +248,7 @@ final class SupervisorStateMachineTests: XCTestCase {
         var gateCalls = 0
         let s = try makeSupervisor(
             r,
-            wiredLimitGate: { _, _, _, _ in
+            wiredLimitGate: { _, _, _, _, _ in
                 gateCalls += 1
                 return .standard
             })
@@ -286,10 +286,123 @@ final class SupervisorStateMachineTests: XCTestCase {
         }
         let s = SupervisorService(
             ds4Dir: dir, runner: FakeRunner(),
-            wiredLimitGate: { _, _, _, _ in .standard })
+            wiredLimitGate: { _, _, _, _, _ in .standard })
         s.start(variant: .flash, flashQuant: .q2q4, ctx: 250_000, host: "127.0.0.1", port: 8000, power: nil)
         if case .error(.modelMissing) = s.state {} else { XCTFail("expected modelMissing, got \(s.state)") }
     }
+    func testStartAddsSsdStreamingArgsWhenEnabled() throws {
+        let r = FakeRunner(); let s = try makeSupervisor(r)
+        s.start(
+            variant: .flash, flashQuant: .q2q4, ctx: 250_000, host: "127.0.0.1", port: 8000,
+            power: nil, ssdStreaming: true, ssdStreamingCacheGB: 67)
+        XCTAssertTrue(r.lastArgs.contains("--ssd-streaming"))
+        XCTAssertEqual(
+            r.lastArgs[r.lastArgs.firstIndex(of: "--ssd-streaming-cache-experts")! + 1], "67GB")
+    }
+    func testStartOmitsSsdStreamingArgsByDefault() throws {
+        let r = FakeRunner(); let s = try makeSupervisor(r)
+        s.start(variant: .flash, flashQuant: .q2q4, ctx: 250_000, host: "127.0.0.1", port: 8000, power: nil)
+        XCTAssertFalse(r.lastArgs.contains("--ssd-streaming"))
+        XCTAssertFalse(r.lastArgs.contains("--ssd-streaming-cache-experts"))
+    }
+    func testStartStreamingWithoutBudgetPassesToggleOnly() throws {
+        let r = FakeRunner(); let s = try makeSupervisor(r)
+        s.start(
+            variant: .flash, flashQuant: .q2q4, ctx: 250_000, host: "127.0.0.1", port: 8000,
+            power: nil, ssdStreaming: true, ssdStreamingCacheGB: 0)
+        XCTAssertTrue(r.lastArgs.contains("--ssd-streaming"))
+        XCTAssertFalse(r.lastArgs.contains("--ssd-streaming-cache-experts"))
+    }
+    func testRestartRelaunchCarriesSsdStreamingArgs() throws {
+        let r = FakeRunner(); let s = try makeSupervisor(r)
+        s.start(variant: .flash, flashQuant: .q2q4, ctx: 250_000, host: "127.0.0.1", port: 8000, power: nil)
+        r.emit("ds4-server: listening on http://127.0.0.1:8000")
+        s.restart(
+            variant: .flash, flashQuant: .q2q4, ctx: 393_216, host: "127.0.0.1", port: 8000,
+            power: nil, ssdStreaming: true, ssdStreamingCacheGB: 67)
+        XCTAssertTrue(r.lastArgs.contains("--ssd-streaming"))
+        XCTAssertEqual(
+            r.lastArgs[r.lastArgs.firstIndex(of: "--ssd-streaming-cache-experts")! + 1], "67GB")
+    }
+    func testLagunaLaunchPassesPrefillChunkAndNeverSsdStreaming() throws {
+        let dir = URL(fileURLWithPath: NSTemporaryDirectory()).appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(
+            at: dir.appendingPathComponent("gguf"), withIntermediateDirectories: true)
+        for f in ["ds4-server", "download_model.sh"] {
+            let u = dir.appendingPathComponent(f);
+            FileManager.default.createFile(atPath: u.path, contents: Data("#!/bin/sh\n".utf8))
+            try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: u.path)
+        }
+        let gg = dir.appendingPathComponent("gguf").appendingPathComponent(Model.lagunaS21.ggufFilename)
+        FileManager.default.createFile(atPath: gg.path, contents: Data("gguf".utf8))
+        let r = FakeRunner()
+        let s = SupervisorService(ds4Dir: dir, runner: r)
+        // ds4 gates Laguna to the standard local graph path: no SSD streaming, no power
+        // cap, no custom prefill chunk — any of them makes the server refuse to start.
+        s.start(
+            model: .lagunaS21, ctx: 50_000, host: "127.0.0.1", port: 8000, power: 80,
+            ssdStreaming: true, ssdStreamingCacheGB: 67)
+        XCTAssertFalse(r.lastArgs.contains("--ssd-streaming"))
+        XCTAssertFalse(r.lastArgs.contains("--ssd-streaming-cache-experts"))
+        XCTAssertFalse(r.lastArgs.contains("--power"))
+        XCTAssertFalse(r.lastArgs.contains("--prefill-chunk"))
+        XCTAssertTrue(r.lastArgs.contains { $0.contains("laguna-s-2.1-RoutedQ2_K-Last27Q3_K.gguf") })
+    }
+    func testDs4fLaunchStillPassesSsdStreamingWhenEnabled() throws {
+        let r = FakeRunner(); let s = try makeSupervisor(r)
+        s.start(
+            model: .v4FlashQ2Q4, ctx: 250_000, host: "127.0.0.1", port: 8000, power: 80,
+            ssdStreaming: true, ssdStreamingCacheGB: 67)
+        XCTAssertTrue(r.lastArgs.contains("--ssd-streaming"))
+        XCTAssertTrue(r.lastArgs.contains("--power"))
+        XCTAssertEqual(r.lastArgs[r.lastArgs.firstIndex(of: "--power")! + 1], "80")
+        XCTAssertFalse(r.lastArgs.contains("--prefill-chunk"))
+    }
+    func testLagunaDownloadUsesLagunaFile() throws {
+        let dir = URL(fileURLWithPath: NSTemporaryDirectory()).appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(
+            at: dir.appendingPathComponent("gguf"), withIntermediateDirectories: true)
+        for f in ["ds4-server", "download_model.sh"] {
+            let u = dir.appendingPathComponent(f)
+            FileManager.default.createFile(atPath: u.path, contents: Data("#!/bin/sh\n".utf8))
+            try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: u.path)
+        }
+        let s = SupervisorService(
+            ds4Dir: dir, runner: FakeRunner(),
+            fetchFile: { _, _, _, _, _ in try await Task.sleep(nanoseconds: 600_000_000_000) })
+        s.download(model: .lagunaS21)
+        XCTAssertEqual(s.state, .downloading)
+        XCTAssertEqual(s.download?.file, "laguna-s-2.1-RoutedQ2_K-Last27Q3_K.gguf")
+        s.cancelDownload()
+    }
+    func testCleanupRemovesOnlySameFamilyQuants() throws {
+        let dir = URL(fileURLWithPath: NSTemporaryDirectory()).appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(
+            at: dir.appendingPathComponent("gguf"), withIntermediateDirectories: true)
+        for f in ["ds4-server", "download_model.sh"] {
+            let u = dir.appendingPathComponent(f)
+            FileManager.default.createFile(atPath: u.path, contents: Data("#!/bin/sh\n".utf8))
+            try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: u.path)
+        }
+        let ggufDir = dir.appendingPathComponent("gguf")
+        // Simulate downloaded q2, q4, Pro, and Laguna files on disk.
+        for name in [
+            Quant.q2Imatrix.ggufFilename, Quant.q4Imatrix.ggufFilename,
+            Quant.proImatrix.ggufFilename, Model.lagunaS21.ggufFilename,
+        ] {
+            FileManager.default.createFile(
+                atPath: ggufDir.appendingPathComponent(name).path, contents: Data("gguf".utf8))
+        }
+        let s = SupervisorService(ds4Dir: dir, runner: FakeRunner())
+        let removed = s.cleanupUnusedModels(keep: .v4FlashQ2Q4)
+        XCTAssertTrue(removed.contains(Quant.q2Imatrix.ggufFilename))
+        XCTAssertTrue(removed.contains(Quant.q4Imatrix.ggufFilename))
+        XCTAssertFalse(removed.contains(Quant.proImatrix.ggufFilename))  // Pro always kept
+        XCTAssertFalse(removed.contains(Model.lagunaS21.ggufFilename))  // other family untouched
+        // Cleaning when keeping Laguna is a no-op (single model per family).
+        XCTAssertTrue(s.cleanupUnusedModels(keep: .lagunaS21).isEmpty)
+    }
+
     func testDownloadUsesSelectedQuantFile() throws {
         let dir = URL(fileURLWithPath: NSTemporaryDirectory()).appendingPathComponent(UUID().uuidString)
         try FileManager.default.createDirectory(

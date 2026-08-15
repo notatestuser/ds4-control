@@ -16,6 +16,13 @@ final class AppState: ObservableObject {
     /// keeping the original single-session path. Memory grows with sessions × context.
     @Published var concurrentSessions: Int { didSet { d.set(concurrentSessions, forKey: "concurrentSessions") } }
     @Published var kvDiskCache: Bool { didSet { d.set(kvDiskCache, forKey: "kvDiskCache") } }
+    /// SSD streaming: cache only `ssdStreamingCacheGB` of routed experts in RAM; the
+    /// rest stream from the GGUF on demand. Default ON with the ~15 GiB-free budget
+    /// for the selected quant.
+    @Published var ssdStreaming: Bool { didSet { d.set(ssdStreaming, forKey: "ssdStreaming") } }
+    @Published var ssdStreamingCacheGB: Int {
+        didSet { d.set(ssdStreamingCacheGB, forKey: "ssdStreamingCacheGB") }
+    }
     /// The chat's thinking level (Off / Standard / Max Think). Coding-agent CLIs set their
     /// own per-request level, so this affects only the built-in chat.
     @Published var thinkingMode: ThinkingMode { didSet { d.set(thinkingMode.rawValue, forKey: "thinkingMode") } }
@@ -39,13 +46,30 @@ final class AppState: ObservableObject {
     @Published var legacyWeightsPromptDismissed: Bool {
         didSet { d.set(legacyWeightsPromptDismissed, forKey: "legacyWeightsPromptDismissed0731") }
     }
-    @Published var selectedVariant: Variant {
-        didSet { d.set(selectedVariant.rawValue, forKey: "selectedVariant") }
+    @Published var selectedModel: Model {
+        didSet { d.set(selectedModel.rawValue, forKey: "selectedModel") }
     }
-    /// User-selected V4 Flash quant (default q2-q4-imatrix). Drives the Flash download/run
-    /// filename and the auto-context calc; V4 Pro ignores it.
-    @Published var selectedFlashQuant: FlashQuant {
-        didSet { d.set(selectedFlashQuant.rawValue, forKey: "selectedFlashQuant") }
+    /// Compatibility shims over `selectedModel` for the DS4F wired-limit gate
+    /// (#15's WiredLimitHelpView and the Settings ctx clamp key off the variant pair).
+    var selectedVariant: Variant {
+        get { selectedModel == .v4Pro ? .pro : .flash }
+        set { selectedModel = newValue == .pro ? .v4Pro : .v4FlashQ2Q4 }
+    }
+    var selectedFlashQuant: FlashQuant {
+        get {
+            switch selectedModel.quant {
+            case .q4Imatrix: return .q4
+            case .q2Imatrix: return .q2
+            default: return .q2q4
+            }
+        }
+        set {
+            switch newValue {
+            case .q2: selectedModel = .v4FlashQ2
+            case .q4: selectedModel = .v4FlashQ4
+            case .q2q4: selectedModel = selectedModel == .v4Pro ? .v4Pro : .v4FlashQ2Q4
+            }
+        }
     }
 
     init(defaults: UserDefaults = .standard, ramGiB: Double = systemRamGiB()) {
@@ -80,16 +104,39 @@ final class AppState: ObservableObject {
         highPerformanceDownload = d.bool(forKey: "highPerformanceDownload")  // default off
         launchAtLogin = SMAppService.mainApp.status == .enabled  // OS is the source of truth
         legacyWeightsPromptDismissed = d.bool(forKey: "legacyWeightsPromptDismissed0731")  // default false
-        let stored = d.string(forKey: "selectedVariant").flatMap(Variant.init(rawValue:))
-        selectedVariant = stored ?? (ramGiB >= 512 ? .pro : .flash)  // default Pro on ≥512 GiB
-        let storedQuant = d.string(forKey: "selectedFlashQuant").flatMap(FlashQuant.init(rawValue:))
-        selectedFlashQuant = storedQuant ?? defaultFlashQuant(ramGiB: ramGiB)  // default q2-q4-imatrix
+        let storedModel = d.string(forKey: "selectedModel").flatMap(Model.init(rawValue:))
+        let model = storedModel ?? Self.migrateLegacySelection(defaults: d, ramGiB: ramGiB)
+        selectedModel = model
+        ssdStreaming = d.object(forKey: "ssdStreaming") as? Bool ?? true  // default on
+        if let storedGB = d.object(forKey: "ssdStreamingCacheGB") as? Int {
+            ssdStreamingCacheGB = storedGB
+        } else {
+            // Fresh install: the ~15 GiB-free budget for the default DS4F quant; inert for Laguna.
+            ssdStreamingCacheGB = model.quant?.defaultStreamingCacheGB ?? Quant.q2q4Imatrix.defaultStreamingCacheGB
+        }
+    }
+
+    /// First-launch model selection: the legacy selectedVariant/selectedFlashQuant keys
+    /// migrate into `selectedModel`; otherwise tier by RAM (Pro ≥512, Flash q2-q4 ≥128,
+    /// Flash q2 96–127, Laguna below — the only feasible model on 64 GB-class machines).
+    nonisolated static func migrateLegacySelection(defaults d: UserDefaults, ramGiB: Double) -> Model {
+        if let v = d.string(forKey: "selectedVariant").flatMap(Variant.init(rawValue:)),
+            let f = d.string(forKey: "selectedFlashQuant").flatMap(FlashQuant.init(rawValue:))
+        {
+            if v == .pro { return .v4Pro }
+            switch f {
+            case .q2: return .v4FlashQ2
+            case .q4: return .v4FlashQ4
+            default: return .v4FlashQ2Q4
+            }
+        }
+        return ramGiB >= 512 ? .v4Pro : ramGiB >= 128 ? .v4FlashQ2Q4 : ramGiB >= 96 ? .v4FlashQ2 : .lagunaS21
     }
 
     func effectiveCtx(ramGiB: Double) -> Int {
         ctxOverride > 0
-            ? min(ctxOverride, selectedVariant.ctxCeiling)
-            : defaultCtx(ramGiB: ramGiB, variant: selectedVariant, flashQuant: selectedFlashQuant)
+            ? min(ctxOverride, selectedModel.ctxCeiling)
+            : defaultCtx(ramGiB: ramGiB, model: selectedModel)
     }
 
     /// Set the chat's thinking level. Max is unavailable below 128 GiB and otherwise needs
