@@ -29,6 +29,7 @@ It launches, supervises, and monitors a local ds4 server, lets you pick **V4 Pro
 
 - **Start / stop / monitor** the local `ds4-server` child process — spawn, stderr readiness detection, health polling, graceful stop, and crash detection.
 - **Pro / Flash selector** with a RAM feasibility gate.
+- **SSD streaming** (on by default): keeps ~15 GiB less of the model resident by caching only part of the routed experts; budget adjustable in Settings.
 - **Model downloads** via a built-in native parallel downloader, with a live progress bar and resume across restarts.
 - **Mini resource widgets**: unified memory, GPU, power, and CPU, sampled on a timer.
 - **Launch Chat** to talk to the model.

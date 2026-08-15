@@ -135,4 +135,23 @@ final class AppStateTests: XCTestCase {
             app2.requestThinkingMode(.max, currentCtx: 393_216, ramGiB: 128), .applied)
         XCTAssertEqual(app2.thinkingMode, .max)
     }
+
+    func testSsdStreamingDefaultsOnAndPersists() {
+        let name = "test.\(UUID().uuidString)"
+        let a1 = AppState(defaults: UserDefaults(suiteName: name)!)
+        XCTAssertTrue(a1.ssdStreaming)  // default ON — frees ~15 GiB on fresh installs
+        a1.ssdStreaming = false
+        let a2 = AppState(defaults: UserDefaults(suiteName: name)!)
+        XCTAssertFalse(a2.ssdStreaming)  // persisted
+    }
+    func testSsdStreamingCacheGBDefaultsToFree15BudgetAndPersists() {
+        let name = "test.\(UUID().uuidString)"
+        let a1 = AppState(defaults: UserDefaults(suiteName: name)!)
+        XCTAssertEqual(
+            a1.ssdStreamingCacheGB,
+            Quant.for(a1.selectedVariant, flashQuant: a1.selectedFlashQuant).defaultStreamingCacheGB)
+        a1.ssdStreamingCacheGB = 80
+        let a2 = AppState(defaults: UserDefaults(suiteName: name)!)
+        XCTAssertEqual(a2.ssdStreamingCacheGB, 80)  // persisted, not re-defaulted
+    }
 }

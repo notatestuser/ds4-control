@@ -21,7 +21,8 @@ struct ModelRowView: View {
                 ramGiB: ramGiB, variant: app.selectedVariant, flashQuant: app.selectedFlashQuant,
                 ctx: app.effectiveCtx(ramGiB: ramGiB),
                 wiredLimitMB: effectiveWiredLimitMB(ramGiB: ramGiB),
-                sessions: app.concurrentSessions)
+                sessions: app.concurrentSessions,
+                ssdStreamingCacheGB: app.ssdStreaming ? app.ssdStreamingCacheGB : 0)
             actionButton(feas)
             feasibilityNote(feas)
         }
@@ -91,7 +92,8 @@ struct ModelRowView: View {
             host: host, port: app.port, power: app.power,
             sessions: app.concurrentSessions,
             kvDiskDir: app.kvDiskCache ? supervisor.kvDiskCacheURL : nil,
-            overrideWiredLimitGate: overrideWiredLimitGate)
+            overrideWiredLimitGate: overrideWiredLimitGate,
+            ssdStreaming: app.ssdStreaming, ssdStreamingCacheGB: app.ssdStreamingCacheGB)
     }
 
     /// Real NSAlert (not SwiftUI .alert, which would collapse the .window MenuBarExtra) —

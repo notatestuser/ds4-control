@@ -68,6 +68,22 @@ struct SettingsView: View {
     private var sessionsBinding: Binding<Double> {
         Binding(get: { Double(app.concurrentSessions) }, set: { app.concurrentSessions = Int($0.rounded()) })
     }
+    private var streamingCacheBinding: Binding<Double> {
+        Binding(get: { Double(app.ssdStreamingCacheGB) }, set: { app.ssdStreamingCacheGB = Int($0.rounded()) })
+    }
+    private var streamingCacheMaxGiB: Int {
+        max(17, Int(Quant.for(app.selectedVariant, flashQuant: app.selectedFlashQuant).routedExpertGiB) - 1)
+    }
+    private var streamingCaption: String {
+        let q = Quant.for(app.selectedVariant, flashQuant: app.selectedFlashQuant)
+        let gb = app.ssdStreamingCacheGB
+        // Truncates (82.69 − 67 → ~15 GiB); clamps at 0 so a saved budget larger than
+        // the current quant's experts (e.g. after switching quant) never shows negative.
+        let freed = max(0, Int(q.routedExpertGiB - Double(gb)))
+        return
+            "Expert cache \(gb) GiB — frees ~\(freed) GiB of RAM from model weights. "
+            + "Decode can be slower when the SSD must refill the cache."
+    }
     /// Context-size field as text. Always shows the active window: the override if set, else the
     /// tiered default — so the box is never blank. Backspacing it away stores 0 (auto), which the
     /// getter immediately re-renders as the default value.
@@ -167,6 +183,34 @@ struct SettingsView: View {
             }
 
             Section {
+                Toggle("Stream expert weights from SSD", isOn: $app.ssdStreaming)
+                if app.ssdStreaming {
+                    LabeledContent {
+                        HStack(spacing: 10) {
+                            Slider(value: streamingCacheBinding, in: 16...Double(streamingCacheMaxGiB), step: 1)
+                            Text("\(app.ssdStreamingCacheGB)")
+                                .monospacedDigit().foregroundStyle(.secondary)
+                                .frame(width: 30, alignment: .trailing)
+                        }
+                        .frame(width: 230)
+                    } label: {
+                        Text("Expert cache")
+                    }
+                    Text(streamingCaption)
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+            } header: {
+                Text("SSD streaming")
+            } footer: {
+                Text(
+                    "Keeps only part of the routed expert weights in RAM and streams the rest "
+                        + "from disk on demand, freeing memory for other apps. "
+                        + "Applies on next server start or restart.")
+            }
+
+            Section {
                 Button("Apply & Restart Server") { restart() }
                     .disabled(!isRunning)
             } footer: {
@@ -246,7 +290,8 @@ struct SettingsView: View {
             host: host, port: app.port, power: app.power,
             sessions: app.concurrentSessions,
             kvDiskDir: app.kvDiskCache ? supervisor.kvDiskCacheURL : nil,
-            overrideWiredLimitGate: overrideWiredLimitGate)
+            overrideWiredLimitGate: overrideWiredLimitGate,
+            ssdStreaming: app.ssdStreaming, ssdStreamingCacheGB: app.ssdStreamingCacheGB)
         if case let .rejected(feasibility) = result {
             RestartRejectionAlert.show(
                 feasibility,
