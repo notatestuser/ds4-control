@@ -4,6 +4,9 @@ import Combine
 
 private final class FakeRunner: ProcessRunner {
     var isRunning = false
+    var exitsOnTerminate = true
+    var launchCallCount = 0
+    var terminateCallCount = 0
     var lastArgs: [String] = []
     var lastEnv: [String: String] = [:]
     var lastRemovedEnvironmentKeys: Set<String> = []
@@ -14,6 +17,7 @@ private final class FakeRunner: ProcessRunner {
         removingEnvironmentKeys: Set<String>,
         onStderrLine: @escaping @Sendable (String) -> Void, onExit: @escaping @Sendable (Int32) -> Void
     ) throws {
+        launchCallCount += 1
         lastArgs = args
         lastEnv = env
         lastRemovedEnvironmentKeys = removingEnvironmentKeys
@@ -21,9 +25,14 @@ private final class FakeRunner: ProcessRunner {
         stderr = onStderrLine
         exit = onExit
     }
-    func terminate(graceSeconds: Double) { isRunning = false; exit?(0) }
+    func terminate(graceSeconds: Double) {
+        terminateCallCount += 1
+        guard exitsOnTerminate else { return }
+        finishTermination()
+    }
     func emit(_ line: String) { stderr?(line) }
     func crash(_ code: Int32) { isRunning = false; exit?(code) }
+    func finishTermination() { isRunning = false; exit?(0) }
 }
 
 @MainActor
@@ -186,6 +195,43 @@ final class SupervisorStateMachineTests: XCTestCase {
         r.emit("ds4-server: listening on http://127.0.0.1:8000")
         s.stop()
         XCTAssertEqual(s.state, .idle)
+    }
+    func testStopCompletionsWaitForExitAndCoalesce() throws {
+        let r = FakeRunner(); r.exitsOnTerminate = false
+        let s = try makeSupervisor(r)
+        s.start(variant: .flash, flashQuant: .q2q4, ctx: 250_000, host: "127.0.0.1", port: 8000, power: nil)
+        r.emit("ds4-server: listening on http://127.0.0.1:8000")
+        var results: [Bool] = []
+
+        s.stop { results.append($0) }
+        s.stop { results.append($0) }
+
+        XCTAssertEqual(s.state, .stopping)
+        XCTAssertEqual(r.terminateCallCount, 1)
+        XCTAssertTrue(results.isEmpty)
+        r.finishTermination()
+        XCTAssertEqual(s.state, .idle)
+        XCTAssertEqual(results, [true, true])
+    }
+    func testTerminationStopCancelsPendingRestart() throws {
+        let r = FakeRunner(); r.exitsOnTerminate = false
+        let s = try makeSupervisor(r)
+        s.start(variant: .flash, flashQuant: .q2q4, ctx: 250_000, host: "127.0.0.1", port: 8000, power: nil)
+        r.emit("ds4-server: listening on http://127.0.0.1:8000")
+        XCTAssertEqual(
+            s.restart(
+                variant: .flash, flashQuant: .q2q4, ctx: 393_216,
+                host: "127.0.0.1", port: 8000, power: nil),
+            .accepted)
+        XCTAssertEqual(s.state, .stopping)
+
+        var stopSucceeded: Bool?
+        s.stopForTermination { stopSucceeded = $0 }
+        r.finishTermination()
+
+        XCTAssertEqual(stopSucceeded, true)
+        XCTAssertEqual(s.state, .idle)
+        XCTAssertEqual(r.launchCallCount, 1, "the queued replacement server must not launch during Quit")
     }
     func testRestartRelaunchesWithNewSettings() throws {
         let r = FakeRunner(); let s = try makeSupervisor(r)

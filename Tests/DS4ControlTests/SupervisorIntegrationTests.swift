@@ -132,7 +132,10 @@ final class SupervisorIntegrationTests: XCTestCase {
         token.cancel()
         XCTAssertEqual(s.activeModel, "DeepSeek V4 Pro")
         XCTAssertEqual(s.ctx, 1_000_000)  // adopted server's real context, not the 393_216 default
-        s.stop()
+        var stopSucceeded: Bool?
+        s.stop { stopSucceeded = $0 }
+        XCTAssertEqual(s.state, .idle)
+        XCTAssertEqual(stopSucceeded, true)
     }
 
     func testResumeNoOpWhenNoServer() throws {

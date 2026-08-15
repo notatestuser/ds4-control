@@ -60,6 +60,35 @@ final class AppStateTests: XCTestCase {
         XCTAssertFalse(a2.kvDiskCache)  // persisted
     }
 
+    func testQuitBehaviorDefaultsToUndecidedKeepRunningAndPersistsEitherChoice() {
+        let keepName = "test.\(UUID().uuidString)"
+        let keep = AppState(defaults: UserDefaults(suiteName: keepName)!)
+        XCTAssertFalse(keep.stopServerOnQuit)
+        XCTAssertFalse(keep.quitBehaviorChosen)
+        keep.setStopServerOnQuit(false)
+        let persistedKeep = AppState(defaults: UserDefaults(suiteName: keepName)!)
+        XCTAssertFalse(persistedKeep.stopServerOnQuit)
+        XCTAssertTrue(persistedKeep.quitBehaviorChosen)
+
+        let stopName = "test.\(UUID().uuidString)"
+        let stop = AppState(defaults: UserDefaults(suiteName: stopName)!)
+        stop.setStopServerOnQuit(true)
+        let persistedStop = AppState(defaults: UserDefaults(suiteName: stopName)!)
+        XCTAssertTrue(persistedStop.stopServerOnQuit)
+        XCTAssertTrue(persistedStop.quitBehaviorChosen)
+    }
+
+    func testStoredStopPreferenceCountsAsAQuitBehaviorChoice() {
+        let defaults = UserDefaults(suiteName: "test.\(UUID().uuidString)")!
+        defaults.set(true, forKey: "stopServerOnQuit")
+
+        let app = AppState(defaults: defaults)
+
+        XCTAssertTrue(app.stopServerOnQuit)
+        XCTAssertTrue(app.quitBehaviorChosen)
+        XCTAssertTrue(defaults.bool(forKey: "quitBehaviorChosen"))
+    }
+
     func testLegacyWeightsPromptDismissedPersists() {
         let name = "test.\(UUID().uuidString)"
         let a1 = AppState(defaults: UserDefaults(suiteName: name)!)

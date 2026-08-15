@@ -50,6 +50,9 @@ final class SupervisorService: ObservableObject {
     /// Deferred start used by `restart`: when stopping an owned process, the relaunch
     /// can't happen until it has fully exited (port freed). `handleExit` runs this.
     private var pendingRestart: (() -> Void)?
+    /// Callers waiting for a confirmed stop (notably app termination). Multiple quit/stop
+    /// requests coalesce onto the same in-flight shutdown and are drained exactly once.
+    private var pendingStopCompletions: [(Bool) -> Void] = []
 
     /// Where downloaded gguf models live when `DS4_GGUF_DIR` isn't set. Production passes
     /// the writable App Support dir; tests pass nil so it falls back to `ds4Dir/gguf`.
@@ -233,8 +236,7 @@ final class SupervisorService: ObservableObject {
     private func handleExit(_ code: Int32) {
         healthTimer?.invalidate(); healthTimer = nil; startupTimer?.invalidate(); startupTimer = nil
         if expectingExit {
-            state = .idle
-            if let relaunch = pendingRestart { pendingRestart = nil; relaunch() }
+            completeStop()
             return
         }
         pendingRestart = nil
@@ -246,8 +248,20 @@ final class SupervisorService: ObservableObject {
     }
 
     // MARK: - Stop
-    func stop() {
-        guard state == .ready || state == .starting else { emitBadState("stop"); return }
+    /// Stop ds4-server and optionally report whether its exit was confirmed. A completion
+    /// registered while already stopping joins the existing shutdown instead of signalling
+    /// the process twice. `.idle` is an immediate success; other invalid states are failures.
+    func stop(completion: ((Bool) -> Void)? = nil) {
+        if state == .stopping {
+            if let completion { pendingStopCompletions.append(completion) }
+            return
+        }
+        guard state == .ready || state == .starting else {
+            emitBadState("stop")
+            completion?(state == .idle)
+            return
+        }
+        if let completion { pendingStopCompletions.append(completion) }
         expectingExit = true
         state = .stopping
         healthTimer?.invalidate(); healthTimer = nil
@@ -266,11 +280,24 @@ final class SupervisorService: ObservableObject {
         }
     }
 
+    /// App termination must never honor a restart that was queued before Quit. Otherwise
+    /// the old server can finish stopping, a new one can launch, and the app can exit while
+    /// leaving that fresh process behind despite an explicit stop-on-quit policy.
+    func stopForTermination(completion: ((Bool) -> Void)? = nil) {
+        pendingRestart = nil
+        stop(completion: completion)
+    }
+
     /// Poll until the TERM'd attached-server pids are gone; SIGKILL once after 30 s of
-    /// grace, and give up waiting at 35 s rather than stick in `.stopping` forever.
+    /// grace. If any remain after 35 s, report failure and restore `.ready` so the user can
+    /// retry rather than pretending the server stopped or silently violating a quit policy.
     private func finishAttachedStopWhenExited(pids: [pid_t], waited: Double, escalated: Bool) {
         let alive = pids.filter { kill($0, 0) == 0 }
-        if alive.isEmpty || waited >= 35 { completeAttachedStop(); return }
+        if alive.isEmpty { completeStop(); return }
+        if waited >= 35 {
+            failAttachedStop()
+            return
+        }
         var escalated = escalated
         if waited >= 30, !escalated {
             for pid in alive { kill(pid, SIGKILL) }
@@ -281,9 +308,25 @@ final class SupervisorService: ObservableObject {
         }
     }
 
-    private func completeAttachedStop() {
+    private func completeStop() {
+        expectingExit = false
         state = .idle
+        let completions = pendingStopCompletions
+        pendingStopCompletions.removeAll()
+        for completion in completions { completion(true) }
         if let relaunch = pendingRestart { pendingRestart = nil; relaunch() }
+    }
+
+    private func failAttachedStop() {
+        expectingExit = false
+        serverAttached = true
+        pendingRestart = nil
+        recentLog.append("ds4-server did not exit after SIGTERM/SIGKILL; stop failed")
+        state = .ready
+        startHealthPolling()
+        let completions = pendingStopCompletions
+        pendingStopCompletions.removeAll()
+        for completion in completions { completion(false) }
     }
 
     /// Apply changed settings to a running server: stop it, then relaunch with the

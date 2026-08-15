@@ -28,6 +28,7 @@ struct DS4ControlApp: App {
                 }
             )
         )
+        appDelegate.configure(app: app, supervisor: supervisor)
     }
 
     var body: some Scene {
@@ -72,8 +73,22 @@ private final class MenuBarStartupCoordinator {
     var started = false
 }
 
+@MainActor
 final class AppDelegate: NSObject, NSApplicationDelegate {
+    private var terminationCoordinator: AppTerminationCoordinator?
+
+    func configure(app: AppState, supervisor: SupervisorService) {
+        terminationCoordinator = AppTerminationCoordinator(app: app, supervisor: supervisor)
+    }
+
     func applicationDidFinishLaunching(_ n: Notification) {
         NSApplication.shared.setActivationPolicy(.accessory)  // menu-bar only (LSUIElement)
+    }
+
+    func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
+        guard let terminationCoordinator else { return .terminateNow }
+        return terminationCoordinator.applicationShouldTerminate { shouldTerminate in
+            sender.reply(toApplicationShouldTerminate: shouldTerminate)
+        }
     }
 }

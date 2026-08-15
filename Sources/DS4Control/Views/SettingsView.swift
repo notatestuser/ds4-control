@@ -61,6 +61,9 @@ struct SettingsView: View {
     private var launchAtLoginBinding: Binding<Bool> {
         Binding(get: { app.launchAtLogin }, set: { app.setLaunchAtLogin($0) })
     }
+    private var stopServerOnQuitBinding: Binding<Bool> {
+        Binding(get: { app.stopServerOnQuit }, set: { app.setStopServerOnQuit($0) })
+    }
 
     private var powerBinding: Binding<Double> {
         Binding(get: { Double(app.power ?? 100) }, set: { app.power = Int($0.rounded()) })
@@ -93,10 +96,17 @@ struct SettingsView: View {
                         .foregroundStyle(.red)
                         .fixedSize(horizontal: false, vertical: true)
                 }
+                Toggle("Stop ds4-server when DS4 Control quits", isOn: stopServerOnQuitBinding)
             } header: {
-                Text("Startup")
+                Text("App")
             } footer: {
-                Text("Launches the menu bar app automatically when you sign in to your Mac.")
+                VStack(alignment: .leading, spacing: 4) {
+                    Text("Launches the menu bar app automatically when you sign in to your Mac.")
+                    Text(
+                        "When off, quitting DS4 Control leaves ds4-server and its loaded model "
+                            + "available in the background."
+                    )
+                }
             }
 
             Section {

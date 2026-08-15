@@ -33,6 +33,12 @@ final class AppState: ObservableObject {
     /// A user-visible message describing why a launch-at-login change failed, or nil. Cleared
     /// on the next attempt / refresh.
     @Published var launchAtLoginError: String?
+    /// Whether a normal DS4 Control quit should also stop ds4-server. The existing behavior
+    /// remains the default: leave the loaded model available in the background.
+    @Published private(set) var stopServerOnQuit: Bool
+    /// False until the user answers the one-time quit prompt or changes the Settings toggle.
+    /// Kept separate from `stopServerOnQuit` because false is both the default and a real choice.
+    private(set) var quitBehaviorChosen: Bool
     /// One-time migration: the 0731 Flash weights orphaned the preview GGUFs. Until the
     /// user answers the popup banner, they get a delete-and-reclaim offer. The key is
     /// generation-versioned so a future weights refresh re-prompts.
@@ -79,6 +85,15 @@ final class AppState: ObservableObject {
         }
         highPerformanceDownload = d.bool(forKey: "highPerformanceDownload")  // default off
         launchAtLogin = SMAppService.mainApp.status == .enabled  // OS is the source of truth
+        let storedStopServerOnQuit = d.bool(forKey: "stopServerOnQuit")
+        let storedQuitBehaviorChosen = d.bool(forKey: "quitBehaviorChosen")
+        stopServerOnQuit = storedStopServerOnQuit  // default: keep server running
+        quitBehaviorChosen = storedQuitBehaviorChosen || storedStopServerOnQuit
+        if storedStopServerOnQuit && !storedQuitBehaviorChosen {
+            // Preserve the invariant if the stop preference was written independently (for
+            // example by a prerelease build): an explicit true preference is already a choice.
+            d.set(true, forKey: "quitBehaviorChosen")
+        }
         legacyWeightsPromptDismissed = d.bool(forKey: "legacyWeightsPromptDismissed0731")  // default false
         let stored = d.string(forKey: "selectedVariant").flatMap(Variant.init(rawValue:))
         selectedVariant = stored ?? (ramGiB >= 512 ? .pro : .flash)  // default Pro on ≥512 GiB
@@ -118,6 +133,15 @@ final class AppState: ObservableObject {
         let normalized = host.trimmingCharacters(in: .whitespacesAndNewlines)
         host = normalized.isEmpty ? Self.defaultHost : normalized
         return host
+    }
+
+    /// Record either quit policy as an explicit choice. Both the first-quit alert and the
+    /// Settings toggle use this single path so the prompt can never reappear after a choice.
+    func setStopServerOnQuit(_ enabled: Bool) {
+        stopServerOnQuit = enabled
+        quitBehaviorChosen = true
+        d.set(enabled, forKey: "stopServerOnQuit")
+        d.set(true, forKey: "quitBehaviorChosen")
     }
 
     /// Turn automatic launch-at-login on or off. Registers/unregisters this app as a macOS
