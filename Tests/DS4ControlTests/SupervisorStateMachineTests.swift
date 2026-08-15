@@ -111,6 +111,29 @@ final class SupervisorStateMachineTests: XCTestCase {
         XCTAssertNil(environment["DS4_METAL_PREFILL_CHUNK"])
         XCTAssertNil(environment["DS4_METAL_GRAPH_RAW_CAP"])
     }
+
+    func testProcessCaptureDrainsBothPipesConcurrently() throws {
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: "/bin/sh")
+        process.arguments = [
+            "-c", "dd if=/dev/zero bs=1048576 count=1 1>&2 2>/dev/null; printf done",
+        ]
+        let outputPipe = Pipe()
+        let errorPipe = Pipe()
+        process.standardOutput = outputPipe
+        process.standardError = errorPipe
+        let watchdog = DispatchWorkItem {
+            if process.isRunning { process.terminate() }
+        }
+        DispatchQueue.global().asyncAfter(deadline: .now() + 2, execute: watchdog)
+
+        let output = try runAndCaptureOutput(
+            process, standardOutput: outputPipe, standardError: errorPipe)
+        watchdog.cancel()
+
+        XCTAssertEqual(String(decoding: output.standardOutput, as: UTF8.self), "done")
+        XCTAssertEqual(output.standardError.count, 1_048_576)
+    }
     func testStartNormalizesHostBeforeLaunch() throws {
         let r = FakeRunner(); let s = try makeSupervisor(r)
         s.start(variant: .flash, flashQuant: .q2q4, ctx: 250_000, host: " \n0.0.0.0\t ", port: 8000, power: nil)
@@ -293,29 +316,43 @@ final class SupervisorStateMachineTests: XCTestCase {
         let r = FakeRunner()
         let s = try makeSupervisor(
             r, probe: { _ in await probes.next() },
-            listeningPIDLookup: { _ in .failure })
+            listeningPIDLookup: { _ in
+                XCTAssertFalse(Thread.isMainThread)
+                return .failure
+            })
         let ready = expectation(description: "attached server adopted")
         let token = s.$state.sink { if $0 == .ready { ready.fulfill() } }
         s.resumeRunningServerIfAny(port: 8000)
         await fulfillment(of: [ready], timeout: 1)
         token.cancel()
 
+        let stopped = expectation(description: "PID discovery failure")
         var stopResult: Bool?
-        s.stop { stopResult = $0 }
+        s.stop {
+            stopResult = $0
+            stopped.fulfill()
+        }
 
+        await fulfillment(of: [stopped], timeout: 1)
         XCTAssertEqual(stopResult, false)
         XCTAssertEqual(s.state, .ready)
+        let restartFailed = expectation(description: "restart PID discovery failure")
+        let restartToken = s.$state.dropFirst().sink { state in
+            if state == .ready { restartFailed.fulfill() }
+        }
         XCTAssertEqual(
             s.restart(
                 variant: .flash, flashQuant: .q2q4, ctx: 393_216,
                 host: "127.0.0.1", port: 8000, power: nil),
-            .ignored)
+            .accepted)
+        await fulfillment(of: [restartFailed], timeout: 1)
+        restartToken.cancel()
         XCTAssertEqual(s.state, .ready)
         XCTAssertEqual(r.launchCallCount, 0)
     }
     func testAttachedStopWithNoPIDsFailsWhileServerStillResponds() async throws {
         let body = Data(#"{"data":[{"id":"deepseek-v4-flash"}]}"#.utf8)
-        let probes = ProbeSequence([body, body])
+        let probes = ProbeSequence([body, body, body, body])
         let r = FakeRunner()
         let s = try makeSupervisor(
             r, probe: { _ in await probes.next() },
@@ -337,9 +374,9 @@ final class SupervisorStateMachineTests: XCTestCase {
         XCTAssertEqual(stopResult, false)
         XCTAssertEqual(s.state, .ready)
     }
-    func testAttachedStopWithNoPIDsCompletesAfterServerStopsResponding() async throws {
+    func testAttachedStopWithNoPIDsCompletesWhenServerStopsRespondingOnRetry() async throws {
         let body = Data(#"{"data":[{"id":"deepseek-v4-flash"}]}"#.utf8)
-        let probes = ProbeSequence([body, nil])
+        let probes = ProbeSequence([body, body, nil])
         let r = FakeRunner()
         let s = try makeSupervisor(
             r, probe: { _ in await probes.next() },

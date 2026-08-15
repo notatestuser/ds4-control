@@ -67,7 +67,7 @@ final class SupervisorService: ObservableObject {
     /// unresolved owned process must not leave app termination waiting forever.
     private var ownedStopWatchdog: Task<Void, Never>?
     private let ownedStopWatchdogDelay: TimeInterval
-    typealias ListeningPIDLookup = (Int) -> ListeningPIDResult
+    typealias ListeningPIDLookup = @Sendable (Int) -> ListeningPIDResult
     private let listeningPIDLookup: ListeningPIDLookup
 
     /// Where downloaded gguf models live when `DS4_GGUF_DIR` isn't set. Production passes
@@ -300,18 +300,28 @@ final class SupervisorService: ObservableObject {
             // second instance while the old one lives — so .idle (and any pending restart)
             // must wait for the pids to actually exit, not just for the signal.
             serverAttached = false
-            switch listeningPIDLookup(port) {
-            case let .found(pids):
-                for pid in pids { kill(pid, SIGTERM) }
-                finishAttachedStopWhenExited(pids: pids, waited: 0, escalated: false)
-            case .none:
-                verifyAttachedServerAbsent(onPort: port)
-            case .failure:
-                failAttachedStop()
+            let lookup = listeningPIDLookup
+            let port = port
+            Task.detached(priority: .userInitiated) { [weak self] in
+                let result = lookup(port)
+                await self?.handleAttachedPIDLookup(result, onPort: port)
             }
         } else {
             startOwnedStopWatchdog()
             runner.terminate(graceSeconds: 30)
+        }
+    }
+
+    private func handleAttachedPIDLookup(_ result: ListeningPIDResult, onPort port: Int) {
+        guard state == .stopping, expectingExit else { return }
+        switch result {
+        case let .found(pids):
+            for pid in pids { kill(pid, SIGTERM) }
+            finishAttachedStopWhenExited(pids: pids, waited: 0, escalated: false)
+        case .none:
+            verifyAttachedServerAbsent(onPort: port)
+        case .failure:
+            failAttachedStop()
         }
     }
 
@@ -384,16 +394,21 @@ final class SupervisorService: ObservableObject {
 
     private func verifyAttachedServerAbsent(onPort port: Int) {
         Task { [weak self] in
-            guard let probe = self?.serverProbe else { return }
-            let response = await probe(port)
-            await MainActor.run {
+            let maxAttempts = 3
+            for attempt in 1...maxAttempts {
                 guard let self, self.state == .stopping, self.expectingExit else { return }
+                let response = await self.serverProbe(port)
+                guard self.state == .stopping, self.expectingExit else { return }
                 if response == nil {
                     self.completeStop()
-                } else {
-                    self.failAttachedStop()
+                    return
+                }
+                if attempt < maxAttempts {
+                    try? await Task.sleep(for: .milliseconds(100))
                 }
             }
+            guard let self, self.state == .stopping, self.expectingExit else { return }
+            self.failAttachedStop()
         }
     }
 
@@ -501,7 +516,7 @@ final class SupervisorService: ObservableObject {
 
     /// PIDs of processes listening on `port` (via lsof). Used by the attached-server stop:
     /// we don't own the process object, so its exit is observed by polling, not callback.
-    private static func pidsListening(onPort port: Int) -> ListeningPIDResult {
+    private nonisolated static func pidsListening(onPort port: Int) -> ListeningPIDResult {
         let lsof = Process()
         lsof.executableURL = URL(fileURLWithPath: "/usr/sbin/lsof")
         lsof.arguments = ["-ti", "tcp:\(port)", "-sTCP:LISTEN"]
@@ -509,18 +524,16 @@ final class SupervisorService: ObservableObject {
         let errorPipe = Pipe()
         lsof.standardOutput = outputPipe
         lsof.standardError = errorPipe
-        do {
-            try lsof.run()
-            lsof.waitUntilExit()
-        } catch {
+        guard
+            let captured = try? runAndCaptureOutput(
+                lsof, standardOutput: outputPipe, standardError: errorPipe)
+        else {
             return .failure
         }
         let output =
-            String(
-                data: outputPipe.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8) ?? ""
+            String(data: captured.standardOutput, encoding: .utf8) ?? ""
         let error =
-            String(
-                data: errorPipe.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8) ?? ""
+            String(data: captured.standardError, encoding: .utf8) ?? ""
         let lines = output.split(whereSeparator: { $0 == "\n" })
         if lsof.terminationStatus != 0 {
             return error.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? .none : .failure

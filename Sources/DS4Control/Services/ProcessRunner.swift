@@ -1,5 +1,53 @@
 import Foundation
 
+struct CapturedProcessOutput {
+    let standardOutput: Data
+    let standardError: Data
+}
+
+private final class ProcessPipeCapture: @unchecked Sendable {
+    private let lock = NSLock()
+    private var standardOutput = Data()
+    private var standardError = Data()
+
+    func setStandardOutput(_ data: Data) {
+        lock.withLock { standardOutput = data }
+    }
+
+    func setStandardError(_ data: Data) {
+        lock.withLock { standardError = data }
+    }
+
+    func output() -> CapturedProcessOutput {
+        lock.withLock {
+            CapturedProcessOutput(standardOutput: standardOutput, standardError: standardError)
+        }
+    }
+}
+
+/// Drain both pipes while the child is running so neither can fill and deadlock the wait.
+func runAndCaptureOutput(
+    _ process: Process, standardOutput: Pipe, standardError: Pipe
+) throws -> CapturedProcessOutput {
+    try process.run()
+    let capture = ProcessPipeCapture()
+    let group = DispatchGroup()
+    let drainQueue = DispatchQueue(label: "ds4.process-pipe-drain", attributes: .concurrent)
+    group.enter()
+    drainQueue.async {
+        capture.setStandardOutput(standardOutput.fileHandleForReading.readDataToEndOfFile())
+        group.leave()
+    }
+    group.enter()
+    drainQueue.async {
+        capture.setStandardError(standardError.fileHandleForReading.readDataToEndOfFile())
+        group.leave()
+    }
+    process.waitUntilExit()
+    group.wait()
+    return capture.output()
+}
+
 protocol ProcessRunner: AnyObject {
     /// Launch `executable` with `args` in `cwd`; `env` is merged over the inherited
     /// environment, then `removingEnvironmentKeys` is removed from the child only.
@@ -84,17 +132,21 @@ final class RealProcessRunner: ProcessRunner {
     }
 
     func terminate(graceSeconds: Double) {
-        guard let p = process, p.isRunning else { return }
+        guard let p = process else { return }
         // download_model.sh spawns `hf` as a child; SIGTERM to the shell alone orphans
         // hf, which keeps holding the hf download lock and blocks the next attempt.
         // Capture descendants *before* killing (they reparent to launchd once the shell
         // dies, so pgrep -P would then find nothing) and signal the whole tree.
-        let kids = Self.descendantPIDs(of: p.processIdentifier)
-        p.terminate()  // SIGTERM the shell
-        for k in kids { kill(k, SIGTERM) }
-        queue.asyncAfter(deadline: .now() + graceSeconds) { [weak p] in
-            if let p, p.isRunning { kill(p.processIdentifier, SIGKILL) }
-            for k in kids where kill(k, 0) == 0 { kill(k, SIGKILL) }
+        let queue = queue
+        queue.async { [weak p] in
+            guard let p, p.isRunning else { return }
+            let kids = Self.descendantPIDs(of: p.processIdentifier)
+            p.terminate()  // SIGTERM the shell
+            for k in kids { kill(k, SIGTERM) }
+            queue.asyncAfter(deadline: .now() + graceSeconds) { [weak p] in
+                if let p, p.isRunning { kill(p.processIdentifier, SIGKILL) }
+                for k in kids where kill(k, 0) == 0 { kill(k, SIGKILL) }
+            }
         }
     }
 
@@ -116,12 +168,12 @@ final class RealProcessRunner: ProcessRunner {
         proc.executableURL = URL(fileURLWithPath: "/usr/bin/pgrep")
         proc.arguments = ["-P", "\(pid)"]
         let out = Pipe()
+        let err = Pipe()
         proc.standardOutput = out
-        proc.standardError = Pipe()
-        guard (try? proc.run()) != nil else { return [] }
-        let data = out.fileHandleForReading.readDataToEndOfFile()
-        proc.waitUntilExit()
-        return String(decoding: data, as: UTF8.self)
+        proc.standardError = err
+        guard let output = try? runAndCaptureOutput(proc, standardOutput: out, standardError: err)
+        else { return [] }
+        return String(decoding: output.standardOutput, as: UTF8.self)
             .split(whereSeparator: { $0 == "\n" })
             .compactMap { pid_t($0.trimmingCharacters(in: .whitespaces)) }
     }

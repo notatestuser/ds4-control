@@ -86,7 +86,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
-        guard let terminationCoordinator else { return .terminateNow }
+        guard let terminationCoordinator else {
+            NSLog("DS4 Control termination coordination is unavailable; terminating immediately")
+            return .terminateNow
+        }
         return terminationCoordinator.applicationShouldTerminate { shouldTerminate in
             sender.reply(toApplicationShouldTerminate: shouldTerminate)
         }

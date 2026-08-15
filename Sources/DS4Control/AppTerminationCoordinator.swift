@@ -28,6 +28,8 @@ final class AppTerminationCoordinator {
     private let presentStopFailure: PresentStopFailure
     private var waitingForServerStop = false
 
+    private static let quitBehaviorAlertTitle = "DS4 Control Quit Behavior"
+
     init(
         app: AppState,
         supervisor: any ServerQuitSupervising,
@@ -88,8 +90,7 @@ final class AppTerminationCoordinator {
 
     private static func presentQuitBehaviorAlert() -> QuitBehaviorChoice {
         let alert = makeQuitBehaviorAlert()
-        let title = "DS4 Control Quit Behavior"
-        WindowChrome.windowOpened(title: title)
+        WindowChrome.windowOpened(title: quitBehaviorAlertTitle)
         let response = alert.runModal()
         WindowChrome.windowClosed()
         return quitBehaviorChoice(for: response)
@@ -110,8 +111,7 @@ final class AppTerminationCoordinator {
         alert.buttons[0].keyEquivalent = "\r"  // Return accepts the recommended default.
         alert.buttons[1].keyEquivalent = ""
         alert.buttons[2].keyEquivalent = "\u{1b}"  // Escape keeps DS4 Control open.
-        let title = "DS4 Control Quit Behavior"
-        alert.window.title = title
+        alert.window.title = quitBehaviorAlertTitle
         return alert
     }
 
