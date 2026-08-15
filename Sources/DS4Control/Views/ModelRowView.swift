@@ -17,11 +17,10 @@ struct ModelRowView: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
-            Picker("", selection: $app.selectedModel) {
+            Picker("Model", selection: $app.selectedModel) {
                 ForEach(runnableModels) { Text($0.label).tag($0) }
             }
             .pickerStyle(.menu)
-            .labelsHidden()
             .disabled(supervisor.state == .downloading)  // don't switch model mid-download
 
             let feas = feasibility(
