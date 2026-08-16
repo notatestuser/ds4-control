@@ -88,6 +88,7 @@ final class AppTerminationCoordinatorTests: XCTestCase {
     func testQuitAlertMakesAlwaysStopDefaultAndCancelEscapable() {
         let alert = AppTerminationCoordinator.makeQuitBehaviorAlert()
 
+        XCTAssertEqual(alert.messageText, "Stop ds4-server when DS4 Control quits?")
         XCTAssertEqual(alert.buttons.map(\.title), ["Always Stop", "Keep Running", "Cancel"])
         XCTAssertEqual(alert.buttons.map(\.keyEquivalent), ["\r", "", "\u{1b}"])
         XCTAssertEqual(

@@ -100,7 +100,7 @@ final class AppTerminationCoordinator {
     /// without opening an application-modal alert in the test process.
     static func makeQuitBehaviorAlert() -> NSAlert {
         let alert = NSAlert()
-        alert.messageText = "ds4-server stays running after DS4 Control quits"
+        alert.messageText = "Stop ds4-server when DS4 Control quits?"
         alert.informativeText =
             "Keeping it running leaves the model loaded and available to chat, coding agents, "
             + "and other clients. You can change this later in Settings."
