@@ -500,6 +500,9 @@ final class SupervisorIntegrationTests: XCTestCase {
         try Data(count: 8).write(to: g.appendingPathComponent(names[1]))
         try Data(count: 16).write(to: g.appendingPathComponent(names[3] + ".part"))
         try Data(count: 2).write(to: g.appendingPathComponent(names[3] + ".part.dl"))
+        let hfIncompleteDir = g.appendingPathComponent(".cache/huggingface/download")
+        try FileManager.default.createDirectory(at: hfIncompleteDir, withIntermediateDirectories: true)
+        try Data(count: 8).write(to: hfIncompleteDir.appendingPathComponent("h.incomplete"))
         let legacyCache = dir.appendingPathComponent("kv/nested")
         try FileManager.default.createDirectory(at: legacyCache, withIntermediateDirectories: true)
         try Data(count: 64).write(to: legacyCache.appendingPathComponent("checkpoint"))
@@ -513,10 +516,12 @@ final class SupervisorIntegrationTests: XCTestCase {
         let s = SupervisorService(
             ds4Dir: dir, runner: RealProcessRunner(), cacheBaseURL: dir)
         let before = s.ggufStoreVersion
-        XCTAssertEqual(s.legacyStorageURLs().count, 5)
-        XCTAssertEqual(s.legacyStorageBytes(), 94)
+        XCTAssertEqual(s.legacyStorageURLs().count, 6)
+        XCTAssertEqual(s.legacyStorageBytes(), 102)
         let removed = s.removeLegacyStorage()
-        XCTAssertEqual(Set(removed), [names[0], names[1], names[3] + ".part", names[3] + ".part.dl", "kv"])
+        XCTAssertEqual(
+            Set(removed),
+            [names[0], names[1], names[3] + ".part", names[3] + ".part.dl", "h.incomplete", "kv"])
         XCTAssertEqual(s.legacyStorageBytes(), 0)
         XCTAssertEqual(s.ggufStoreVersion, before + 1)
         XCTAssertTrue(

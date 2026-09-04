@@ -736,14 +736,21 @@ final class SupervisorService: ObservableObject {
     }
 
     // MARK: - Legacy preview storage
-    /// Preview GGUFs, their native-downloader sidecars, and the shared cache directory
-    /// used before caches became release-specific. Nothing in the app references these.
+    /// Preview GGUFs, their native-downloader sidecars, leftover hf `*.incomplete`
+    /// partials, and the shared cache directory used before caches became
+    /// release-specific. Nothing in the app references these.
     func legacyStorageURLs() -> [URL] {
         let base = ggufBaseDir()
         var urls = Quant.legacyPreviewFilenames.flatMap { name in
             [name, name + ".part", name + ".part.dl"]
                 .map { base.appendingPathComponent($0) }
                 .filter { FileManager.default.fileExists(atPath: $0.path) }
+        }
+        let incompleteDir = base.appendingPathComponent(".cache/huggingface/download")
+        if let items = try? FileManager.default.contentsOfDirectory(
+            at: incompleteDir, includingPropertiesForKeys: nil)
+        {
+            urls.append(contentsOf: items.filter { $0.pathExtension == "incomplete" })
         }
         let sharedCache = cacheBaseDir().appendingPathComponent("kv", isDirectory: true)
         if FileManager.default.fileExists(atPath: sharedCache.path) { urls.append(sharedCache) }
