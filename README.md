@@ -89,6 +89,19 @@ and a "Metal wired limit help…" window walks through it step by step — inclu
 
 **Default context** is `1,000,000` for Pro and for Flash on ≥ 128 GiB; Flash on 96–127 GiB defaults to `256,000`. Max Think is unavailable below 128 GiB, including in the built-in chat and coding-agent launcher. You can otherwise override the context in Settings, subject to the physical-memory and wired-limit checks above.
 
+## Thinking
+
+Flash 0731 and Pro 0813 share DeepSeek's three-tier encoder. DS4 Control exposes three rungs and skips official **high**:
+
+| Official `reasoning_effort` | Prompt prefix | DS4 Control |
+| --- | --- | --- |
+| *(thinking off)* | none | **Instant** |
+| `low` (default) | none | **Standard** |
+| `high` | `Absolute maximum…` | not offered |
+| `max` | `Beyond maximum — …` | **Max Think** |
+
+Unpatched [antirez/ds4](https://github.com/antirez/ds4) maps `reasoning_effort: max` to official **high**. This app patches THINK_MAX (`patches/ds4-think-max.patch`) so Max Think is official **max**. Every other effort name (`low` / `medium` / `high` / `xhigh`) stays official **low**. Max Think also needs `--ctx` ≥ 393,216 — below that, ds4 silently drops to Standard; the app prompts to bump context. The bundled pi `models.json` maps `xhigh` → `max`; Claude Max Think sets `CLAUDE_CODE_EFFORT_LEVEL=max`.
+
 ## Performance
 
 Measured single-stream generation throughput on a **Mac Studio M3 Ultra** (512 GiB):
