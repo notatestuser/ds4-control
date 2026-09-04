@@ -17,9 +17,11 @@ The app pins the official Flash 0731 and Pro 0813 GGUF generations. Pro 0813's H
 reports exactly 464,627,334,560 bytes — the same byte size as the preview file but a different
 content hash — and this value is baked into `Quant.ggufBytes`.
 
-`external/ds4` is pinned to the upstream 0813-support commit `c35cf38` (DeepSeek-V4-Pro-0813
-quant in `download_model.sh` + QA oracle), rebased onto the local `ds4-control-patches-v2` branch
-with the THINK_MAX patch. The Metal context-allocation formula, shared graph workspace,
+`external/ds4` is the upstream [antirez/ds4](https://github.com/antirez/ds4) submodule, pinned to
+the 0813-support commit `c35cf38` (DeepSeek-V4-Pro-0813 quant in `download_model.sh` + QA oracle).
+THINK_MAX is applied on top via `patches/ds4-think-max.patch` (`scripts/apply-ds4-patches.sh`)
+because upstream still emits the official 0731/0813 **high** prefix for `reasoning_effort: max`
+(antirez/ds4#635). The Metal context-allocation formula, shared graph workspace,
 per-session graph allocations, and persistent backend-scratch bounds were verified unchanged
 between the previous pin (84cc882) and `c35cf38`, so `Feasibility` and the documented memory tiers
 carry over as-is. If a future ds4 bump changes any allocator or Pro-shape assumption, re-verify
@@ -39,6 +41,7 @@ From the repo root (`/Users/luke/dev26/ds4_workspace/ds4-control`):
 ```bash
 swift build          # build
 swift test           # run all tests (authoritative — trust the compiler over SourceKit squiggles)
+bash scripts/apply-ds4-patches.sh && make -C external/ds4 -j ds4-server
 DS4_DIR="$PWD/external/ds4" .build/debug/DS4Control     # run the dev app
 ```
 

@@ -12,6 +12,13 @@ final class ChatThinkMaxToggleTests: XCTestCase {
         return try String(contentsOf: url, encoding: .utf8)
     }
 
+    func testThinkMaxPatchRemapsOfficialMaxPrefix() throws {
+        let patch = try source("patches/ds4-think-max.patch")
+        XCTAssertTrue(patch.contains("DS4_REASONING_EFFORT_MAX_PREFIX"))
+        XCTAssertTrue(patch.contains("Beyond maximum — exhaustive, relentless, and uncompromising."))
+        XCTAssertTrue(patch.contains("-    \"Reasoning Effort: Absolute maximum"))
+    }
+
     func testChatStatusBarHasSharedThinkingPicker() throws {
         let chatView = try source("Sources/DS4Control/Views/ChatView.swift")
         let app = try source("Sources/DS4Control/DS4ControlApp.swift")

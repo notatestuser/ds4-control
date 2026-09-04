@@ -55,6 +55,7 @@ brew install --cask ds4-control
 
 ```sh
 git submodule update --init --recursive    # fetch ds4 into external/ds4
+bash scripts/apply-ds4-patches.sh           # THINK_MAX prefix (antirez/ds4#635)
 make -C external/ds4 -j ds4-server          # build the ds4-server binary
 DS4_DIR="$PWD/external/ds4" swift run        # build + run the dev app against the submodule
 ```

@@ -19,11 +19,13 @@ jobs:
       team-id: ${{ vars.APPLE_TEAM_ID }}   # set as a repo variable, keeps the id out of source
       build-command: |
         # ds4 is a pinned git submodule (external/ds4), fetched via the reusable
-        # workflow's submodules:recursive checkout. Build it, then build.sh bundles it.
+        # workflow's submodules:recursive checkout. Apply the THINK_MAX prefix
+        # patch, build ds4-server, then build.sh bundles it.
         # Pin the CPU baseline to apple-m1 (the oldest Apple Silicon) instead of the
         # Makefile's default -mcpu=native: the GitHub runner is M1 today but unguaranteed,
         # so a native build on a future newer-chip runner could SIGILL on M1 user Macs.
         # GPU kernels are JIT-compiled at runtime, so inference speed is unaffected.
+        bash scripts/apply-ds4-patches.sh
         make -C external/ds4 NATIVE_CPU_FLAG=-mcpu=apple-m1 -j ds4-server
         DS4_SRC=external/ds4 bash build.sh
       app-path: "DS4 Control.app"

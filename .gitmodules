@@ -1,3 +1,4 @@
 [submodule "external/ds4"]
 	path = external/ds4
-	url = https://github.com/notatestuser/ds4
+	url = https://github.com/antirez/ds4
+	ignore = dirty

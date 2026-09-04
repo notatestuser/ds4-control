@@ -9,6 +9,8 @@ jobs:
       - uses: actions/checkout@v6
         with:
           submodules: recursive   # external/ds4 (bundled into the app by build.sh)
+      - name: Apply ds4 THINK_MAX patch
+        run: bash scripts/apply-ds4-patches.sh
       - name: Format lint
         run: swift format lint --strict --recursive Sources Tests
       - name: Build (release, warnings as errors)
