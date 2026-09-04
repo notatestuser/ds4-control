@@ -17,6 +17,50 @@ final class ChatThinkMaxToggleTests: XCTestCase {
         XCTAssertTrue(patch.contains("DS4_REASONING_EFFORT_MAX_PREFIX"))
         XCTAssertTrue(patch.contains("Beyond maximum — exhaustive, relentless, and uncompromising."))
         XCTAssertTrue(patch.contains("-    \"Reasoning Effort: Absolute maximum"))
+
+        let root = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+        let tmp = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: tmp, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: tmp) }
+
+        let ds4URL = tmp.appendingPathComponent("ds4.c")
+        FileManager.default.createFile(atPath: ds4URL.path, contents: nil)
+        let showOut = try FileHandle(forWritingTo: ds4URL)
+        let show = Process()
+        show.currentDirectoryURL = root
+        show.executableURL = URL(fileURLWithPath: "/usr/bin/git")
+        show.arguments = ["-C", "external/ds4", "show", "HEAD:ds4.c"]
+        show.standardOutput = showOut
+        let showErr = Pipe()
+        show.standardError = showErr
+        try show.run()
+        show.waitUntilExit()
+        try showOut.close()
+        XCTAssertEqual(
+            show.terminationStatus, 0,
+            String(data: showErr.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8) ?? "")
+
+        let apply = Process()
+        apply.currentDirectoryURL = tmp
+        apply.executableURL = URL(fileURLWithPath: "/usr/bin/git")
+        apply.arguments = ["apply", root.appendingPathComponent("patches/ds4-think-max.patch").path]
+        let applyErr = Pipe()
+        apply.standardError = applyErr
+        try apply.run()
+        apply.waitUntilExit()
+        XCTAssertEqual(
+            apply.terminationStatus, 0,
+            String(data: applyErr.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8) ?? "")
+
+        let patched = try String(contentsOf: tmp.appendingPathComponent("ds4.c"), encoding: .utf8)
+        let start = try XCTUnwrap(patched.range(of: "static const char DS4_REASONING_EFFORT_MAX_PREFIX[]"))
+        let end = try XCTUnwrap(patched.range(of: ";", range: start.upperBound..<patched.endIndex))
+        let block = patched[start.lowerBound..<end.upperBound]
+        XCTAssertTrue(block.contains("Beyond maximum — exhaustive, relentless, and uncompromising."))
+        XCTAssertFalse(block.contains("Absolute maximum"))
     }
 
     func testChatStatusBarHasSharedThinkingPicker() throws {

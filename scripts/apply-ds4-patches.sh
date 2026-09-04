@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
-DS4="$ROOT/external/ds4"
+DS4="${DS4_DIR:-$ROOT/external/ds4}"
 PATCH="$ROOT/patches/ds4-think-max.patch"
 
 if [[ ! -f "$DS4/ds4.c" ]]; then
