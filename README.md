@@ -4,7 +4,7 @@
 
 A macOS menu bar pane for **DeepSeek V4** via [`dwarfstar4`](https://github.com/antirez/ds4).
 
-It launches, supervises, and monitors a local ds4 server, lets you pick **V4 Pro** or **V4 Flash (0731)** with up to **1M** context, and shows resource use.
+It launches, supervises, and monitors a local ds4 server, lets you pick **V4 Pro (0813)** or **V4 Flash (0731)** with up to **1M** context, and shows resource use.
 
 **Launch Pi, Claude Code or BYOC (Bring Your Own CLI) for local agentic coding.**
 
@@ -74,7 +74,7 @@ DeepSeek V4 is memory-hungry so DS4 Control gates feasibility before launching.
 
 | Variant | Quant | RAM | Notes |
 | --- | --- | --- | --- |
-| V4 Pro | pro-imatrix | **≥ 512 GiB required** | Anything below is blocked. |
+| V4 Pro (0813) | pro-imatrix | **≥ 512 GiB required** | Anything below is blocked. |
 | V4 Flash (0731) | q4-imatrix | ≥ 256 GiB | Standard. |
 | V4 Flash (0731) | q2-imatrix | 96 GiB minimum | 96–127 GiB requires raising the Metal wired limit (see below). |
 
@@ -94,7 +94,7 @@ Measured single-stream generation throughput on a **Mac Studio M3 Ultra** (512 G
 
 | Model | Throughput |
 |---|---|
-| V4 Pro | **~14 tok/s** |
+| V4 Pro (0813) | **~14 tok/s** |
 | V4 Flash (0731) | **~35 tok/s** |
 
 Varies with context length, prompt, and the Metal wired limit.

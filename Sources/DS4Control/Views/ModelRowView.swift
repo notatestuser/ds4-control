@@ -90,7 +90,7 @@ struct ModelRowView: View {
             ctx: app.effectiveCtx(ramGiB: ramGiB),
             host: host, port: app.port, power: app.power,
             sessions: app.concurrentSessions,
-            kvDiskDir: app.kvDiskCache ? supervisor.kvDiskCacheURL : nil,
+            kvDiskDir: app.kvDiskCache ? supervisor.kvDiskCacheURL(for: app.selectedVariant) : nil,
             overrideWiredLimitGate: overrideWiredLimitGate)
     }
 

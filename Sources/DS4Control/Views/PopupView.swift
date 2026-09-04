@@ -15,7 +15,7 @@ struct PopupView: View {
             header
             Divider()
             ModelRowView(supervisor: supervisor, ramGiB: ram)
-            legacyWeightsBanner
+            legacyStorageBanner
             if supervisor.state == .downloading, let d = supervisor.download {
                 ProgressView(value: d.pct, total: 100) {
                     HStack(spacing: 6) {
@@ -181,31 +181,31 @@ struct PopupView: View {
         }
     }
 
-    /// One-time banner for the pre-0731 weights migration. Only while idle/error — a
+    /// One-time banner for the 0813/0731 GA storage migration. Only while idle/error — a
     /// running or downloading model is never touched (same gating as Settings cleanup).
-    private var showLegacyWeightsBanner: Bool {
-        if app.legacyWeightsPromptDismissed { return false }
+    private var showLegacyStorageBanner: Bool {
+        if app.legacyStoragePromptDismissed { return false }
         switch supervisor.state {
         case .idle, .error: break
         default: return false
         }
-        return supervisor.legacyPreviewGgufBytes() > 0
+        return supervisor.legacyStorageBytes() > 0
     }
 
-    @ViewBuilder private var legacyWeightsBanner: some View {
-        if showLegacyWeightsBanner {
+    @ViewBuilder private var legacyStorageBanner: some View {
+        if showLegacyStorageBanner {
             HStack(alignment: .top, spacing: 6) {
                 Image(systemName: "externaldrive.badge.exclamationmark").foregroundStyle(.orange)
                 VStack(alignment: .leading, spacing: 4) {
                     Text(
-                        "Old V4 Flash preview weights found"
-                            + " (~\(supervisor.legacyPreviewGgufBytes() / 1_073_741_824) GiB). "
-                            + "The 0731 models replaced them — they can no longer be started."
+                        "Old DeepSeek V4 preview data found"
+                            + " (~\(supervisor.legacyStorageBytes() / 1_073_741_824) GiB). "
+                            + "The 0813 Pro and 0731 Flash releases no longer use it."
                     )
                     .font(.caption2).foregroundStyle(.orange).fixedSize(horizontal: false, vertical: true)
                     HStack(spacing: 12) {
-                        Button("Delete old weights") { confirmLegacyWeightsDelete() }
-                        Button("Not now") { app.legacyWeightsPromptDismissed = true }
+                        Button("Delete old data") { confirmLegacyStorageDelete() }
+                        Button("Not now") { app.legacyStoragePromptDismissed = true }
                     }
                     .font(.caption2)
                 }
@@ -215,15 +215,15 @@ struct PopupView: View {
 
     /// Real NSAlert (not SwiftUI .alert, which would collapse the .window MenuBarExtra).
     /// The app promotes to .regular while it's up — the same dance WindowChrome does for
-    /// the chat/settings windows. The accessory view is the textarea listing the files.
-    private func confirmLegacyWeightsDelete() {
-        let paths = supervisor.legacyPreviewGgufURLs().map(\.path)
+    /// the chat/settings windows. The accessory view lists files and cache directories.
+    private func confirmLegacyStorageDelete() {
+        let paths = supervisor.legacyStorageURLs().map(\.path)
         guard !paths.isEmpty else { return }
         let alert = NSAlert()
-        alert.messageText = "Delete these \(paths.count) file(s)?"
+        alert.messageText = "Delete these \(paths.count) item(s)?"
         alert.informativeText =
-            "Old V4 Flash preview weights"
-            + " (~\(supervisor.legacyPreviewGgufBytes() / 1_073_741_824) GiB). This cannot be undone."
+            "Old DeepSeek V4 preview data"
+            + " (~\(supervisor.legacyStorageBytes() / 1_073_741_824) GiB). This cannot be undone."
         alert.alertStyle = .warning
         alert.addButton(withTitle: "Delete")
         alert.addButton(withTitle: "Cancel")
@@ -248,10 +248,10 @@ struct PopupView: View {
         let response = alert.runModal()
         WindowChrome.windowClosed()
         if response == .alertFirstButtonReturn {
-            supervisor.removeLegacyPreviewGgufs()
+            supervisor.removeLegacyStorage()
             // Dismiss only when nothing is left: a failed deletion keeps the banner up so the
             // user can retry ("Not now" remains the deliberate opt-out).
-            app.legacyWeightsPromptDismissed = supervisor.legacyPreviewGgufURLs().isEmpty
+            app.legacyStoragePromptDismissed = supervisor.legacyStorageURLs().isEmpty
         }
     }
 

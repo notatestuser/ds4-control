@@ -255,7 +255,7 @@ struct SettingsView: View {
             ctx: app.effectiveCtx(ramGiB: ram),
             host: host, port: app.port, power: app.power,
             sessions: app.concurrentSessions,
-            kvDiskDir: app.kvDiskCache ? supervisor.kvDiskCacheURL : nil,
+            kvDiskDir: app.kvDiskCache ? supervisor.kvDiskCacheURL(for: app.selectedVariant) : nil,
             overrideWiredLimitGate: overrideWiredLimitGate)
         if case let .rejected(feasibility) = result {
             RestartRejectionAlert.show(

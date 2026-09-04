@@ -89,12 +89,14 @@ final class AppStateTests: XCTestCase {
         XCTAssertTrue(defaults.bool(forKey: "quitBehaviorChosen"))
     }
 
-    func testLegacyWeightsPromptDismissedPersists() {
+    func testLegacyStoragePromptUsesNewGenerationKeyAndPersists() {
         let name = "test.\(UUID().uuidString)"
-        let a1 = AppState(defaults: UserDefaults(suiteName: name)!)
-        XCTAssertFalse(a1.legacyWeightsPromptDismissed)  // default false → prompt shows
-        a1.legacyWeightsPromptDismissed = true
-        XCTAssertTrue(AppState(defaults: UserDefaults(suiteName: name)!).legacyWeightsPromptDismissed)
+        let defaults = UserDefaults(suiteName: name)!
+        defaults.set(true, forKey: "legacyWeightsPromptDismissed0731")
+        let a1 = AppState(defaults: defaults)
+        XCTAssertFalse(a1.legacyStoragePromptDismissed)  // the Pro migration must re-prompt
+        a1.legacyStoragePromptDismissed = true
+        XCTAssertTrue(AppState(defaults: defaults).legacyStoragePromptDismissed)
     }
 
     func testThinkingModeLabels() {

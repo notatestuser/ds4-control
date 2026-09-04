@@ -5,6 +5,9 @@ enum Variant: String, CaseIterable, Identifiable, Codable {
     var id: String { rawValue }
     var displayName: String { self == .pro ? "V4 Pro" : "V4 Flash" }
     var modelId: String { self == .pro ? "deepseek-v4-pro" : "deepseek-v4-flash" }
+    /// Generation-specific disk KV namespace. Checkpoints depend on the exact model
+    /// weights, so preview and GA releases must never share a cache directory.
+    var kvCacheDirectoryName: String { self == .pro ? "kv-pro-0813" : "kv-flash-0731" }
     /// Transformer layers (DS4 shape): Pro 61, Flash 43.
     var layers: Int { self == .pro ? 61 : 43 }
     /// Context ceiling: both variants support a full 1M-token context window.
@@ -32,13 +35,12 @@ enum Quant {
     }
 
     /// Exact GGUF filename the downloader fetches (under $DS4_GGUF_DIR / gguf).
-    /// Flash names are antirez's official `-0731` builds (DeepSeek-V4-Flash-0731,
-    /// antirez/ds4#635) — same quant recipes and byte sizes as the preview builds they
-    /// replace, so `weightsGiB` and the RAM tiers are unchanged.
+    /// Names are antirez's official GA builds: Pro 0813 and Flash 0731. Both use the
+    /// same quant recipes and exact byte sizes as their preview predecessors.
     var ggufFilename: String {
         switch self {
         case .proImatrix:
-            return "DeepSeek-V4-Pro-IQ2XXS-w2Q2K-AProjQ8-SExpQ8-OutQ8-Instruct-imatrix.gguf"
+            return "DeepSeek-V4-Pro-IQ2XXS-w2Q2K-AProjQ8-SExpQ8-OutQ8-Instruct-imatrix-0813.gguf"
         case .q4Imatrix:
             return
                 "DeepSeek-V4-Flash-Q4KExperts-F16HC-F16Compressor-F16Indexer-Q8Attn-Q8Shared-Q8Out-chat-v2-imatrix-0731.gguf"
@@ -71,9 +73,10 @@ enum Quant {
         }
     }
 
-    /// Pre-0731 ("preview") Flash GGUF filenames this app used to download. Referenced only
-    /// by the one-time migration cleanup; Pro never had a preview build.
+    /// Preview GGUF filenames this app used to download. Referenced only by the
+    /// generation-versioned migration cleanup.
     static let legacyPreviewFilenames = [
+        "DeepSeek-V4-Pro-IQ2XXS-w2Q2K-AProjQ8-SExpQ8-OutQ8-Instruct-imatrix.gguf",
         "DeepSeek-V4-Flash-IQ2XXS-w2Q2K-AProjQ8-SExpQ8-OutQ8-chat-v2-imatrix.gguf",
         "DeepSeek-V4-Flash-Layers37-42Q4KExperts-OtherExpertLayersIQ2XXSGateUp-Q2KDown-AProjQ8-SExpQ8-OutQ8-chat-v2-imatrix-fixed.gguf",
         "DeepSeek-V4-Flash-Q4KExperts-F16HC-F16Compressor-F16Indexer-Q8Attn-Q8Shared-Q8Out-chat-v2-imatrix.gguf",

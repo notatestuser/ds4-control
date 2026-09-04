@@ -73,6 +73,9 @@ final class SupervisorService: ObservableObject {
     /// Where downloaded gguf models live when `DS4_GGUF_DIR` isn't set. Production passes
     /// the writable App Support dir; tests pass nil so it falls back to `ds4Dir/gguf`.
     private let ggufBaseOverride: URL?
+    /// Parent directory for generation-specific KV caches. Injectable so migration tests
+    /// never inspect or remove the developer's real App Support cache.
+    private let cacheBaseOverride: URL?
 
     /// The pluggable file fetch — defaults to the native parallel `HFDownloader`. Tests inject a fake
     /// that simulates progress/completion/failure without touching the network. `highPerformance`
@@ -98,7 +101,8 @@ final class SupervisorService: ObservableObject {
 
     init(
         ds4Dir: URL, runner: ProcessRunner, serverProbe: ((Int) async -> Data?)? = nil,
-        ggufBaseURL: URL? = nil, downloadRunner: ProcessRunner? = nil, fetchFile: FetchFile? = nil,
+        ggufBaseURL: URL? = nil, cacheBaseURL: URL? = nil,
+        downloadRunner: ProcessRunner? = nil, fetchFile: FetchFile? = nil,
         wiredLimitGate: WiredLimitGate? = nil, ownedStopWatchdogDelay: TimeInterval = 35,
         listeningPIDLookup: ListeningPIDLookup? = nil
     ) {
@@ -106,6 +110,7 @@ final class SupervisorService: ObservableObject {
         self.runner = runner
         self.serverProbe = serverProbe ?? SupervisorService.defaultServerProbe
         self.ggufBaseOverride = ggufBaseURL
+        self.cacheBaseOverride = cacheBaseURL
         self.downloadRunner = downloadRunner ?? RealProcessRunner()
         self.wiredLimitGate = wiredLimitGate ?? Self.defaultWiredLimitGate
         self.ownedStopWatchdogDelay = ownedStopWatchdogDelay
@@ -117,8 +122,11 @@ final class SupervisorService: ObservableObject {
             }
     }
 
-    /// Disk KV-cache directory — writable (App Support), not the read-only bundle.
-    var kvDiskCacheURL: URL { ds4AppSupportDir().appendingPathComponent("kv", isDirectory: true) }
+    /// Generation-specific disk KV-cache directory. ds4 currently identifies caches by
+    /// model shape rather than exact weights, so changing releases requires a new path.
+    func kvDiskCacheURL(for variant: Variant) -> URL {
+        cacheBaseDir().appendingPathComponent(variant.kvCacheDirectoryName, isDirectory: true)
+    }
 
     /// Default probe: GET http://127.0.0.1:<port>/v1/models, returning the body on 200.
     static func defaultServerProbe(_ port: Int) async -> Data? {
@@ -142,6 +150,7 @@ final class SupervisorService: ObservableObject {
         }
         return ggufBaseOverride ?? ds4Dir.appendingPathComponent("gguf")
     }
+    private func cacheBaseDir() -> URL { cacheBaseOverride ?? ds4AppSupportDir() }
     private func ggufURL(for variant: Variant, flashQuant: FlashQuant) -> URL {
         ggufBaseDir().appendingPathComponent(Quant.for(variant, flashQuant: flashQuant).ggufFilename)
     }
@@ -726,29 +735,55 @@ final class SupervisorService: ObservableObject {
         return removed
     }
 
-    // MARK: - Legacy preview weights (pre-0731)
-    /// Pre-0731 Flash GGUFs + their download partials still on disk. The 0731 switch
-    /// orphaned them: nothing in the app references these names anymore.
-    func legacyPreviewGgufURLs() -> [URL] {
+    // MARK: - Legacy preview storage
+    /// Preview GGUFs, their native-downloader sidecars, and the shared cache directory
+    /// used before caches became release-specific. Nothing in the app references these.
+    func legacyStorageURLs() -> [URL] {
         let base = ggufBaseDir()
-        return Quant.legacyPreviewFilenames.flatMap { name in
+        var urls = Quant.legacyPreviewFilenames.flatMap { name in
             [name, name + ".part", name + ".part.dl"]
                 .map { base.appendingPathComponent($0) }
                 .filter { FileManager.default.fileExists(atPath: $0.path) }
         }
+        let sharedCache = cacheBaseDir().appendingPathComponent("kv", isDirectory: true)
+        if FileManager.default.fileExists(atPath: sharedCache.path) { urls.append(sharedCache) }
+        return urls
     }
-    /// Total size of the orphaned files, for the migration banner label.
-    func legacyPreviewGgufBytes() -> Int64 {
-        legacyPreviewGgufURLs().reduce(0) { $0 + fileSize($1) }
+    /// Total recursive size of orphaned files/directories, for the migration banner.
+    func legacyStorageBytes() -> Int64 {
+        legacyStorageURLs().reduce(0) { $0 + recursiveFileSize($1) }
     }
-    /// Delete the orphaned pre-0731 files. Gate the call site to idle/error, exactly like
-    /// cleanupUnusedFlashQuants. Returns the removed filenames.
+    /// Delete orphaned preview storage. Gate the call site to idle/error, exactly like
+    /// cleanupUnusedFlashQuants. Returns only items actually removed.
     @discardableResult
-    func removeLegacyPreviewGgufs() -> [String] {
-        let urls = legacyPreviewGgufURLs()
-        for u in urls { try? FileManager.default.removeItem(at: u) }
-        if !urls.isEmpty { ggufStoreVersion += 1 }
-        return urls.map(\.lastPathComponent)
+    func removeLegacyStorage() -> [String] {
+        var removed: [String] = []
+        for url in legacyStorageURLs() {
+            do {
+                try FileManager.default.removeItem(at: url)
+                removed.append(url.lastPathComponent)
+            } catch {}
+        }
+        if !removed.isEmpty { ggufStoreVersion += 1 }
+        return removed
+    }
+
+    private func recursiveFileSize(_ url: URL) -> Int64 {
+        var isDirectory: ObjCBool = false
+        guard FileManager.default.fileExists(atPath: url.path, isDirectory: &isDirectory) else { return 0 }
+        guard isDirectory.boolValue else { return fileSize(url) }
+        guard
+            let enumerator = FileManager.default.enumerator(
+                at: url, includingPropertiesForKeys: [.isRegularFileKey, .fileSizeKey])
+        else { return 0 }
+        var total: Int64 = 0
+        for case let item as URL in enumerator {
+            guard let values = try? item.resourceValues(forKeys: [.isRegularFileKey, .fileSizeKey]),
+                values.isRegularFile == true
+            else { continue }
+            total += Int64(values.fileSize ?? 0)
+        }
+        return total
     }
 
     // MARK: - Health

@@ -39,11 +39,11 @@ final class AppState: ObservableObject {
     /// False until the user answers the one-time quit prompt or changes the Settings toggle.
     /// Kept separate from `stopServerOnQuit` because false is both the default and a real choice.
     private(set) var quitBehaviorChosen: Bool
-    /// One-time migration: the 0731 Flash weights orphaned the preview GGUFs. Until the
-    /// user answers the popup banner, they get a delete-and-reclaim offer. The key is
-    /// generation-versioned so a future weights refresh re-prompts.
-    @Published var legacyWeightsPromptDismissed: Bool {
-        didSet { d.set(legacyWeightsPromptDismissed, forKey: "legacyWeightsPromptDismissed0731") }
+    /// One-time migration: the 0813 Pro and 0731 Flash GA weights orphaned preview
+    /// GGUFs and the old shared KV cache. The generation-versioned key deliberately
+    /// ignores the earlier Flash-only dismissal so Pro users receive the new prompt.
+    @Published var legacyStoragePromptDismissed: Bool {
+        didSet { d.set(legacyStoragePromptDismissed, forKey: "legacyStoragePromptDismissed0813") }
     }
     @Published var selectedVariant: Variant {
         didSet { d.set(selectedVariant.rawValue, forKey: "selectedVariant") }
@@ -94,7 +94,7 @@ final class AppState: ObservableObject {
             // example by a prerelease build): an explicit true preference is already a choice.
             d.set(true, forKey: "quitBehaviorChosen")
         }
-        legacyWeightsPromptDismissed = d.bool(forKey: "legacyWeightsPromptDismissed0731")  // default false
+        legacyStoragePromptDismissed = d.bool(forKey: "legacyStoragePromptDismissed0813")
         let stored = d.string(forKey: "selectedVariant").flatMap(Variant.init(rawValue:))
         selectedVariant = stored ?? (ramGiB >= 512 ? .pro : .flash)  // default Pro on ≥512 GiB
         let storedQuant = d.string(forKey: "selectedFlashQuant").flatMap(FlashQuant.init(rawValue:))

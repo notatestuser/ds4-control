@@ -477,37 +477,65 @@ final class SupervisorIntegrationTests: XCTestCase {
         XCTAssertEqual(s.ggufStoreVersion, before + 1)
     }
 
-    func testLegacyPreviewDetectionBytesAndRemoval() throws {
+    func testGenerationSpecificKVCachePaths() {
+        let dir = URL(fileURLWithPath: NSTemporaryDirectory()).appendingPathComponent(UUID().uuidString)
+        let s = SupervisorService(
+            ds4Dir: dir, runner: RealProcessRunner(), cacheBaseURL: dir)
+
+        XCTAssertEqual(
+            s.kvDiskCacheURL(for: .pro).path,
+            dir.appendingPathComponent("kv-pro-0813").path)
+        XCTAssertEqual(
+            s.kvDiskCacheURL(for: .flash).path,
+            dir.appendingPathComponent("kv-flash-0731").path)
+        XCTAssertNotEqual(s.kvDiskCacheURL(for: .pro).path, dir.appendingPathComponent("kv").path)
+    }
+
+    func testLegacyStorageDetectionBytesAndRemoval() throws {
         let dir = URL(fileURLWithPath: NSTemporaryDirectory()).appendingPathComponent(UUID().uuidString)
         let g = dir.appendingPathComponent("gguf")
         try FileManager.default.createDirectory(at: g, withIntermediateDirectories: true)
         let names = Quant.legacyPreviewFilenames
         try Data(count: 4).write(to: g.appendingPathComponent(names[0]))
         try Data(count: 8).write(to: g.appendingPathComponent(names[1]))
-        try Data(count: 16).write(to: g.appendingPathComponent(names[2] + ".part"))  // orphaned partial
-        try Data(count: 2).write(to: g.appendingPathComponent(names[2] + ".part.dl"))  // its bitmap sidecar
-        // Current-generation file must be untouched.
+        try Data(count: 16).write(to: g.appendingPathComponent(names[3] + ".part"))
+        try Data(count: 2).write(to: g.appendingPathComponent(names[3] + ".part.dl"))
+        let legacyCache = dir.appendingPathComponent("kv/nested")
+        try FileManager.default.createDirectory(at: legacyCache, withIntermediateDirectories: true)
+        try Data(count: 64).write(to: legacyCache.appendingPathComponent("checkpoint"))
+        // Current-generation weights and cache directories must be untouched.
         try Data(count: 32).write(to: g.appendingPathComponent(Quant.q2Imatrix.ggufFilename))
-        let s = SupervisorService(ds4Dir: dir, runner: RealProcessRunner())
+        try Data(count: 32).write(to: g.appendingPathComponent(Quant.proImatrix.ggufFilename))
+        let currentProCache = dir.appendingPathComponent("kv-pro-0813")
+        let currentFlashCache = dir.appendingPathComponent("kv-flash-0731")
+        try FileManager.default.createDirectory(at: currentProCache, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: currentFlashCache, withIntermediateDirectories: true)
+        let s = SupervisorService(
+            ds4Dir: dir, runner: RealProcessRunner(), cacheBaseURL: dir)
         let before = s.ggufStoreVersion
-        XCTAssertEqual(s.legacyPreviewGgufURLs().count, 4)
-        XCTAssertEqual(s.legacyPreviewGgufBytes(), 30)
-        let removed = s.removeLegacyPreviewGgufs()
-        XCTAssertEqual(Set(removed), [names[0], names[1], names[2] + ".part", names[2] + ".part.dl"])
-        XCTAssertEqual(s.legacyPreviewGgufBytes(), 0)
+        XCTAssertEqual(s.legacyStorageURLs().count, 5)
+        XCTAssertEqual(s.legacyStorageBytes(), 94)
+        let removed = s.removeLegacyStorage()
+        XCTAssertEqual(Set(removed), [names[0], names[1], names[3] + ".part", names[3] + ".part.dl", "kv"])
+        XCTAssertEqual(s.legacyStorageBytes(), 0)
         XCTAssertEqual(s.ggufStoreVersion, before + 1)
         XCTAssertTrue(
             FileManager.default.fileExists(atPath: g.appendingPathComponent(Quant.q2Imatrix.ggufFilename).path))
+        XCTAssertTrue(
+            FileManager.default.fileExists(atPath: g.appendingPathComponent(Quant.proImatrix.ggufFilename).path))
+        XCTAssertTrue(FileManager.default.fileExists(atPath: currentProCache.path))
+        XCTAssertTrue(FileManager.default.fileExists(atPath: currentFlashCache.path))
     }
 
-    func testLegacyPreviewRemovalNoOpWhenNone() throws {
+    func testLegacyStorageRemovalNoOpWhenNone() throws {
         let dir = URL(fileURLWithPath: NSTemporaryDirectory()).appendingPathComponent(UUID().uuidString)
         try FileManager.default.createDirectory(
             at: dir.appendingPathComponent("gguf"), withIntermediateDirectories: true)
-        let s = SupervisorService(ds4Dir: dir, runner: RealProcessRunner())
+        let s = SupervisorService(
+            ds4Dir: dir, runner: RealProcessRunner(), cacheBaseURL: dir)
         let before = s.ggufStoreVersion
-        XCTAssertEqual(s.legacyPreviewGgufBytes(), 0)
-        XCTAssertEqual(s.removeLegacyPreviewGgufs(), [])
+        XCTAssertEqual(s.legacyStorageBytes(), 0)
+        XCTAssertEqual(s.removeLegacyStorage(), [])
         XCTAssertEqual(s.ggufStoreVersion, before)  // no bump when nothing was removed
     }
 }

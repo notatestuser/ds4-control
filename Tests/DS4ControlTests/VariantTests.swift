@@ -19,7 +19,7 @@ final class VariantTests: XCTestCase {
     func testGgufFilenames() {
         XCTAssertEqual(
             Quant.for(.pro, flashQuant: .q2q4).ggufFilename,
-            "DeepSeek-V4-Pro-IQ2XXS-w2Q2K-AProjQ8-SExpQ8-OutQ8-Instruct-imatrix.gguf")
+            "DeepSeek-V4-Pro-IQ2XXS-w2Q2K-AProjQ8-SExpQ8-OutQ8-Instruct-imatrix-0813.gguf")
         XCTAssertEqual(
             Quant.for(.flash, flashQuant: .q4).ggufFilename,
             "DeepSeek-V4-Flash-Q4KExperts-F16HC-F16Compressor-F16Indexer-Q8Attn-Q8Shared-Q8Out-chat-v2-imatrix-0731.gguf"
@@ -33,10 +33,18 @@ final class VariantTests: XCTestCase {
         )
     }
     func testLegacyPreviewFilenames() {
-        XCTAssertEqual(Quant.legacyPreviewFilenames.count, 3)
-        for q in [Quant.q2Imatrix, .q2q4Imatrix, .q4Imatrix] {
-            XCTAssertFalse(Quant.legacyPreviewFilenames.contains(q.ggufFilename))  // no overlap with 0731 names
+        XCTAssertEqual(Quant.legacyPreviewFilenames.count, 4)
+        XCTAssertTrue(
+            Quant.legacyPreviewFilenames.contains(
+                "DeepSeek-V4-Pro-IQ2XXS-w2Q2K-AProjQ8-SExpQ8-OutQ8-Instruct-imatrix.gguf"))
+        for q in [Quant.proImatrix, .q2Imatrix, .q2q4Imatrix, .q4Imatrix] {
+            XCTAssertFalse(Quant.legacyPreviewFilenames.contains(q.ggufFilename))
         }
+    }
+    func testKVCacheNamespacesAreGenerationSpecific() {
+        XCTAssertEqual(Variant.pro.kvCacheDirectoryName, "kv-pro-0813")
+        XCTAssertEqual(Variant.flash.kvCacheDirectoryName, "kv-flash-0731")
+        XCTAssertNotEqual(Variant.pro.kvCacheDirectoryName, Variant.flash.kvCacheDirectoryName)
     }
     func testWeights() {
         XCTAssertEqual(Quant.for(.pro, flashQuant: .q2q4).weightsGiB, 432, accuracy: 1)
