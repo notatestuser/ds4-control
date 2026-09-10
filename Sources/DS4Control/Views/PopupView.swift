@@ -60,6 +60,13 @@ struct PopupView: View {
                 sparklineData: metrics.history.memory(), accentColor: .blue,
                 sparklineFixedRange: (0, 100), emphasized: true, gaugeFraction: s.memory.usagePercent / 100,
                 severityColorOverride: s.memory.usagePercent >= 95 ? .yellow : nil)
+            MetricCardView(
+                title: "Server", icon: "speedometer",
+                value: serverSpeedValue, subtitle: serverSpeedSubtitle,
+                severity: .normal,
+                sparklineData: supervisor.serverSpeedHistory,
+                accentColor: .teal,
+                compact: true)
             HStack(spacing: 10) {
                 MetricCardView(
                     title: "GPU", icon: "cpu",
@@ -282,6 +289,24 @@ struct PopupView: View {
     }
 
     private func gb(_ b: UInt64) -> String { String(format: "%.0f GB", Double(b) / 1_073_741_824) }
+    /// "41 tok/s" while decoding/prefilling, "idle" after a finish, "—" before any activity.
+    private var serverSpeedValue: String {
+        guard let s = supervisor.serverSpeed else { return "—" }
+        switch s.phase {
+        case .prefill, .decode:
+            return s.tokensPerSecond.map { "\(Int($0.rounded())) tok/s" } ?? "active"
+        case .idle:
+            return "idle"
+        }
+    }
+    private var serverSpeedSubtitle: String {
+        guard let s = supervisor.serverSpeed else { return "no activity yet" }
+        switch s.phase {
+        case .decode: return s.tokens.map { "decode · \($0) tok" } ?? "decode"
+        case .prefill: return "prefill"
+        case .idle: return "server idle"
+        }
+    }
     private var stateColor: Color {
         switch supervisor.state {
         case .ready: return .green

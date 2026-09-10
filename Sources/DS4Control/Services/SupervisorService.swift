@@ -37,6 +37,12 @@ final class SupervisorService: ObservableObject {
     /// Bumped whenever the on-disk gguf set changes via cleanup, so SwiftUI views that read
     /// `isFlashQuantDownloaded` (the Settings picker) re-render.
     @Published private(set) var ggufStoreVersion = 0
+    /// Last server-side generation speed parsed from ds4-server's per-request stderr
+    /// timing lines (covers the built-in chat AND coding agents). Nil until the first
+    /// timing line; `.idle` after a `finish=` line.
+    @Published private(set) var serverSpeed: ServerSpeedSnapshot?
+    /// Rolling (timestamp, tok/s) samples for the popup sparkline, capped to the last 60.
+    @Published private(set) var serverSpeedHistory: [(Date, Double)] = []
 
     let ds4Dir: URL
     let runner: ProcessRunner
@@ -214,6 +220,7 @@ final class SupervisorService: ObservableObject {
         }
         self.port = port; self.ctx = ctx; self.activeModel = variant.modelId
         stderrTail = []; expectingExit = false; serverAttached = false
+        serverSpeed = nil; serverSpeedHistory = []
         var args = [
             "-m", gguf.path,
             "--ctx", "\(ctx)",
@@ -260,6 +267,15 @@ final class SupervisorService: ObservableObject {
     private func handleStderr(_ line: String) {
         recentLog.append(line); stderrTail.append(line)
         if stderrTail.count > 50 { stderrTail.removeFirst(stderrTail.count - 50) }
+        if let snap = ServerSpeedParser.feed(line) {
+            serverSpeed = snap
+            if let tps = snap.tokensPerSecond {
+                serverSpeedHistory.append((Date(), tps))
+                if serverSpeedHistory.count > 60 {
+                    serverSpeedHistory.removeFirst(serverSpeedHistory.count - 60)
+                }
+            }
+        }
         if state == .starting, isReadyLine(line) {
             startupTimer?.invalidate(); startupTimer = nil
             state = .ready
@@ -301,6 +317,7 @@ final class SupervisorService: ObservableObject {
         if let completion { pendingStopCompletions.append(completion) }
         expectingExit = true
         state = .stopping
+        serverSpeed = nil; serverSpeedHistory = []
         healthTimer?.invalidate(); healthTimer = nil
         startupTimer?.invalidate(); startupTimer = nil
         if serverAttached {

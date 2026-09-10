@@ -39,7 +39,7 @@ brew install --cask ds4-control
 - **Start / stop / monitor** the local `ds4-server` child process — spawn, stderr readiness detection, health polling, graceful stop, and crash detection.
 - **Pro / Flash selector** with a RAM feasibility checks.
 - **Model downloads** via a built-in native parallel downloader, with a live progress bar and resume across restarts.
-- **Mini resource widgets**: unified memory, GPU, power, and CPU, sampled on a timer.
+- **Mini resource widgets**: unified memory, GPU, power, CPU, and server token speed (decode/prefill tok/s read from ds4-server's own logs), sampled on a timer.
 - **Launch Chat** to talk to the model.
 - **Launch Claude Code or Pi** to plan, write, maintain or refactor code.
 - **1M Context** configurable in settings.
