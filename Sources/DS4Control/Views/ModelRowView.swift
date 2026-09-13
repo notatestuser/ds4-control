@@ -6,7 +6,11 @@ struct ModelRowView: View {
     @Environment(\.openWindow) private var openWindow
     let ramGiB: Double
 
-    private var variants: [Variant] { ramGiB >= 512 ? [.pro, .flash] : [.flash] }
+    private var variants: [Variant] {
+        if ramGiB >= 512 { return [.pro, .flash41, .flash] }
+        if ramGiB >= 128 { return [.flash41, .flash] }
+        return [.flash]
+    }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {

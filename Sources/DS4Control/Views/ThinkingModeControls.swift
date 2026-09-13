@@ -3,7 +3,8 @@ import SwiftUI
 
 /// The shared Thinking: segmented picker (Instant / Standard / Max Think), used by Settings and
 /// the chat status bar. Max Think is omitted below 128 GiB. On supported machines, selecting
-/// it below ds4's 393,216-context floor asks whether to bump the context and restart.
+/// it below ds4's 393,216-context floor asks whether to bump the context and restart — V4.1
+/// Flash has no floor, so it applies directly there.
 struct ThinkingModePicker: View {
     @EnvironmentObject var app: AppState
     @EnvironmentObject var supervisor: SupervisorService

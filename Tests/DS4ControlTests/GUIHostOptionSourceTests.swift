@@ -85,4 +85,23 @@ final class GUIHostOptionSourceTests: XCTestCase {
         XCTAssertTrue(help.contains("copiedCommand = text"))
         XCTAssertFalse(help.contains("copied == id"))
     }
+
+    func testSettingsOffersV41QuantPickerAndCleanup() throws {
+        let settings = try source("Sources/DS4Control/Views/SettingsView.swift")
+
+        XCTAssertTrue(settings.contains("Text(\"V4.1 Flash model\")"))
+        XCTAssertTrue(settings.contains("ForEach(Flash41Quant.allCases)"))
+        XCTAssertTrue(settings.contains("flash41QuantFits("))
+        XCTAssertTrue(settings.contains("supervisor.cleanupUnusedFlash41Quants(keep: app.selectedFlash41Quant)"))
+        XCTAssertTrue(settings.contains("~189 GiB of Engram tables stream from the SSD"))
+        XCTAssertTrue(settings.contains("Text(\"V4 Flash (0731) model\")"))
+    }
+
+    func testModelRowOffersFlash41ByRAMTier() throws {
+        let modelRow = try source("Sources/DS4Control/Views/ModelRowView.swift")
+
+        XCTAssertTrue(modelRow.contains("if ramGiB >= 512 { return [.pro, .flash41, .flash] }"))
+        XCTAssertTrue(modelRow.contains("if ramGiB >= 128 { return [.flash41, .flash] }"))
+        XCTAssertTrue(modelRow.contains("return [.flash]"))
+    }
 }

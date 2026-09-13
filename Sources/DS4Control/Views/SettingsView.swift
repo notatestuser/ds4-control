@@ -5,6 +5,7 @@ struct SettingsView: View {
     @EnvironmentObject var supervisor: SupervisorService
     private let ram = systemRamGiB()
     @State private var confirmingCleanup = false
+    @State private var confirming41Cleanup = false
 
     private var isRunning: Bool { supervisor.state == .ready || supervisor.state == .starting }
     /// Busy = a server is running/starting/stopping or a download is in flight; cleanup is
@@ -22,6 +23,15 @@ struct SettingsView: View {
     private var removableFreedGiB: Int {
         Int(removableFlashQuants.reduce(0.0) { $0 + $1.quant.weightsGiB })
     }
+    /// Downloaded V4.1 Flash quants other than the selected one — candidates for cleanup.
+    private var removableFlash41Quants: [Flash41Quant] {
+        Flash41Quant.allCases.filter {
+            $0 != app.selectedFlash41Quant && supervisor.isFlash41QuantDownloaded($0)
+        }
+    }
+    private var removable41FreedGiB: Int {
+        Int(removableFlash41Quants.reduce(0.0) { $0 + $1.quant.weightsGiB })
+    }
     private var flashModelFooter: String {
         let base =
             "Which Flash weights to download and run. Sizes are running memory; "
@@ -30,9 +40,21 @@ struct SettingsView: View {
             ? base + " Stop the server to delete unused downloads."
             : base + " Clean up deletes other downloaded Flash variants (V4 Pro is always kept)."
     }
+    private var flash41ModelFooter: String {
+        let base =
+            "Which V4.1 weights to download and run. Labels show resident main weights; "
+            + "~189 GiB of Engram tables stream from the SSD in every mode. Full GPU power is "
+            + "always used, and SSD streaming engages automatically when full residency doesn't fit."
+        return isBusy
+            ? base + " Stop the server to delete unused downloads."
+            : base + " Clean up deletes the other downloaded V4.1 quant (V4 Pro is always kept)."
+    }
 
     private var ctxHint: String {
         if app.ctxOverride > 0 {
+            if app.selectedVariant == .flash41 {
+                return "V4.1 Flash runs Max Think at any context; no minimum applies."
+            }
             if !supportsMaxThink(ramGiB: ram) {
                 return "Max Think is unavailable below 128 GiB unified memory."
             }
@@ -43,6 +65,11 @@ struct SettingsView: View {
     }
 
     private var thinkingHint: String {
+        if app.selectedVariant == .flash41 {
+            return
+                "Coding agents set their own level; this only affects the built-in chat. "
+                + "V4.1 Flash has no Max Think context floor."
+        }
         if !supportsMaxThink(ramGiB: ram) {
             return
                 "Max Think requires at least 128 GiB unified memory. "
@@ -203,7 +230,7 @@ struct SettingsView: View {
                 Button("Clean up unused Flash downloads") { confirmingCleanup = true }
                     .disabled(removableFlashQuants.isEmpty || isBusy)
             } header: {
-                Text("V4 Flash model")
+                Text("V4 Flash (0731) model")
             } footer: {
                 Text(flashModelFooter)
             }
@@ -220,6 +247,39 @@ struct SettingsView: View {
                 Button("Cancel", role: .cancel) {}
             } message: {
                 Text("Keeps the selected variant and V4 Pro. Deleted weights must be downloaded again.")
+            }
+
+            Section {
+                Picker("Quant", selection: $app.selectedFlash41Quant) {
+                    ForEach(Flash41Quant.allCases) { q in
+                        Text(q.label + (supervisor.isFlash41QuantDownloaded(q) ? "  (downloaded)" : ""))
+                            .tag(q)
+                            .disabled(
+                                !flash41QuantFits(
+                                    q, ramGiB: ram, wiredLimitMB: effectiveWiredLimitMB(ramGiB: ram)))
+                    }
+                }
+                .disabled(supervisor.state == .downloading)  // locked while a download is in progress
+                Button("Clean up unused V4.1 downloads") { confirming41Cleanup = true }
+                    .disabled(removableFlash41Quants.isEmpty || isBusy)
+            } header: {
+                Text("V4.1 Flash model")
+            } footer: {
+                Text(flash41ModelFooter)
+            }
+            .confirmationDialog(
+                "Delete the other V4.1 Flash quant?", isPresented: $confirming41Cleanup,
+                titleVisibility: .visible
+            ) {
+                Button(
+                    "Delete \(removableFlash41Quants.count) quant(s) · ~\(removable41FreedGiB) GiB resident",
+                    role: .destructive
+                ) {
+                    supervisor.cleanupUnusedFlash41Quants(keep: app.selectedFlash41Quant)
+                }
+                Button("Cancel", role: .cancel) {}
+            } message: {
+                Text("Keeps the selected quant and V4 Pro. Deleted weights must be downloaded again.")
             }
 
             Section {
