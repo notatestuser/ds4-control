@@ -657,10 +657,11 @@ final class SupervisorService: ObservableObject {
                         try GGUFJoiner.verify(
                             url: partURL, expectedBytes: part.bytes, expectedSHA256: part.sha256)
                     }
-                    completedBytes += part.bytes
+                    let cumulativeBytes = completedBytes + part.bytes
+                    completedBytes = cumulativeBytes
                     Self.onMain {
                         self?.updateDownloadProgress(
-                            gen: gen, file: part.filename, received: completedBytes,
+                            gen: gen, file: part.filename, received: cumulativeBytes,
                             total: expectedBytes)
                     }
                 }
