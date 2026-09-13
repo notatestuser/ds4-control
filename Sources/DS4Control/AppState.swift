@@ -53,6 +53,19 @@ final class AppState: ObservableObject {
     @Published var selectedFlashQuant: FlashQuant {
         didSet { d.set(selectedFlashQuant.rawValue, forKey: "selectedFlashQuant") }
     }
+    /// User-selected V4.1 Flash quant (default q2). Drives the V4.1 download/run filename.
+    @Published var selectedFlash41Quant: Flash41Quant {
+        didSet { d.set(selectedFlash41Quant.rawValue, forKey: "selectedFlash41Quant") }
+    }
+
+    /// The resolved model+quant choice for the currently selected variant.
+    var quantSelection: QuantSelection {
+        switch selectedVariant {
+        case .pro: return .pro
+        case .flash: return .flash(selectedFlashQuant)
+        case .flash41: return .flash41(selectedFlash41Quant)
+        }
+    }
 
     init(defaults: UserDefaults = .standard, ramGiB: Double = systemRamGiB()) {
         self.d = defaults
@@ -96,35 +109,44 @@ final class AppState: ObservableObject {
         }
         legacyStoragePromptDismissed = d.bool(forKey: "legacyStoragePromptDismissed0813")
         let stored = d.string(forKey: "selectedVariant").flatMap(Variant.init(rawValue:))
-        selectedVariant = stored ?? (ramGiB >= 512 ? .pro : .flash)  // default Pro on ≥512 GiB
+        // Default Pro on ≥512 GiB, V4.1 Flash on ≥128 GiB, V4 Flash (0731) below that.
+        // Stored selections are never auto-migrated: an existing 0731 user keeps 0731.
+        selectedVariant = stored ?? (ramGiB >= 512 ? .pro : ramGiB >= 128 ? .flash41 : .flash)
         let storedQuant = d.string(forKey: "selectedFlashQuant").flatMap(FlashQuant.init(rawValue:))
         selectedFlashQuant = storedQuant ?? defaultFlashQuant(ramGiB: ramGiB)  // default q2-q4-imatrix
+        let storedQuant41 = d.string(forKey: "selectedFlash41Quant").flatMap(Flash41Quant.init(rawValue:))
+        selectedFlash41Quant = storedQuant41 ?? defaultFlash41Quant(ramGiB: ramGiB)  // default q2
     }
 
     func effectiveCtx(ramGiB: Double) -> Int {
         ctxOverride > 0
             ? min(ctxOverride, selectedVariant.ctxCeiling)
-            : defaultCtx(ramGiB: ramGiB, variant: selectedVariant, flashQuant: selectedFlashQuant)
+            : defaultCtx(ramGiB: ramGiB, selection: quantSelection)
     }
 
-    /// Set the chat's thinking level. Max is unavailable below 128 GiB and otherwise needs
-    /// context ≥ 393,216. Rejections leave the current mode unchanged.
+    /// Set the chat's thinking level. Max is unavailable below 128 GiB; for the DeepSeek4
+    /// generations (Pro/Flash 0731) it also needs context ≥ 393,216, while V4.1 Flash has
+    /// no context floor. Rejections leave the current mode unchanged.
     func requestThinkingMode(
         _ mode: ThinkingMode, currentCtx: Int, ramGiB: Double = systemRamGiB()
     ) -> ThinkingModeGate {
         if mode == .max && !supportsMaxThink(ramGiB: ramGiB) { return .unavailable }
-        if mode == .max && !thinkMax(ctx: currentCtx) { return .needsCtxBump }
+        if mode == .max && thinkMaxNeedsCtxFloor(variant: selectedVariant) && !thinkMax(ctx: currentCtx)
+        {
+            return .needsCtxBump
+        }
         thinkingMode = mode
         return .applied
     }
 
     /// The user confirmed the context bump: pin the override to ds4's Max Think floor and
     /// enable `.max`. Returns false when the machine tier cannot safely offer Max Think.
-    /// Restarting a running server is the caller's job.
+    /// For V4.1 there is no floor, so the context is left untouched. Restarting a running
+    /// server is the caller's job.
     @discardableResult
     func applyMaxThinkCtxBump(ramGiB: Double = systemRamGiB()) -> Bool {
         guard supportsMaxThink(ramGiB: ramGiB) else { return false }
-        ctxOverride = thinkMaxMinCtx
+        if thinkMaxNeedsCtxFloor(variant: selectedVariant) { ctxOverride = thinkMaxMinCtx }
         thinkingMode = .max
         return true
     }

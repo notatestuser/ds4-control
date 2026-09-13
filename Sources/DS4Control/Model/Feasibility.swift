@@ -77,6 +77,11 @@ let thinkMaxMinRamGiB = 128.0
 func thinkMax(ctx: Int) -> Bool { ctx >= thinkMaxMinCtx }
 func supportsMaxThink(ramGiB: Double) -> Bool { ramGiB >= thinkMaxMinRamGiB }
 
+/// Whether Max Think needs ds4's 393,216-token context floor. The floor is the DeepSeek4
+/// family's `DS4_THINK_MAX_MIN_CONTEXT` (Pro/Flash 0731); V4.1 uses numeric reasoning
+/// effort (1-100, max = 100) with no context gate.
+func thinkMaxNeedsCtxFloor(variant: Variant) -> Bool { variant != .flash41 }
+
 /// Headroom left for macOS and other processes — also the buffer the Metal
 /// wired-limit advisory leaves below total RAM.
 let osReserveGiB = 4.0
@@ -131,6 +136,8 @@ private func metalShape(for variant: Variant) -> MetalShape {
             expertCount: 384, expertsUsed: 6, expertWidth: 3072,
             indexerHeads: 64, indexerHeadWidth: 128, indexerTopK: 1024,
             hyperConnections: 4, vocabularySize: 129_280)
+    case .flash41:
+        preconditionFailure("V4.1 Flash uses ds41GraphBytes; metalShape is DeepSeek V4-only")
     }
 }
 
@@ -418,6 +425,24 @@ func defaultFlashQuant(ramGiB: Double) -> FlashQuant {
     ramGiB >= 128 ? .q2q4 : .q2
 }
 
+/// Default V4.1 Flash quant: q4 on ≥512 GiB (full residency), else q2. Only used when
+/// nothing is persisted yet.
+func defaultFlash41Quant(ramGiB: Double) -> Flash41Quant {
+    ramGiB >= 512 ? .q4 : .q2
+}
+
+/// Default context, tiered by model generation and machine memory. V4 Pro and ≥128 GiB
+/// Flash (q2-q4 quant) run the full 1M window all-resident; 96–127 GiB Flash (q2) is
+/// capped at 256K. V4.1 Flash defaults to 32,768 — upstream's documented SSD-streaming
+/// configuration (docs/MODELS.md@bd66c40); raise it from Settings when memory allows.
+func defaultCtx(ramGiB: Double, selection: QuantSelection) -> Int {
+    switch selection.variant {
+    case .pro: return Variant.pro.ctxCeiling
+    case .flash: return ramGiB >= 128 ? Variant.flash.ctxCeiling : 256_000
+    case .flash41: return 32_768
+    }
+}
+
 /// Feasibility gate (spec §5.2). ds4 itself enforces no floor, so the app does. The RAM
 /// tiers block outright; the Metal wired-limit check then gates the launch config's
 /// exact weights-plus-context-plus-graph/backend working set against the machine's effective
@@ -437,6 +462,13 @@ func feasibility(
             return .blocked(
                 reason:
                     "V4 Flash needs ≥ 96 GiB unified memory. Below that, its weights, resident context, and Metal graph allocations cannot fit safely."
+            )
+        }
+    case .flash41:
+        if ramGiB < 128 {
+            return .blocked(
+                reason:
+                    "V4.1 Flash needs ≥ 128 GiB unified memory. Its 152 GiB of resident main weights, plus disk-only Engram streaming, cannot run safely below that."
             )
         }
     }

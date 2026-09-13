@@ -10,7 +10,7 @@ final class AppStateTests: XCTestCase {
         app.ctxOverride = 0
         XCTAssertEqual(
             app.effectiveCtx(ramGiB: 128),
-            defaultCtx(ramGiB: 128, variant: .flash, flashQuant: app.selectedFlashQuant))
+            defaultCtx(ramGiB: 128, selection: .flash(app.selectedFlashQuant)))
         app.ctxOverride = 50_000
         XCTAssertEqual(app.effectiveCtx(ramGiB: 128), 50_000)
         app.ctxOverride = Int.max
@@ -147,6 +147,7 @@ final class AppStateTests: XCTestCase {
 
         let app = AppState(
             defaults: UserDefaults(suiteName: "test.\(UUID().uuidString)")!, ramGiB: 128)
+        app.selectedVariant = .flash  // the 393,216 floor is the 0731/Pro behavior
         // Max below the 393,216 floor: gated, mode unchanged.
         XCTAssertEqual(
             app.requestThinkingMode(.max, currentCtx: 131_072, ramGiB: 128), .needsCtxBump)
@@ -162,8 +163,61 @@ final class AppStateTests: XCTestCase {
         // Max at the floor applies directly.
         let app2 = AppState(
             defaults: UserDefaults(suiteName: "test.\(UUID().uuidString)")!, ramGiB: 128)
+        app2.selectedVariant = .flash
         XCTAssertEqual(
             app2.requestThinkingMode(.max, currentCtx: 393_216, ramGiB: 128), .applied)
         XCTAssertEqual(app2.thinkingMode, .max)
+    }
+
+    func testFreshInstallDefaultsFlash41On128GiB() {
+        let a128 = AppState(
+            defaults: UserDefaults(suiteName: "test.\(UUID().uuidString)")!, ramGiB: 128)
+        XCTAssertEqual(a128.selectedVariant, .flash41)
+        let a96 = AppState(
+            defaults: UserDefaults(suiteName: "test.\(UUID().uuidString)")!, ramGiB: 96)
+        XCTAssertEqual(a96.selectedVariant, .flash)
+        let a512 = AppState(
+            defaults: UserDefaults(suiteName: "test.\(UUID().uuidString)")!, ramGiB: 512)
+        XCTAssertEqual(a512.selectedVariant, .pro)
+    }
+
+    func testStoredFlash0731IsNotSilentlyMigrated() {
+        let defaults = UserDefaults(suiteName: "test.\(UUID().uuidString)")!
+        defaults.set("flash", forKey: "selectedVariant")
+        XCTAssertEqual(AppState(defaults: defaults, ramGiB: 128).selectedVariant, .flash)
+    }
+
+    func testFlash41QuantDefaultAndSelection() {
+        let app = AppState(
+            defaults: UserDefaults(suiteName: "test.\(UUID().uuidString)")!, ramGiB: 128)
+        XCTAssertEqual(app.selectedFlash41Quant, .q2)
+        XCTAssertEqual(app.quantSelection, .flash41(.q2))
+        app.selectedFlash41Quant = .q4
+        XCTAssertEqual(app.quantSelection, .flash41(.q4))
+        app.selectedVariant = .flash
+        XCTAssertEqual(app.quantSelection, .flash(app.selectedFlashQuant))
+        app.selectedVariant = .pro
+        XCTAssertEqual(app.quantSelection, .pro)
+    }
+
+    func testFlash41QuantSelectionPersists() {
+        let name = "test.\(UUID().uuidString)"
+        let a1 = AppState(defaults: UserDefaults(suiteName: name)!, ramGiB: 128)
+        a1.selectedFlash41Quant = .q4
+        XCTAssertEqual(
+            AppState(defaults: UserDefaults(suiteName: name)!, ramGiB: 128).selectedFlash41Quant,
+            .q4)
+    }
+
+    func testFlash41MaxThinkNeedsNoCtxFloor() {
+        let app = AppState(
+            defaults: UserDefaults(suiteName: "test.\(UUID().uuidString)")!, ramGiB: 128)
+        XCTAssertEqual(app.selectedVariant, .flash41)
+        XCTAssertEqual(
+            app.requestThinkingMode(.max, currentCtx: 32_768, ramGiB: 128), .applied)
+        XCTAssertEqual(app.thinkingMode, .max)
+        XCTAssertTrue(app.applyMaxThinkCtxBump(ramGiB: 128))
+        XCTAssertEqual(app.ctxOverride, 0)  // no floor to bump to
+        XCTAssertEqual(app.effectiveCtx(ramGiB: 128), 32_768)
     }
 }
