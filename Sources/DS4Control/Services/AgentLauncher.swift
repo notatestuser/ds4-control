@@ -6,7 +6,7 @@ import Foundation
 /// (`PI_CODING_AGENT_DIR`). Port and context window are baked in at click time.
 enum AgentLauncher {
     /// Model ids ds4-server exposes; used to prefer the server's reported model.
-    static let knownModelIds = ["deepseek-v4-pro", "deepseek-v4-flash"]
+    static let knownModelIds = ["deepseek-v4-pro", "deepseek-v4-flash", "deepseek-v4.1-flash"]
 
     /// The running model id (e.g. "deepseek-v4-flash"). Prefers the server's reported
     /// `activeModel` when it is a known id; otherwise the selected variant's id (covers the
@@ -62,6 +62,16 @@ enum AgentLauncher {
                       "input": ["text"],
                       "contextWindow": \(contextWindow),
                       "maxTokens": 393216,
+                      "cost": { "input": 0, "output": 0, "cacheRead": 0, "cacheWrite": 0 }
+                    },
+                    {
+                      "id": "deepseek-v4.1-flash",
+                      "name": "DeepSeek V4.1 Flash (ds4.c local)",
+                      "reasoning": true,
+                      "thinkingLevelMap": \(levelMap),
+                      "input": ["text"],
+                      "contextWindow": \(contextWindow),
+                      "maxTokens": 1048576,
                       "cost": { "input": 0, "output": 0, "cacheRead": 0, "cacheWrite": 0 }
                     }
                   ]
