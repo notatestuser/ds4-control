@@ -65,7 +65,7 @@ final class SupervisorIntegrationTests: XCTestCase {
         try stubDs4(dir)
         try Data(count: 5_000_000).write(to: dl.appendingPathComponent("h.incomplete"))
         let s = SupervisorService(ds4Dir: dir, runner: RealProcessRunner(), fetchFile: Self.pending)
-        s.resumeInFlightDownloadIfAny(variant: .pro, flashQuant: .q2q4)  // a partial exists → resumes
+        s.resumeInFlightDownloadIfAny(selection: .pro)  // a partial exists → resumes
         XCTAssertEqual(s.state, .downloading)
         XCTAssertEqual(s.download?.file, Quant.proImatrix.ggufFilename)  // resumes the Pro file
         XCTAssertTrue(s.downloadProcessLive)
@@ -77,7 +77,7 @@ final class SupervisorIntegrationTests: XCTestCase {
         try FileManager.default.createDirectory(
             at: dir.appendingPathComponent("gguf"), withIntermediateDirectories: true)
         let s = SupervisorService(ds4Dir: dir, runner: RealProcessRunner())
-        s.resumeInFlightDownloadIfAny(variant: .pro, flashQuant: .q2q4)
+        s.resumeInFlightDownloadIfAny(selection: .pro)
         XCTAssertEqual(s.state, .idle)
     }
 
@@ -87,7 +87,7 @@ final class SupervisorIntegrationTests: XCTestCase {
         try FileManager.default.createDirectory(at: g, withIntermediateDirectories: true)
         try Data(count: 10).write(to: g.appendingPathComponent(Quant.proImatrix.ggufFilename))
         let s = SupervisorService(ds4Dir: dir, runner: RealProcessRunner())
-        s.resumeInFlightDownloadIfAny(variant: .pro, flashQuant: .q2q4)
+        s.resumeInFlightDownloadIfAny(selection: .pro)
         XCTAssertEqual(s.state, .idle)
     }
 
@@ -100,7 +100,7 @@ final class SupervisorIntegrationTests: XCTestCase {
         try Data(count: 1024).write(
             to: dir.appendingPathComponent("gguf/.cache/huggingface/download/h.incomplete"))
         let s = SupervisorService(ds4Dir: dir, runner: RealProcessRunner(), fetchFile: Self.pending)
-        s.retryDownload(variant: .pro, flashQuant: .q2q4)
+        s.retryDownload(selection: .pro)
         XCTAssertEqual(s.state, .downloading)
         XCTAssertNotNil(s.download)
         s.cancelDownload()
@@ -194,8 +194,8 @@ final class SupervisorIntegrationTests: XCTestCase {
 
         let s = SupervisorService(
             ds4Dir: dir, runner: RealProcessRunner(),
-            wiredLimitGate: { _, _, _, _ in .standard })  // host-independent: skip the RAM/sysctl gate
-        s.start(variant: .flash, flashQuant: .q2q4, ctx: 250_000, host: "127.0.0.1", port: 8137, power: nil)
+            wiredLimitGate: { _, _, _ in .standard })  // host-independent: skip the RAM/sysctl gate
+        s.start(selection: .flash(.q2q4), ctx: 250_000, host: "127.0.0.1", port: 8137, power: nil)
         let ready = expectation(description: "ready")
         let token = s.$state.sink { if $0 == .ready { ready.fulfill() } }
         wait(for: [ready], timeout: 10)
@@ -213,14 +213,15 @@ final class SupervisorIntegrationTests: XCTestCase {
         let gg = dir.appendingPathComponent("gguf").appendingPathComponent(Quant.q2Imatrix.ggufFilename)
         FileManager.default.createFile(atPath: gg.path, contents: Data("gguf".utf8))
 
-        let expectedRequired = requiredWiredMB(variant: .flash, flashQuant: .q2, ctx: 393_216)
+        let expectedRequired = requiredWiredMB(
+            ramGiB: 128, wiredLimitMB: Int.max, selection: .flash(.q2), ctx: 393_216)
         let expectedAdvisory = expectedRequired + 1024
         let s = SupervisorService(
             ds4Dir: dir, runner: RealProcessRunner(),
-            wiredLimitGate: { _, _, _, _ in
+            wiredLimitGate: { _, _, _ in
                 .wiredLimitTooLow(requiredMB: expectedRequired, advisoryMB: expectedAdvisory)
             })
-        s.start(variant: .flash, flashQuant: .q2, ctx: 393_216, host: "127.0.0.1", port: 8137, power: nil)
+        s.start(selection: .flash(.q2), ctx: 393_216, host: "127.0.0.1", port: 8137, power: nil)
         guard case let .error(.wiredLimitTooLow(required, advisory)) = s.state else {
             return XCTFail("expected .wiredLimitTooLow, got \(s.state)")
         }
@@ -229,7 +230,7 @@ final class SupervisorIntegrationTests: XCTestCase {
 
         // The override (confirmed "Start anyway") gets past the gate to launch.
         s.start(
-            variant: .flash, flashQuant: .q2, ctx: 393_216, host: "127.0.0.1", port: 8137, power: nil,
+            selection: .flash(.q2), ctx: 393_216, host: "127.0.0.1", port: 8137, power: nil,
             overrideWiredLimitGate: true)
         XCTAssertEqual(s.state, .starting)
         s.stop()
@@ -248,12 +249,12 @@ final class SupervisorIntegrationTests: XCTestCase {
         let rejection = Feasibility.wiredLimitTooLow(requiredMB: 100_000, advisoryMB: 110_000)
         let s = SupervisorService(
             ds4Dir: dir, runner: RealProcessRunner(),
-            wiredLimitGate: { _, _, _, _ in gateOpen ? .standard : rejection })
-        s.start(variant: .flash, flashQuant: .q2, ctx: 393_216, host: "127.0.0.1", port: 8137, power: nil)
+            wiredLimitGate: { _, _, _ in gateOpen ? .standard : rejection })
+        s.start(selection: .flash(.q2), ctx: 393_216, host: "127.0.0.1", port: 8137, power: nil)
         guard case .starting = s.state else { return XCTFail("expected .starting, got \(s.state)") }
         gateOpen = false
         let result = s.restart(
-            variant: .flash, flashQuant: .q2, ctx: 1_000_000,
+            selection: .flash(.q2), ctx: 1_000_000,
             host: "127.0.0.1", port: 8137, power: nil)
         XCTAssertEqual(result, .rejected(rejection))
         XCTAssertEqual(s.state, .starting, "a refused restart must keep the running server untouched")
@@ -266,7 +267,7 @@ final class SupervisorIntegrationTests: XCTestCase {
             at: dir.appendingPathComponent("gguf"), withIntermediateDirectories: true)
         try stubDs4(dir)
         let s = SupervisorService(ds4Dir: dir, runner: RealProcessRunner(), fetchFile: { _, _, _, _, _ in })
-        s.download(variant: .flash, flashQuant: .q2q4)
+        s.download(selection: .flash(.q2q4))
         await until { s.state == .idle }
         XCTAssertEqual(s.state, .idle)
         XCTAssertEqual(s.download?.pct, 100)
@@ -294,7 +295,7 @@ final class SupervisorIntegrationTests: XCTestCase {
             })
         var seenBytes: [Int64] = []
         let token = s.$download.sink { if let b = $0?.receivedBytes { seenBytes.append(b) } }
-        s.download(variant: .flash, flashQuant: .q2q4)
+        s.download(selection: .flash(.q2q4))
         // Wait until the bar has climbed past the first reported step.
         await until { (s.download?.receivedBytes ?? 0) >= 50 * 1024 * 1024 }
         token.cancel()
@@ -328,7 +329,7 @@ final class SupervisorIntegrationTests: XCTestCase {
         XCTAssertEqual(downloadedBytes(ggufDir: g, filename: filename), 2 * chunkSize)
 
         let s = SupervisorService(ds4Dir: dir, runner: RealProcessRunner(), fetchFile: Self.pending)
-        s.resumeInFlightDownloadIfAny(variant: .pro, flashQuant: .q2q4)
+        s.resumeInFlightDownloadIfAny(selection: .pro)
         XCTAssertEqual(s.state, .downloading, "a bitmap with completed chunks must trigger resume")
         XCTAssertEqual(s.download?.file, filename)
         XCTAssertTrue(s.downloadProcessLive)
@@ -361,7 +362,7 @@ final class SupervisorIntegrationTests: XCTestCase {
         XCTAssertTrue(FileManager.default.fileExists(atPath: sidecar.path), "seeded .part.dl must exist")
 
         let s = SupervisorService(ds4Dir: dir, runner: RealProcessRunner(), fetchFile: Self.pending)
-        s.download(variant: .flash, flashQuant: .q2q4)
+        s.download(selection: .flash(.q2q4))
         XCTAssertEqual(s.state, .downloading)
         XCTAssertEqual(s.download?.file, filename)
 
@@ -404,7 +405,7 @@ final class SupervisorIntegrationTests: XCTestCase {
             throw HFDownloader.Failure.incompleteAfterRetries
         }
         let s = SupervisorService(ds4Dir: dir, runner: RealProcessRunner(), fetchFile: failing)
-        s.download(variant: .flash, flashQuant: .q2q4)
+        s.download(selection: .flash(.q2q4))
         await until { if case .error = s.state { return true } else { return false } }
 
         let part = g.appendingPathComponent(filename + ".part")
@@ -438,10 +439,10 @@ final class SupervisorIntegrationTests: XCTestCase {
         XCTAssertEqual(resumableBytes(ggufDir: g, filename: filename), 2 * chunkSize)
 
         let s = SupervisorService(ds4Dir: dir, runner: RealProcessRunner(), fetchFile: Self.pending)
-        s.download(variant: .flash, flashQuant: .q2q4)
+        s.download(selection: .flash(.q2q4))
         XCTAssertEqual(s.state, .downloading)
 
-        s.retryDownload(variant: .flash, flashQuant: .q2q4)
+        s.retryDownload(selection: .flash(.q2q4))
         XCTAssertEqual(s.state, .downloading, "retry re-enters .downloading")
         XCTAssertTrue(FileManager.default.fileExists(atPath: part.path), "retry must preserve the .part")
         XCTAssertTrue(

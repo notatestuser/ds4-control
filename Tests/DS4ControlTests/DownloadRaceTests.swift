@@ -66,7 +66,7 @@ final class DownloadRaceTests: XCTestCase {
 
     func testDownloadEntersDownloadingAndShowsSpinner() throws {
         let s = SupervisorService(ds4Dir: try makeDir(), runner: NoopRunner(), fetchFile: pending)
-        s.download(variant: .flash, flashQuant: .q2q4)
+        s.download(selection: .flash(.q2q4))
         XCTAssertEqual(s.state, .downloading)
         XCTAssertTrue(s.downloadProcessLive, "spinner should show while the download task is in flight")
         XCTAssertEqual(s.download?.file, Quant.q2q4Imatrix.ggufFilename, "downloads the selected quant's file")
@@ -75,7 +75,7 @@ final class DownloadRaceTests: XCTestCase {
 
     func testSuccessfulDownloadGoesIdle() async throws {
         let s = SupervisorService(ds4Dir: try makeDir(), runner: NoopRunner(), fetchFile: { _, _, _, _, _ in })
-        s.download(variant: .flash, flashQuant: .q2q4)
+        s.download(selection: .flash(.q2q4))
         await until { s.state == .idle }
         XCTAssertEqual(s.state, .idle)
         XCTAssertEqual(s.download?.pct, 100)
@@ -86,7 +86,7 @@ final class DownloadRaceTests: XCTestCase {
         let s = SupervisorService(
             ds4Dir: try makeDir(), runner: NoopRunner(),
             fetchFile: { _, _, _, _, _ in throw HFDownloader.Failure.http(503) })
-        s.download(variant: .flash, flashQuant: .q2q4)
+        s.download(selection: .flash(.q2q4))
         await until { if case .error = s.state { return true } else { return false } }
         guard case .error = s.state else { return XCTFail("expected .error, got \(s.state)") }
         XCTAssertFalse(s.downloadProcessLive)
@@ -94,7 +94,7 @@ final class DownloadRaceTests: XCTestCase {
 
     func testCancelDownloadReturnsToIdle() throws {
         let s = SupervisorService(ds4Dir: try makeDir(), runner: NoopRunner(), fetchFile: pending)
-        s.download(variant: .flash, flashQuant: .q2q4)
+        s.download(selection: .flash(.q2q4))
         s.cancelDownload()
         XCTAssertEqual(s.state, .idle)
         XCTAssertFalse(s.downloadProcessLive)
@@ -106,8 +106,8 @@ final class DownloadRaceTests: XCTestCase {
     /// guard).
     func testRetryStaysDownloading() throws {
         let s = SupervisorService(ds4Dir: try makeDir(), runner: NoopRunner(), fetchFile: pending)
-        s.download(variant: .flash, flashQuant: .q2q4)
-        s.retryDownload(variant: .flash, flashQuant: .q2q4)
+        s.download(selection: .flash(.q2q4))
+        s.retryDownload(selection: .flash(.q2q4))
         XCTAssertEqual(s.state, .downloading)
         s.cancelDownload()
     }
@@ -125,11 +125,11 @@ final class DownloadRaceTests: XCTestCase {
         let box = ContinuationBox()
         let s = SupervisorService(
             ds4Dir: try makeDir(), runner: NoopRunner(), fetchFile: box.gen1ReturnsFetch)
-        s.download(variant: .flash, flashQuant: .q2q4)  // gen1: suspends on the stored continuation
+        s.download(selection: .flash(.q2q4))  // gen1: suspends on the stored continuation
         XCTAssertEqual(s.state, .downloading)
         await until { box.firstInvoked }  // gen1's fetch is parked on the continuation
 
-        s.retryDownload(variant: .flash, flashQuant: .q2q4)  // cancels gen1's task, starts gen2 (forever)
+        s.retryDownload(selection: .flash(.q2q4))  // cancels gen1's task, starts gen2 (forever)
         XCTAssertEqual(s.state, .downloading)
 
         box.resumeFirst()  // gen1's fetch RETURNS → its Task calls completeDownload(gen1), now stale
@@ -152,11 +152,11 @@ final class DownloadRaceTests: XCTestCase {
         let box = ContinuationBox()
         let s = SupervisorService(
             ds4Dir: try makeDir(), runner: NoopRunner(), fetchFile: box.gen1ThrowsFetch)
-        s.download(variant: .flash, flashQuant: .q2q4)  // gen1: suspends on the stored continuation
+        s.download(selection: .flash(.q2q4))  // gen1: suspends on the stored continuation
         XCTAssertEqual(s.state, .downloading)
         await until { box.firstInvoked }
 
-        s.retryDownload(variant: .flash, flashQuant: .q2q4)  // cancels gen1, starts gen2 (forever)
+        s.retryDownload(selection: .flash(.q2q4))  // cancels gen1, starts gen2 (forever)
         XCTAssertEqual(s.state, .downloading)
 
         box.resumeFirst()  // gen1's fetch THROWS → its Task calls failDownload(gen1), now stale

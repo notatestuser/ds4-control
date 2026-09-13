@@ -39,7 +39,7 @@ struct SettingsView: View {
             return "Max Think is available when context ≥ 393,216."
         }
         return
-            "Auto: \(defaultCtx(ramGiB: ram, variant: app.selectedVariant, flashQuant: app.selectedFlashQuant).formatted()) tokens (based on \(Int(ram)) GiB RAM)."
+            "Auto: \(defaultCtx(ramGiB: ram, selection: app.quantSelection).formatted()) tokens (based on \(Int(ram)) GiB RAM)."
     }
 
     private var thinkingHint: String {
@@ -251,7 +251,7 @@ struct SettingsView: View {
     private func restart(overrideWiredLimitGate: Bool = false) {
         let host = app.normalizeHostForLaunch()
         let result = supervisor.restart(
-            variant: app.selectedVariant, flashQuant: app.selectedFlashQuant,
+            selection: app.quantSelection,
             ctx: app.effectiveCtx(ramGiB: ram),
             host: host, port: app.port, power: app.power,
             sessions: app.concurrentSessions,

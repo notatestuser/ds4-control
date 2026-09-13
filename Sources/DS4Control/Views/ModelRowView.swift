@@ -18,7 +18,7 @@ struct ModelRowView: View {
             .disabled(supervisor.state == .downloading)  // don't switch model mid-download
 
             let feas = feasibility(
-                ramGiB: ramGiB, variant: app.selectedVariant, flashQuant: app.selectedFlashQuant,
+                ramGiB: ramGiB, selection: app.quantSelection,
                 ctx: app.effectiveCtx(ramGiB: ramGiB),
                 wiredLimitMB: effectiveWiredLimitMB(ramGiB: ramGiB),
                 sessions: app.concurrentSessions)
@@ -28,7 +28,7 @@ struct ModelRowView: View {
     }
 
     @ViewBuilder private func actionButton(_ feas: Feasibility) -> some View {
-        let downloaded = supervisor.isDownloaded(app.selectedVariant, flashQuant: app.selectedFlashQuant)
+        let downloaded = supervisor.isDownloaded(app.quantSelection)
         let blocked: Bool = {
             if case .blocked = feas { return true }
             return false
@@ -47,7 +47,7 @@ struct ModelRowView: View {
             HStack {
                 Button("Retry download") {
                     supervisor.retryDownload(
-                        variant: app.selectedVariant, flashQuant: app.selectedFlashQuant,
+                        selection: app.quantSelection,
                         highPerformance: app.highPerformanceDownload)
                 }
                 .tint(.orange).frame(maxWidth: .infinity).disabled(blocked)
@@ -60,7 +60,7 @@ struct ModelRowView: View {
                     wiredLow ? confirmStartAnyway() : startServer(overrideWiredLimitGate: false)
                 } else {
                     supervisor.retryDownload(
-                        variant: app.selectedVariant, flashQuant: app.selectedFlashQuant,
+                        selection: app.quantSelection,
                         highPerformance: app.highPerformanceDownload)
                 }
             }
@@ -69,7 +69,7 @@ struct ModelRowView: View {
             if !downloaded {
                 Button("Download \(app.selectedVariant.displayName)") {
                     supervisor.download(
-                        variant: app.selectedVariant, flashQuant: app.selectedFlashQuant,
+                        selection: app.quantSelection,
                         highPerformance: app.highPerformanceDownload)
                 }
                 .frame(maxWidth: .infinity).disabled(blocked)
@@ -86,7 +86,7 @@ struct ModelRowView: View {
     private func startServer(overrideWiredLimitGate: Bool) {
         let host = app.normalizeHostForLaunch()
         supervisor.start(
-            variant: app.selectedVariant, flashQuant: app.selectedFlashQuant,
+            selection: app.quantSelection,
             ctx: app.effectiveCtx(ramGiB: ramGiB),
             host: host, port: app.port, power: app.power,
             sessions: app.concurrentSessions,

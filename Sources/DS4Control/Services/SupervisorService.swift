@@ -90,11 +90,11 @@ final class SupervisorService: ObservableObject {
     /// Returns the launch config's feasibility. Injectable so tests don't depend on the
     /// host's RAM/sysctl state (CI runners are far smaller than any supported machine).
     typealias WiredLimitGate =
-        (_ variant: Variant, _ flashQuant: FlashQuant, _ ctx: Int, _ sessions: Int) -> Feasibility
-    static let defaultWiredLimitGate: WiredLimitGate = { variant, flashQuant, ctx, sessions in
+        (_ selection: QuantSelection, _ ctx: Int, _ sessions: Int) -> Feasibility
+    static let defaultWiredLimitGate: WiredLimitGate = { selection, ctx, sessions in
         let ram = systemRamGiB()
         return feasibility(
-            ramGiB: ram, variant: variant, flashQuant: flashQuant, ctx: ctx,
+            ramGiB: ram, selection: selection, ctx: ctx,
             wiredLimitMB: effectiveWiredLimitMB(ramGiB: ram), sessions: sessions)
     }
     private let wiredLimitGate: WiredLimitGate
@@ -151,8 +151,29 @@ final class SupervisorService: ObservableObject {
         return ggufBaseOverride ?? ds4Dir.appendingPathComponent("gguf")
     }
     private func cacheBaseDir() -> URL { cacheBaseOverride ?? ds4AppSupportDir() }
-    private func ggufURL(for variant: Variant, flashQuant: FlashQuant) -> URL {
-        ggufBaseDir().appendingPathComponent(Quant.for(variant, flashQuant: flashQuant).ggufFilename)
+    /// Memory-related launch flags. V4.1 always forces full GPU power duty
+    /// (docs/METAL.md@bd66c40) and engages `--ssd-streaming` when the resident fixed set
+    /// exceeds ds4's admission budget; Engram rows are disk-resident in every mode.
+    /// Extracted so tests can pin both branches without depending on host RAM.
+    nonisolated static func memoryArgs(
+        selection: QuantSelection, ctx: Int, sessions: Int,
+        ramGiB: Double, wiredLimitMB: Int, power: Int?
+    ) -> [String] {
+        if selection.variant == .flash41 {
+            var args = ["--power", "100"]
+            if flash41UsesSSDStreaming(
+                ramGiB: ramGiB, wiredLimitMB: wiredLimitMB, quant: selection.quant,
+                ctx: ctx, sessions: sessions)
+            {
+                args += ["--ssd-streaming"]
+            }
+            return args
+        }
+        return power.map { ["--power", "\($0)"] } ?? []
+    }
+
+    private func ggufURL(for selection: QuantSelection) -> URL {
+        ggufBaseDir().appendingPathComponent(selection.quant.ggufFilename)
     }
     private func validateDs4Dir() -> ServerError? {
         for f in ["ds4-server", "download_model.sh"] {
@@ -179,8 +200,7 @@ final class SupervisorService: ObservableObject {
     }
 
     func start(
-        variant: Variant,
-        flashQuant: FlashQuant,
+        selection: QuantSelection,
         ctx: Int,
         host: String,
         port: Int,
@@ -191,14 +211,14 @@ final class SupervisorService: ObservableObject {
     ) {
         guard state == .idle || isErrorState else { emitBadState("start"); return }
         if let e = validateDs4Dir() { state = .error(e); return }
-        if let reason = launchBoundsError(variant: variant, ctx: ctx, sessions: sessions) {
+        if let reason = launchBoundsError(variant: selection.variant, ctx: ctx, sessions: sessions) {
             state = .error(.configurationBlocked(reason: reason))
             return
         }
         // Defense-in-depth for the popup gate: refuse configs whose GPU-wired working set
         // exceeds the effective Metal wired limit (starting anyway pages the model and
         // hangs the machine). The UI's confirmed "Start anyway" passes the override.
-        switch wiredLimitGate(variant, flashQuant, ctx, sessions) {
+        switch wiredLimitGate(selection, ctx, sessions) {
         case let .blocked(reason):
             state = .error(.configurationBlocked(reason: reason))
             return
@@ -208,11 +228,11 @@ final class SupervisorService: ObservableObject {
         case .standard, .wiredLimitTooLow:
             break
         }
-        let gguf = ggufURL(for: variant, flashQuant: flashQuant)
+        let gguf = ggufURL(for: selection)
         guard FileManager.default.fileExists(atPath: gguf.path) else {
             state = .error(.modelMissing(filename: gguf.lastPathComponent)); return
         }
-        self.port = port; self.ctx = ctx; self.activeModel = variant.modelId
+        self.port = port; self.ctx = ctx; self.activeModel = selection.variant.modelId
         stderrTail = []; expectingExit = false; serverAttached = false
         var args = [
             "-m", gguf.path,
@@ -221,7 +241,10 @@ final class SupervisorService: ObservableObject {
             "--port", "\(port)",
             "--metal",
         ]
-        if let power { args += ["--power", "\(power)"] }
+        let ram = systemRamGiB()
+        args += Self.memoryArgs(
+            selection: selection, ctx: ctx, sessions: sessions, ramGiB: ram,
+            wiredLimitMB: effectiveWiredLimitMB(ramGiB: ram), power: power)
         // >1 preallocates N resident KV sessions so that many chats/agents generate at once.
         // 1 must omit the flag: ds4 treats even `--batched-session 1` as batched mode (MTP off).
         if sessions > 1 { args += ["--batched-session", "\(sessions)"] }
@@ -441,8 +464,7 @@ final class SupervisorService: ObservableObject {
     /// No-op unless a server is running.
     @discardableResult
     func restart(
-        variant: Variant,
-        flashQuant: FlashQuant,
+        selection: QuantSelection,
         ctx: Int,
         host: String,
         port: Int,
@@ -455,13 +477,13 @@ final class SupervisorService: ObservableObject {
             emitBadState("restart")
             return .ignored
         }
-        if let reason = launchBoundsError(variant: variant, ctx: ctx, sessions: sessions) {
+        if let reason = launchBoundsError(variant: selection.variant, ctx: ctx, sessions: sessions) {
             recentLog.append("ignored 'restart': \(reason)")
             return .rejected(.blocked(reason: reason))
         }
         // Gate BEFORE stopping: a refused restart keeps the healthy running server instead
         // of tearing it down into an error state.
-        let feasibility = wiredLimitGate(variant, flashQuant, ctx, sessions)
+        let feasibility = wiredLimitGate(selection, ctx, sessions)
         switch feasibility {
         case let .blocked(reason):
             recentLog.append("ignored 'restart': \(reason)")
@@ -475,7 +497,7 @@ final class SupervisorService: ObservableObject {
         let relaunch: () -> Void = { [weak self] in
             guard let self else { return }
             self.start(
-                variant: variant, flashQuant: flashQuant, ctx: ctx, host: host, port: port, power: power,
+                selection: selection, ctx: ctx, host: host, port: port, power: power,
                 sessions: sessions, kvDiskDir: kvDiskDir, overrideWiredLimitGate: overrideWiredLimitGate)
         }
         stop()
@@ -564,10 +586,10 @@ final class SupervisorService: ObservableObject {
     /// HuggingFace repo hosting the DS4 GGUF weights (single source for the resolve URL).
     private static let ggufRepo = "antirez/deepseek-v4-gguf"
 
-    func download(variant: Variant, flashQuant: FlashQuant, highPerformance: Bool = false) {
+    func download(selection: QuantSelection, highPerformance: Bool = false) {
         guard state == .idle || isErrorState else { emitBadState("download"); return }
         if let e = validateDs4Dir() { state = .error(e); return }
-        let q = Quant.for(variant, flashQuant: flashQuant)
+        let q = selection.quant
         let baseDir = ggufBaseDir()
         let expectedBytes = Int64(q.ggufBytes)
         download = DownloadProgress(pct: 0, file: q.ggufFilename, receivedBytes: 0, totalBytes: expectedBytes)
@@ -657,13 +679,13 @@ final class SupervisorService: ObservableObject {
     /// Cancel whatever download is in flight and start a fresh one — the user's escape hatch from a
     /// stuck/stalled or errored progress bar. The native downloader cancels through the cancelled
     /// task; `download` re-resumes from the on-disk bitmap.
-    func retryDownload(variant: Variant, flashQuant: FlashQuant, highPerformance: Bool = false) {
+    func retryDownload(selection: QuantSelection, highPerformance: Bool = false) {
         downloadTask?.cancel()
         downloadTask = nil
         lastDownloadSample = nil
         download = nil
         state = .idle
-        download(variant: variant, flashQuant: flashQuant, highPerformance: highPerformance)
+        download(selection: selection, highPerformance: highPerformance)
     }
 
     /// Cancel an in-progress download and return to idle without restarting. Bumping the generation
@@ -692,10 +714,10 @@ final class SupervisorService: ObservableObject {
     /// `.part.dl` bitmap (or, for a legacy contiguous `.part`/hf `.incomplete`, from its byte count),
     /// so this is just a normal `download()`. `highPerformance` (the persisted setting) is threaded
     /// through so the resumed download uses the user's chosen worker count.
-    func resumeInFlightDownloadIfAny(variant: Variant, flashQuant: FlashQuant, highPerformance: Bool = false) {
+    func resumeInFlightDownloadIfAny(selection: QuantSelection, highPerformance: Bool = false) {
         guard state == .idle else { return }
         let base = ggufBaseDir()
-        let q = Quant.for(variant, flashQuant: flashQuant)
+        let q = selection.quant
         // Already fully downloaded → nothing to resume.
         if FileManager.default.fileExists(atPath: base.appendingPathComponent(q.ggufFilename).path) { return }
         // Resume when the bitmap sidecar records durable bytes (parallel partial), or a legacy
@@ -703,12 +725,12 @@ final class SupervisorService: ObservableObject {
         let resumable = resumableBytes(ggufDir: base, filename: q.ggufFilename) > 0
         let legacy = downloadedBytes(ggufDir: base, filename: q.ggufFilename) > 0
         guard resumable || legacy else { return }
-        download(variant: variant, flashQuant: flashQuant, highPerformance: highPerformance)
+        download(selection: selection, highPerformance: highPerformance)
     }
 
     /// True when the selected variant's gguf exists on disk.
-    func isDownloaded(_ variant: Variant, flashQuant: FlashQuant) -> Bool {
-        FileManager.default.fileExists(atPath: ggufURL(for: variant, flashQuant: flashQuant).path)
+    func isDownloaded(_ selection: QuantSelection) -> Bool {
+        FileManager.default.fileExists(atPath: ggufURL(for: selection).path)
     }
 
     // MARK: - Flash quant store (Settings: download markers + cleanup)

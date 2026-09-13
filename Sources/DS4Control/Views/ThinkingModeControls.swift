@@ -127,7 +127,7 @@ enum ThinkingModePrompt {
             return .rejected(.blocked(reason: maxThinkUnavailableReason))
         }
         let result = supervisor.restart(
-            variant: app.selectedVariant, flashQuant: app.selectedFlashQuant,
+            selection: app.quantSelection,
             ctx: thinkMaxMinCtx,
             host: app.normalizeHostForLaunch(), port: app.port, power: app.power,
             sessions: app.concurrentSessions,
