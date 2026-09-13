@@ -100,8 +100,8 @@ final class GUIHostOptionSourceTests: XCTestCase {
     func testModelRowOffersFlash41ByRAMTier() throws {
         let modelRow = try source("Sources/DS4Control/Views/ModelRowView.swift")
 
-        XCTAssertTrue(modelRow.contains("if ramGiB >= 512 { return [.pro, .flash41, .flash] }"))
-        XCTAssertTrue(modelRow.contains("if ramGiB >= 128 { return [.flash41, .flash] }"))
+        XCTAssertTrue(modelRow.contains("if ramGiB >= 512 { return [.pro, .flash, .flash41] }"))
+        XCTAssertTrue(modelRow.contains("if ramGiB >= 128 { return [.flash, .flash41] }"))
         XCTAssertTrue(modelRow.contains("return [.flash]"))
     }
 }
