@@ -131,8 +131,7 @@ final class AppState: ObservableObject {
         _ mode: ThinkingMode, currentCtx: Int, ramGiB: Double = systemRamGiB()
     ) -> ThinkingModeGate {
         if mode == .max && !supportsMaxThink(ramGiB: ramGiB) { return .unavailable }
-        if mode == .max && thinkMaxNeedsCtxFloor(variant: selectedVariant) && !thinkMax(ctx: currentCtx)
-        {
+        if mode == .max && thinkMaxNeedsCtxFloor(variant: selectedVariant) && !thinkMax(ctx: currentCtx) {
             return .needsCtxBump
         }
         thinkingMode = mode

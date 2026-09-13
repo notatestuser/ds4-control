@@ -364,13 +364,226 @@ private func metalIndexerScratchBytes(variant: Variant, ctx: Int) -> Int? {
     ])
 }
 
+// MARK: - DeepSeek V4.1 Flash (ds41) Metal memory mirror
+//
+// The V4.1 graphite and admission rules live in ds4@bd66c40 (see AGENTS.md). Constants
+// below are transcribed from that revision; do not carry them across a ds4 bump without
+// re-verifying `ds41_graph_bytes`, `ds41_carry_cap` and `ds4_streaming_prefill_headroom_bytes`.
+
+/// V4.1 Flash shape (`DS4_SHAPE_FLASH41`, ds4.c:604-639).
+private enum DS41Shape {
+    static let layers = 40
+    static let embd = 5120
+    static let vocab = 129_280
+    static let head = 64
+    static let headDim = 512
+    static let outGroup = 8
+    static let loraQ = 1280
+    static let loraO = 1024
+    static let expert = 384
+    static let expertUsed = 6
+    static let ffExp = 2304
+    static let indexerHead = 32
+    static let indexerHeadDim = 128
+    static let indexerTopK = 512
+    static let hc = 4
+    static let engramCols = 24
+    static let engramDim = 256
+}
+
+/// `sizeof(ds41_gpu_graph)` at bd66c40 (clang record layout; pointers + scalars only).
+private let ds41GraphStructBytes = 51_080
+/// `DS41_PREFILL_CAP` and index batch width (ds4.c:39058-39059).
+private let ds41PrefillCapWide = 8192
+private let ds41IndexBatch = 32
+
+/// `ds41_prefill_limit` (ds4.c:39100): wide chunks need enough context.
+private func ds41PrefillCap(ctx: Int) -> Int {
+    if ctx < 8192 { return min(2048, ctx) }
+    if ctx < 16384 { return min(4096, ctx) }
+    return min(ds41PrefillCapWide, ctx)
+}
+
+/// `ds41_carry_words` for the default compact (non-F32) formats.
+private func ds41CarryWords(width: Int, mask: Bool) -> Int {
+    mask ? (width + 31) / 32 : (width + 1) / 2
+}
+
+/// `ds41_carry_cap` (ds4.c:39111): the 3 GiB carry budget in rows, bounded and aligned.
+private func ds41CarryCap(ctx: Int) -> Int {
+    let blockMask = (ctx + 7) / 8
+    let rowBytes =
+        (ds41CarryWords(width: DS41Shape.hc * DS41Shape.embd, mask: false)
+            + DS41Shape.hc + 24 + DS41Shape.indexerTopK
+            + ds41CarryWords(width: blockMask, mask: true)) * 4
+    guard rowBytes > 0 else { return 0 }
+    var cap = (3 << 30) / rowBytes
+    if cap > 32768 { cap = 32768 }
+    if cap > ctx { cap = ctx }
+    let chunk = ds41PrefillCap(ctx: ctx)
+    guard chunk > 0 else { return 0 }
+    cap -= cap % 2048
+    return cap > chunk ? cap : 0
+}
+
+/// `ds4_gpu_dsv41_indexer_packed_bytes` (ds4_metal.m:36065).
+private func ds41IndexerPackedBytes(sourceRows: Int, rows: Int) -> Int {
+    let flags = ((rows + (sourceRows + 63) / 64) * 4 + 255) & ~255
+    return flags + rows * 32 * 128 * 2 + ((sourceRows + 63) / 64) * 64 * 128 * 2
+}
+
+/// Exact bytes of one resident session's V4.1 Metal graph, mirroring `ds41_graph_bytes`
+/// (ds4.c:39227). All terms are bounded by `ctx <= 1,048,576`, so Int cannot overflow
+/// (~21 GiB max). `sizeof(*g)`, the token map, the bounded packed activation buffer and
+/// the index-sorter merge buffers are included exactly as ds4 accounts them.
+func ds41GraphBytes(ctx: Int) -> Int? {
+    guard ctx > 0, ctx <= 1_048_576 else { return nil }
+    let shape = DS41Shape.self
+    let prefillCap = ds41PrefillCap(ctx: ctx)
+    let carryCap = ds41CarryCap(ctx: ctx)
+    let blockMask = (ctx + 7) / 8
+
+    var floats = 40 * 128 * 512
+    for i in 0..<4 {
+        floats += (ctx / (i < 3 ? 2 : 1) + 1) * (512 + 128) + 2 * 512
+    }
+    floats += 2 * 2 * shape.embd * shape.hc
+    // DS41_SCRATCH (ds4.c:39126).
+    floats += (prefillCap + 3) / 4  // image_text_mask
+    floats += 3 * shape.hc * shape.embd  // residual, after_attn, flat_norm
+    floats += 24 + 24 + 24 + 4  // mix, attn_split, ffn_split, pre
+    floats += 3 * shape.embd  // x, norm, block
+    floats += shape.loraQ + shape.head * shape.headDim + 2 * shape.headDim  // qr, q, kv+latent
+    floats += (prefillCap + 128) * shape.headDim  // raw_prefill
+    floats += 2 * shape.headDim  // pool_kv, pool_score
+    floats += shape.indexerHead * shape.indexerHeadDim + shape.indexerHeadDim + shape.indexerHead
+    floats += ds41IndexBatch * ctx  // index_scores
+    floats += shape.indexerTopK  // selected_comp
+    floats += ds41IndexerPackedBytes(sourceRows: ctx, rows: prefillCap) / 4  // index_packed
+    floats += shape.indexerTopK * shape.headDim  // selected_kv
+    floats += blockMask  // block_scores
+    floats += 2048  // block_selected
+    floats += blockMask  // block_mask
+    floats += shape.head * shape.headDim + shape.outGroup * shape.loraO  // heads, low
+    floats += 2 * shape.expert  // route_logits, route_probs
+    floats += 2 * shape.expertUsed  // selected, route_weights
+    floats += 3 * shape.expertUsed * shape.ffExp  // gate, up, mid
+    floats += shape.expertUsed * shape.embd + shape.embd  // experts, routed
+    floats += 3 * shape.ffExp + shape.embd  // shared_gate, shared_up, shared_mid, shared
+    floats += shape.engramCols * shape.engramDim  // engram_rows
+    floats += (carryCap > 0 ? carryCap : prefillCap) * shape.engramCols * shape.engramDim
+    floats += (shape.hc + 1) * shape.embd  // engram_kv
+    floats += shape.vocab  // logits
+    // DS41_PREFILL_STORAGE * prefill_cap; the aliases stay uncounted because ds4 enables
+    // the default aliasing (DS4_METAL_DISABLE_V41_PREFILL_ALIAS is unset).
+    let prefillStorage =
+        shape.hc * shape.embd  // residual
+        + shape.hc  // pre
+        + shape.indexerTopK  // selected_comp
+        + shape.expertUsed  // selected
+        + shape.hc * shape.embd  // after_attn
+        + 24 + 24  // ffn_split, attn_split
+        + shape.loraQ  // qr
+        + shape.head * shape.headDim  // q
+        + shape.headDim + shape.headDim  // kv, latent
+        + shape.indexerHeadDim  // index_k
+        + shape.headDim + shape.headDim  // pool_kv, pool_score
+        + shape.indexerHead * shape.indexerHeadDim  // index_q
+        + shape.indexerHead  // index_weights
+        + shape.head * shape.headDim  // heads
+        + shape.outGroup * shape.loraO  // low
+        + shape.embd  // block
+        + 24  // mix
+        + shape.embd + shape.embd  // x, norm
+        + shape.expert + shape.expert  // route_logits, route_probs
+        + shape.expertUsed  // route_weights
+        + shape.expertUsed * shape.ffExp  // mid
+        + blockMask  // block_mask
+        + shape.engramCols * shape.engramDim  // engram_rows
+    floats += prefillStorage * prefillCap
+    // DS41_CARRY_ROWS * carry_cap.
+    floats += ds41CarryWords(width: shape.hc * shape.embd, mask: false) * carryCap
+    floats += shape.hc * carryCap
+    floats += 24 * carryCap
+    floats += shape.indexerTopK * carryCap
+    floats += ds41CarryWords(width: blockMask, mask: true) * carryCap
+    floats += prefillCap * 512  // row-view objects
+    if carryCap > prefillCap {
+        floats += (carryCap - prefillCap) * 2 * shape.engramCols  // host hash-ID array
+    }
+    let packed = prefillCap >= 512 ? (prefillCap > 4096 ? 512 : 256) * 1024 * 1024 : 0
+    let sort = ds41IndexBatch * ctx * 2 * 4  // index-sorter merge buffers
+    return floats * 4 + ds41GraphStructBytes + shape.vocab * 4 + packed + sort
+}
+
+/// Fixed wired bytes for V4.1 before the auto-fitted expert cache, from the quantize plan
+/// (`deepseek41_quantize.py`) plus `weights_model_map_decode_static_spans` (ds4.c:7577):
+/// every non-routed decode-static tensor (token table, output head, attention/compressor/
+/// indexer/shared-expert/HC tensors and the two engram KV projections). Identical for Q2
+/// and Q4 because only routed experts change precision between the recipes.
+let ds41NonRoutedBytes = 10_061_367_744
+
+/// `ds4_streaming_prefill_headroom_bytes` (ds4.c:4878) for V4.1: one routed layer's
+/// experts × `DS4_STREAMING_PREFILL_HEADROOM_LAYERS` (2), per recipe.
+let ds41Q2PrefillHeadroomBytes = 7_644_119_040
+let ds41Q4PrefillHeadroomBytes = 15_288_238_080
+
+/// V4.1 fixed working set (MB) before the expert cache, mirroring the `fixed` term of
+/// `ds41_memory_admit_for_host` (ds4.c:65460): resident or streamed weights + one graph
+/// per resident session + ds4's fixed 2 GiB (+ the streaming prefill headroom).
+func v41FixedWiredMB(quant: Quant, ctx: Int, sessions: Int, streaming: Bool) -> Int {
+    guard let resident = quant.residentMainBytes, let graph = ds41GraphBytes(ctx: ctx) else {
+        return Int.max
+    }
+    let weights = streaming ? ds41NonRoutedBytes : resident
+    let headroom =
+        streaming
+        ? (quant == .q41Q4 ? ds41Q4PrefillHeadroomBytes : ds41Q2PrefillHeadroomBytes) : 0
+    let (graphSessions, graphOverflow) = graph.multipliedReportingOverflow(by: max(sessions, 1))
+    guard !graphOverflow else { return Int.max }
+    let (fixed, overflow) = weights.addingReportingOverflow(
+        graphSessions + 2 * 1024 * 1024 * 1024 + headroom)
+    guard !overflow, let mb = roundedUpMiB(fixed) else { return Int.max }
+    return mb
+}
+
+/// ds4's V4.1 admission budget: `min(host × 7/8, recommended working set)` (ds4.c:65468).
+func flash41BudgetMB(ramGiB: Double, wiredLimitMB: Int) -> Int {
+    min(Int(ramGiB * 1024 * 7 / 8), wiredLimitMB)
+}
+
+/// Auto `--ssd-streaming`: engage when the fully resident fixed set exceeds ds4's admission
+/// budget. `wiredLimitMB` is the machine's effective Metal ceiling (inject at call sites,
+/// as with `feasibility`).
+func flash41UsesSSDStreaming(
+    ramGiB: Double, wiredLimitMB: Int, quant: Quant, ctx: Int, sessions: Int
+) -> Bool {
+    let resident = v41FixedWiredMB(quant: quant, ctx: ctx, sessions: sessions, streaming: false)
+    guard resident != Int.max else { return true }
+    return resident > flash41BudgetMB(ramGiB: ramGiB, wiredLimitMB: wiredLimitMB)
+}
+
+/// Whether a V4.1 quant's default launch fits this machine. Drives which options the
+/// Settings picker offers; below the 128 GiB tier nothing is offered.
+func flash41QuantFits(_ q: Flash41Quant, ramGiB: Double, wiredLimitMB: Int) -> Bool {
+    guard ramGiB >= 128 else { return false }
+    let ctx = defaultCtx(ramGiB: ramGiB, selection: .flash41(q))
+    let streaming = flash41UsesSSDStreaming(
+        ramGiB: ramGiB, wiredLimitMB: wiredLimitMB, quant: q.quant, ctx: ctx, sessions: 1)
+    let required = v41FixedWiredMB(
+        quant: q.quant, ctx: ctx, sessions: 1, streaming: streaming)
+    return required <= wiredLimitAdvisoryMB(ramGiB: ramGiB)
+}
+
 /// The GPU-wired working set ds4 needs for this launch config (MB): exact resident
 /// GGUF bytes, ds4's Metal context and graph allocations for every resident session, and
 /// one prefill workspace plus persistent backend scratch shared across sessions. Context
 /// counts regardless of the disk KV cache: disk storage checkpoints resident tensors; it
 /// does not replace them.
+///
+/// DeepSeek V4 path (Pro/Flash 0731), preserved for the V4 quantizers and pinned tests.
 func requiredWiredMB(variant: Variant, flashQuant: FlashQuant, ctx: Int, sessions: Int = 1) -> Int {
-    let quant = Quant.for(variant, flashQuant: flashQuant)
+    let quant = variant == .pro ? Quant.proImatrix : flashQuant.quant
     guard
         let weightsMB = roundedUpMiB(quant.ggufBytes),
         let sessionBytes = metalContextBytes(variant: variant, ctx: ctx),
@@ -390,6 +603,25 @@ func requiredWiredMB(variant: Variant, flashQuant: FlashQuant, ctx: Int, session
     else { return Int.max }
     let (requiredMB, totalOverflow) = weightsMB.addingReportingOverflow(allocationMB)
     return totalOverflow ? Int.max : requiredMB
+}
+
+/// Selection-based entry point. V4.1 Flash consults RAM and the wired ceiling for its
+/// auto SSD-streaming decision; Pro and 0731 delegate to the V4 math above.
+func requiredWiredMB(
+    ramGiB: Double, wiredLimitMB: Int, selection: QuantSelection, ctx: Int, sessions: Int = 1
+) -> Int {
+    switch selection {
+    case .pro:
+        return requiredWiredMB(variant: .pro, flashQuant: .q2, ctx: ctx, sessions: sessions)
+    case .flash(let q):
+        return requiredWiredMB(variant: .flash, flashQuant: q, ctx: ctx, sessions: sessions)
+    case .flash41(let q):
+        let streaming = flash41UsesSSDStreaming(
+            ramGiB: ramGiB, wiredLimitMB: wiredLimitMB, quant: q.quant, ctx: ctx,
+            sessions: sessions)
+        return v41FixedWiredMB(
+            quant: q.quant, ctx: ctx, sessions: sessions, streaming: streaming)
+    }
 }
 
 func launchBoundsError(variant: Variant, ctx: Int, sessions: Int) -> String? {
@@ -448,9 +680,10 @@ func defaultCtx(ramGiB: Double, selection: QuantSelection) -> Int {
 /// exact weights-plus-context-plus-graph/backend working set against the machine's effective
 /// ceiling (`wiredLimitMB` — inject `effectiveWiredLimitMB(ramGiB:)` at the call site).
 func feasibility(
-    ramGiB: Double, variant: Variant, flashQuant: FlashQuant,
+    ramGiB: Double, selection: QuantSelection,
     ctx: Int, wiredLimitMB: Int, sessions: Int = 1
 ) -> Feasibility {
+    let variant = selection.variant
     if let reason = launchBoundsError(variant: variant, ctx: ctx, sessions: sessions) {
         return .blocked(reason: reason)
     }
@@ -473,7 +706,8 @@ func feasibility(
         }
     }
     let required = requiredWiredMB(
-        variant: variant, flashQuant: flashQuant, ctx: ctx, sessions: sessions)
+        ramGiB: ramGiB, wiredLimitMB: wiredLimitMB, selection: selection, ctx: ctx,
+        sessions: sessions)
     if required == Int.max {
         return .blocked(
             reason:
@@ -491,4 +725,14 @@ func feasibility(
         return .wiredLimitTooLow(requiredMB: required, advisoryMB: usableMB)
     }
     return .standard
+}
+
+/// Compatibility shim for the DeepSeek V4 quantizers and their pinned tests.
+func feasibility(
+    ramGiB: Double, variant: Variant, flashQuant: FlashQuant,
+    ctx: Int, wiredLimitMB: Int, sessions: Int = 1
+) -> Feasibility {
+    feasibility(
+        ramGiB: ramGiB, selection: variant == .pro ? .pro : .flash(flashQuant),
+        ctx: ctx, wiredLimitMB: wiredLimitMB, sessions: sessions)
 }
