@@ -148,13 +148,15 @@ final class DownloadRaceTests: XCTestCase {
             "a verified assembling prefix survives a deliberate cancel")
     }
 
-    /// A part that downloads but fails its published size is an error, never a silent accept.
-    func testDownloadPartSizeMismatchGoesError() async throws {
+    /// A part that downloads but fails its published size is an error, never a silent accept:
+    /// the bad artifact is removed and the quant reads as not downloaded.
+    func testDownloadPartSizeMismatchGoesErrorAndDiscardsArtifact() async throws {
+        let dir = try makeDir()
         let s = SupervisorService(
-            ds4Dir: try makeDir(), runner: NoopRunner(),
-            fetchFile: { _, file, dir, _, _, _ in
+            ds4Dir: dir, runner: NoopRunner(),
+            fetchFile: { _, file, destDir, _, _, _ in
                 FileManager.default.createFile(
-                    atPath: dir.appendingPathComponent(file).path, contents: Data([0]))
+                    atPath: destDir.appendingPathComponent(file).path, contents: Data([0]))
             })
         s.download(selection: .flash41(.q2))
         await until { if case .error = s.state { return true } else { return false } }
@@ -162,6 +164,32 @@ final class DownloadRaceTests: XCTestCase {
             return XCTFail("expected .error(.downloadFailed), got \(s.state)")
         }
         XCTAssertTrue(detail.contains("unexpected size"), "got: \(detail)")
+        let finalURL = dir.appendingPathComponent("gguf")
+            .appendingPathComponent(Quant.q41Q2.ggufFilename)
+        XCTAssertFalse(
+            FileManager.default.fileExists(atPath: finalURL.path),
+            "a rejected artifact must not stay on disk as a loadable/downloaded model")
+        XCTAssertFalse(s.isDownloaded(.flash41(.q2)))
+    }
+
+    /// A corrupt part left by an earlier session is discarded on verification failure, so Retry
+    /// fetches it again instead of re-verifying the same bad file forever.
+    func testCorruptPreexistingPartIsDiscarded() async throws {
+        let dir = try makeDir()
+        let part1 = dir.appendingPathComponent("gguf")
+            .appendingPathComponent(Quant.q41Q4.downloadParts[0].filename)
+        FileManager.default.createFile(atPath: part1.path, contents: Data([1, 2, 3]))
+        let s = SupervisorService(ds4Dir: dir, runner: NoopRunner(), fetchFile: pending)
+        s.download(selection: .flash41(.q4))
+        await until { if case .error = s.state { return true } else { return false } }
+        guard case let .error(.downloadFailed(detail)) = s.state else {
+            return XCTFail("expected .error(.downloadFailed), got \(s.state)")
+        }
+        XCTAssertTrue(detail.contains("unexpected size"), "got: \(detail)")
+        XCTAssertFalse(FileManager.default.fileExists(atPath: part1.path))
+        XCTAssertFalse(
+            hasPartialDownload(ggufDir: dir.appendingPathComponent("gguf"), quant: .q41Q4),
+            "the discarded part must not count as resumable progress")
     }
 
     /// A leftover `.assembling` file from an interrupted join resumes the download (the tail

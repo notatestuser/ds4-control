@@ -586,6 +586,36 @@ final class SupervisorService: ObservableObject {
     /// The selection whose download is in flight; cancel uses it to clean every transport part.
     private var activeDownloadSelection: QuantSelection?
 
+    /// Runs a (minutes-long, synchronous) digest pass on the global executor. `nonisolated
+    /// async` inherits the download Task's cancellation — unlike `Task.detached`, which would
+    /// keep hashing after Cancel — and `GGUFJoiner` checks cancellation between blocks.
+    private nonisolated static func verifyArtifact(
+        _ url: URL, expectedBytes: Int64, expectedSHA256: String?
+    ) async throws {
+        try Task.checkCancellation()
+        try GGUFJoiner.verify(url: url, expectedBytes: expectedBytes, expectedSHA256: expectedSHA256)
+    }
+
+    /// The join twin of `verifyArtifact`: same executor and cancellation rules.
+    private nonisolated static func joinArtifacts(
+        part1: URL, part2: URL, into target: URL, part1Bytes: Int64, expectedBytes: Int64,
+        expectedSHA256: String?, freeSpaceRequired: Int64
+    ) async throws {
+        try Task.checkCancellation()
+        try GGUFJoiner.join(
+            part1: part1, part2: part2, into: target, part1Bytes: part1Bytes,
+            expectedBytes: expectedBytes, expectedSHA256: expectedSHA256,
+            freeSpaceRequired: freeSpaceRequired)
+    }
+
+    /// Removes a part that failed size/digest verification, plus any downloader sidecars, so a
+    /// retry fetches it again rather than re-verifying the same bad file.
+    private nonisolated static func discardCorruptPart(_ filename: String, baseDir: URL) {
+        for suffix in ["", ".part", ".part.dl"] {
+            try? FileManager.default.removeItem(at: baseDir.appendingPathComponent(filename + suffix))
+        }
+    }
+
     func download(selection: QuantSelection, highPerformance: Bool = false) {
         guard state == .idle || isErrorState else { emitBadState("download"); return }
         if let e = validateDs4Dir() { state = .error(e); return }
@@ -654,12 +684,22 @@ final class SupervisorService: ObservableObject {
                         }
                         // Size always, published digest when available: a resumed part is
                         // re-verified before it counts as complete. Hashing a 480 GiB part
-                        // takes minutes of synchronous I/O, so keep it off the main actor.
-                        try await Task.detached(priority: .utility) {
-                            try GGUFJoiner.verify(
-                                url: partURL, expectedBytes: part.bytes,
-                                expectedSHA256: part.sha256)
-                        }.value
+                        // takes minutes, so it runs off the main actor (see verifyArtifact).
+                        do {
+                            try await Self.verifyArtifact(
+                                partURL, expectedBytes: part.bytes, expectedSHA256: part.sha256)
+                        } catch let error as GGUFJoiner.Failure {
+                            switch error {
+                            case .wrongSize, .checksumMismatch:
+                                // Drop the bad artifact so Retry re-fetches it instead of
+                                // re-verifying the same file forever (and so a corrupt
+                                // single-file quant never counts as downloaded).
+                                Self.discardCorruptPart(part.filename, baseDir: baseDir)
+                            default:
+                                break
+                            }
+                            throw error
+                        }
                     }
                     let cumulativeBytes = completedBytes + part.bytes
                     completedBytes = cumulativeBytes
@@ -670,10 +710,10 @@ final class SupervisorService: ObservableObject {
                     }
                 }
                 if parts.count > 1 {
-                    // Joining + verifying the 518 GiB result is minutes of synchronous I/O;
-                    // run it off the main actor so the popup and metrics stay responsive.
-                    try await Task.detached(priority: .utility) {
-                        try GGUFJoiner.join(
+                    // Joining + verifying the 518 GiB result takes minutes; keep it off the
+                    // main actor and let Cancel stop it between blocks.
+                    do {
+                        try await Self.joinArtifacts(
                             part1: baseDir.appendingPathComponent(parts[0].filename),
                             part2: baseDir.appendingPathComponent(parts[1].filename),
                             into: baseDir.appendingPathComponent(finalName),
@@ -681,13 +721,18 @@ final class SupervisorService: ObservableObject {
                             expectedSHA256: q.sha256,
                             // The tail plus headroom; the prefix is appended in place.
                             freeSpaceRequired: parts[1].bytes + 1_073_741_824)
-                    }.value
-                } else if let sha = q.sha256 {
-                    try await Task.detached(priority: .utility) {
-                        try GGUFJoiner.verify(
-                            url: baseDir.appendingPathComponent(finalName),
-                            expectedBytes: expectedBytes, expectedSHA256: sha)
-                    }.value
+                    } catch let error as GGUFJoiner.Failure {
+                        switch error {
+                        case .wrongSize, .checksumMismatch:
+                            // The assembled result is invalid: drop it so Retry re-downloads
+                            // rather than re-appending and re-verifying the same bad join.
+                            try? FileManager.default.removeItem(
+                                at: baseDir.appendingPathComponent(finalName + ".assembling"))
+                        default:
+                            break
+                        }
+                        throw error
+                    }
                 }
                 Self.onMain { self?.completeDownload(gen: gen, filename: finalName) }
             } catch is CancellationError {

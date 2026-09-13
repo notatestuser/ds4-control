@@ -23,12 +23,14 @@ enum GGUFJoiner {
     ///
     /// The autorelease pool must be drained per iteration: Foundation's `Data` bridges through
     /// it, and a tight read loop otherwise accumulates every 16 MiB chunk until Jetsam kills
-    /// the app — measured at ~200 GiB into a 480 GiB verification.
+    /// the app — measured at ~200 GiB into a 480 GiB verification. Cancellation is checked per
+    /// block so Cancel stops the pass instead of hashing on in the background.
     static func sha256(of url: URL) throws -> String {
         let handle = try FileHandle(forReadingFrom: url)
         defer { try? handle.close() }
         var hasher = SHA256()
         while true {
+            try Task.checkCancellation()
             let chunk: Data? = try autoreleasepool { try handle.read(upToCount: blockSize) }
             guard let chunk, !chunk.isEmpty else { break }
             hasher.update(data: chunk)
@@ -38,6 +40,7 @@ enum GGUFJoiner {
 
     /// Size (always) and digest (when published) verification for a downloaded artifact.
     static func verify(url: URL, expectedBytes: Int64, expectedSHA256: String?) throws {
+        try Task.checkCancellation()
         let actual = fileSize(url)
         guard actual == expectedBytes else {
             throw Failure.wrongSize(
@@ -92,6 +95,7 @@ enum GGUFJoiner {
             let read = try FileHandle(forReadingFrom: part2)
             defer { try? read.close() }
             while true {
+                try Task.checkCancellation()
                 let chunk: Data? = try autoreleasepool { try read.read(upToCount: blockSize) }
                 guard let chunk, !chunk.isEmpty else { break }
                 try write.write(contentsOf: chunk)

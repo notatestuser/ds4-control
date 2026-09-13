@@ -55,7 +55,7 @@ run_one() {
   while ! grep -q "listening on http://" "$log" 2>/dev/null; do
     kill -0 "$pid" 2>/dev/null || { echo "ctx=$ctx $label: server exited early:"; tail -4 "$log"; rm -f "$log"; return 1; }
     sleep 1; t=$((t + 1))
-    [ "$t" -gt 900 ] && { echo "ctx=$ctx $label: startup timeout"; kill "$pid" 2>/dev/null; rm -f "$log"; return 1; }
+    [ "$t" -gt 900 ] && { echo "ctx=$ctx $label: startup timeout"; kill "$pid" 2>/dev/null; wait "$pid" 2>/dev/null; rm -f "$log"; return 1; }
   done
 
   # ds4's own plan: "ds4: memory: KV … + buffers … + resident model R GiB … = T GiB planned".
