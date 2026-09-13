@@ -28,4 +28,22 @@ final class MemoryHarnessSourceTests: XCTestCase {
         XCTAssertTrue(
             harness.contains("$disk_total_raw + $RSS_COMPARISON_TOLERANCE_MIB/1024"))
     }
+
+    func testV41HarnessStreamsAndGatesAt128GiB() throws {
+        let repoRoot = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+        let harness = try String(
+            contentsOf: repoRoot.appendingPathComponent("scripts/flash41-mem-harness.sh"),
+            encoding: .utf8)
+
+        XCTAssertTrue(harness.contains("DeepSeek-V4.1-Flash-Q2.gguf"))
+        XCTAssertTrue(harness.contains("--ssd-streaming"))
+        XCTAssertTrue(harness.contains("--power 100"))
+        XCTAssertTrue(harness.contains("deepseek-v4.1-flash"))
+        XCTAssertTrue(harness.contains("LIMIT_GIB=${DS41_LIMIT_GIB:-128}"))
+        XCTAssertTrue(harness.contains("resident model"))
+        XCTAssertTrue(harness.contains("planned"))
+    }
 }
