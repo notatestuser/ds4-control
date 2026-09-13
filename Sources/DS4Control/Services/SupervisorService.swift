@@ -78,11 +78,11 @@ final class SupervisorService: ObservableObject {
     private let cacheBaseOverride: URL?
 
     /// The pluggable file fetch — defaults to the native parallel `HFDownloader`. Tests inject a fake
-    /// that simulates progress/completion/failure without touching the network. `highPerformance`
-    /// selects the worker count (8 vs 64).
+    /// that simulates progress/completion/failure without touching the network. `repo` selects the
+    /// Hugging Face repo (per-model-generation), `highPerformance` the worker count (8 vs 64).
     typealias FetchFile =
         @Sendable (
-            _ file: String, _ destDir: URL, _ token: String?, _ highPerformance: Bool,
+            _ repo: String, _ file: String, _ destDir: URL, _ token: String?, _ highPerformance: Bool,
             _ onProgress: @escaping @Sendable (Int64, Int64) -> Void
         ) async throws -> Void
     private let fetchFile: FetchFile
@@ -116,8 +116,8 @@ final class SupervisorService: ObservableObject {
         self.ownedStopWatchdogDelay = ownedStopWatchdogDelay
         self.listeningPIDLookup = listeningPIDLookup ?? { Self.pidsListening(onPort: $0) }
         self.fetchFile =
-            fetchFile ?? { file, dir, token, highPerformance, prog in
-                try await HFDownloader(repo: SupervisorService.ggufRepo).download(
+            fetchFile ?? { repo, file, dir, token, highPerformance, prog in
+                try await HFDownloader(repo: repo).download(
                     file: file, into: dir, token: token, highPerformance: highPerformance, onProgress: prog)
             }
     }
@@ -583,41 +583,102 @@ final class SupervisorService: ObservableObject {
     private var downloadGeneration = 0
     /// The native HF download in flight (nil when idle); cancelled by cancelDownload()/retry.
     private var downloadTask: Task<Void, Never>?
-    /// HuggingFace repo hosting the DS4 GGUF weights (single source for the resolve URL).
-    private static let ggufRepo = "antirez/deepseek-v4-gguf"
+    /// The selection whose download is in flight; cancel uses it to clean every transport part.
+    private var activeDownloadSelection: QuantSelection?
 
     func download(selection: QuantSelection, highPerformance: Bool = false) {
         guard state == .idle || isErrorState else { emitBadState("download"); return }
         if let e = validateDs4Dir() { state = .error(e); return }
         let q = selection.quant
+        let parts = q.downloadParts
         let baseDir = ggufBaseDir()
         let expectedBytes = Int64(q.ggufBytes)
-        download = DownloadProgress(pct: 0, file: q.ggufFilename, receivedBytes: 0, totalBytes: expectedBytes)
+        let finalName = q.ggufFilename
+        // The bar tracks the part that still needs fetching: an already-assembled prefix or a
+        // completed part is skipped, and a single-file quant shows its final name.
+        let assemblingURL = baseDir.appendingPathComponent(finalName + ".assembling")
+        let firstPending = parts.first { part in
+            if parts.count > 1, part.filename == parts[0].filename,
+                FileManager.default.fileExists(atPath: assemblingURL.path)
+            {
+                return false
+            }
+            let partURL = baseDir.appendingPathComponent(part.filename)
+            return !FileManager.default.fileExists(atPath: partURL.path)
+                || resumableBytes(ggufDir: baseDir, filename: part.filename) > 0
+        }
+        download = DownloadProgress(
+            pct: 0, file: firstPending?.filename ?? finalName, receivedBytes: 0,
+            totalBytes: expectedBytes)
         state = .downloading
         lastDownloadSample = nil
+        activeDownloadSelection = selection
         downloadGeneration += 1
         let gen = downloadGeneration
         let token = resolveHFToken(
             env: ProcessInfo.processInfo.environment,
             cacheFile: FileManager.default.homeDirectoryForCurrentUser
                 .appendingPathComponent(".cache/huggingface/token"))
-        let filename = q.ggufFilename
         downloadProcessLive = true
         // Native parallel Swift download: N workers each GET …/resolve/main/<file> with a closed
         // HTTP Range straight to their offset in `<file>.part`, re-resolving each chunk so the signed
         // URL never expires. No `hf` CLI, curl, or download_model.sh. Progress is byte-accurate from
         // the downloader's onProgress callback (the sparse `.part` size is meaningless), hopped to the
         // main actor and turned into pct/rate by updateDownloadProgress — no on-disk poll for progress.
+        // Split quants (V4.1 Q4) fetch their parts sequentially, verify each part, then join in place.
         let fetch = fetchFile
         downloadTask?.cancel()
         downloadTask = Task { [weak self] in
             do {
-                try await fetch(filename, baseDir, token, highPerformance) { received, total in
+                let assembling = baseDir.appendingPathComponent(finalName + ".assembling")
+                var completedBytes: Int64 = 0
+                for (index, part) in parts.enumerated() {
+                    let partURL = baseDir.appendingPathComponent(part.filename)
+                    // After an interrupted join the verified 480 GiB prefix lives in the
+                    // assembling file; it is never re-fetched while that file exists.
+                    let prefixInAssembly =
+                        index == 0 && parts.count > 1
+                        && FileManager.default.fileExists(atPath: assembling.path)
+                    if !prefixInAssembly {
+                        let partial = resumableBytes(ggufDir: baseDir, filename: part.filename) > 0
+                        if !FileManager.default.fileExists(atPath: partURL.path) || partial {
+                            let baseBytes = completedBytes  // immutable snapshot for the callback
+                            try await fetch(q.repo, part.filename, baseDir, token, highPerformance) {
+                                received, _ in
+                                Self.onMain {
+                                    self?.updateDownloadProgress(
+                                        gen: gen, file: part.filename,
+                                        received: baseBytes + received, total: expectedBytes)
+                                }
+                            }
+                        }
+                        // Size always, published digest when available: a resumed part is
+                        // re-verified before it counts as complete.
+                        try GGUFJoiner.verify(
+                            url: partURL, expectedBytes: part.bytes, expectedSHA256: part.sha256)
+                    }
+                    completedBytes += part.bytes
                     Self.onMain {
-                        self?.updateDownloadProgress(gen: gen, file: filename, received: received, total: total)
+                        self?.updateDownloadProgress(
+                            gen: gen, file: part.filename, received: completedBytes,
+                            total: expectedBytes)
                     }
                 }
-                Self.onMain { self?.completeDownload(gen: gen, filename: filename) }
+                if parts.count > 1 {
+                    try GGUFJoiner.join(
+                        part1: baseDir.appendingPathComponent(parts[0].filename),
+                        part2: baseDir.appendingPathComponent(parts[1].filename),
+                        into: baseDir.appendingPathComponent(finalName),
+                        part1Bytes: parts[0].bytes, expectedBytes: expectedBytes,
+                        expectedSHA256: q.sha256,
+                        // The tail plus headroom; the prefix is appended in place.
+                        freeSpaceRequired: parts[1].bytes + 1_073_741_824)
+                } else if let sha = q.sha256 {
+                    try GGUFJoiner.verify(
+                        url: baseDir.appendingPathComponent(finalName), expectedBytes: expectedBytes,
+                        expectedSHA256: sha)
+                }
+                Self.onMain { self?.completeDownload(gen: gen, filename: finalName) }
             } catch is CancellationError {
                 // cancelDownload() / retryDownload() / stop() own the resulting state.
             } catch {
@@ -666,6 +727,11 @@ final class SupervisorService: ObservableObject {
         switch error {
         case HFDownloader.Failure.http(let code): detail = "HTTP \(code)"
         case HFDownloader.Failure.incompleteAfterRetries: detail = "download interrupted (retries exhausted)"
+        case let GGUFJoiner.Failure.missingPart(name): detail = "missing part \(name)"
+        case let GGUFJoiner.Failure.wrongSize(name, _, _): detail = "unexpected size for \(name)"
+        case let GGUFJoiner.Failure.checksumMismatch(name): detail = "checksum mismatch for \(name)"
+        case let GGUFJoiner.Failure.notEnoughDiskSpace(requiredBytes):
+            detail = "not enough disk space (needs ~\(requiredBytes / 1_073_741_824) GiB free)"
         default: detail = (error as NSError).localizedDescription
         }
         state = .error(.downloadFailed(detail: detail))
@@ -674,6 +740,7 @@ final class SupervisorService: ObservableObject {
     private func endDownloadActivity() {
         downloadTask = nil
         downloadProcessLive = false
+        activeDownloadSelection = nil
     }
 
     /// Cancel whatever download is in flight and start a fresh one — the user's escape hatch from a
@@ -689,21 +756,28 @@ final class SupervisorService: ObservableObject {
     }
 
     /// Cancel an in-progress download and return to idle without restarting. Bumping the generation
-    /// makes the cancelled task's completion callback stale, so it can't flip state to .error.
+    /// makes the cancelled task's completion callback stale, so it can't flip state to error.
     func cancelDownload() {
         guard state == .downloading else { return }
         downloadGeneration += 1
         downloadTask?.cancel()
         downloadTask = nil
-        // Cancel discards the partial (a deliberate stop, not a pause): remove the sparse `.part`
-        // AND its `.part.dl` bitmap sidecar so the next launch's resume check doesn't pick it back
-        // up. Quitting mid-download keeps both, so a relaunch resumes from the bitmap.
-        if let f = download?.file {
-            let base = ggufBaseDir()
+        // Cancel discards the partial (a deliberate stop, not a pause): remove every sparse
+        // `.part` AND its `.part.dl` bitmap sidecar so the next launch's resume check doesn't
+        // pick it back up. Quitting mid-download keeps them, so a relaunch resumes from the
+        // bitmap. A verified 480 GiB prefix already renamed to `.assembling` is kept.
+        let base = ggufBaseDir()
+        if let selection = activeDownloadSelection {
+            for part in selection.quant.downloadParts {
+                try? FileManager.default.removeItem(at: base.appendingPathComponent(part.filename + ".part"))
+                try? FileManager.default.removeItem(at: base.appendingPathComponent(part.filename + ".part.dl"))
+            }
+        } else if let f = download?.file {
             try? FileManager.default.removeItem(at: base.appendingPathComponent(f + ".part"))
             try? FileManager.default.removeItem(at: base.appendingPathComponent(f + ".part.dl"))
         }
         downloadProcessLive = false
+        activeDownloadSelection = nil
         lastDownloadSample = nil
         download = nil
         state = .idle
@@ -720,11 +794,7 @@ final class SupervisorService: ObservableObject {
         let q = selection.quant
         // Already fully downloaded → nothing to resume.
         if FileManager.default.fileExists(atPath: base.appendingPathComponent(q.ggufFilename).path) { return }
-        // Resume when the bitmap sidecar records durable bytes (parallel partial), or a legacy
-        // contiguous `.part`/hf `.incomplete` has bytes on disk.
-        let resumable = resumableBytes(ggufDir: base, filename: q.ggufFilename) > 0
-        let legacy = downloadedBytes(ggufDir: base, filename: q.ggufFilename) > 0
-        guard resumable || legacy else { return }
+        guard hasPartialDownload(ggufDir: base, quant: q) else { return }
         download(selection: selection, highPerformance: highPerformance)
     }
 
@@ -740,6 +810,10 @@ final class SupervisorService: ObservableObject {
     func isFlashQuantDownloaded(_ q: FlashQuant) -> Bool {
         FileManager.default.fileExists(atPath: flashQuantURL(q).path)
     }
+    /// V4.1 Flash quant store (Settings: download markers + cleanup).
+    func isFlash41QuantDownloaded(_ q: Flash41Quant) -> Bool {
+        isDownloaded(.flash41(q))
+    }
     /// Delete on-disk Flash quant ggufs other than `keep`. V4 Pro is untouched by construction
     /// (the loop only iterates `FlashQuant`). Gate the call site to idle/error so a loaded or
     /// downloading model is never removed. Returns the removed filenames.
@@ -747,13 +821,41 @@ final class SupervisorService: ObservableObject {
     func cleanupUnusedFlashQuants(keep: FlashQuant) -> [String] {
         var removed: [String] = []
         for q in FlashQuant.allCases where q != keep {
-            let url = flashQuantURL(q)
+            removed += removeQuantFiles(q.quant)
+        }
+        if !removed.isEmpty { ggufStoreVersion += 1 }
+        return removed
+    }
+    /// Delete on-disk V4.1 Flash quants other than `keep` (final, joined, part, and sidecar
+    /// files alike). Same idle/error gating as the 0731 cleanup.
+    @discardableResult
+    func cleanupUnusedFlash41Quants(keep: Flash41Quant) -> [String] {
+        var removed: [String] = []
+        for q in Flash41Quant.allCases where q != keep {
+            removed += removeQuantFiles(q.quant)
+        }
+        if !removed.isEmpty { ggufStoreVersion += 1 }
+        return removed
+    }
+
+    /// Remove every on-disk artifact of a quant: the final GGUF (single file or joined),
+    /// all transport parts and their downloader sidecars, and any interrupted-join file.
+    private func removeQuantFiles(_ quant: Quant) -> [String] {
+        let base = ggufBaseDir()
+        var names = [quant.ggufFilename]
+        for part in quant.downloadParts {
+            names += [part.filename, part.filename + ".part", part.filename + ".part.dl"]
+        }
+        names.append(quant.ggufFilename + ".assembling")
+        var removed: [String] = []
+        var seen = Set<String>()
+        for name in names where seen.insert(name).inserted {
+            let url = base.appendingPathComponent(name)
             if FileManager.default.fileExists(atPath: url.path) {
                 try? FileManager.default.removeItem(at: url)
-                removed.append(q.quant.ggufFilename)
+                removed.append(name)
             }
         }
-        ggufStoreVersion += 1
         return removed
     }
 

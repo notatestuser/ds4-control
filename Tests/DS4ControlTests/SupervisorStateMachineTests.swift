@@ -570,7 +570,7 @@ final class SupervisorStateMachineTests: XCTestCase {
         }
         let s = SupervisorService(
             ds4Dir: dir, runner: FakeRunner(),
-            fetchFile: { _, _, _, _, _ in try await Task.sleep(nanoseconds: 600_000_000_000) })
+            fetchFile: { _, _, _, _, _, _ in try await Task.sleep(nanoseconds: 600_000_000_000) })
         s.download(selection: .flash(.q2q4))
         XCTAssertEqual(s.state, .downloading)
         XCTAssertEqual(s.download?.file, Quant.q2q4Imatrix.ggufFilename)  // selected quant's gguf

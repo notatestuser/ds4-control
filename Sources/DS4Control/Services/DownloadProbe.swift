@@ -49,6 +49,34 @@ func resumableBytes(ggufDir: URL, filename: String) -> Int64 {
     return min(sum, total)
 }
 
+/// Aggregate downloaded bytes across a quant's transport files. The final (joined) file wins;
+/// otherwise parts count individually (a complete earlier part plus the current part's progress).
+func downloadedBytes(ggufDir: URL, quant: Quant) -> Int64 {
+    let finalSize = fileSize(ggufDir.appendingPathComponent(quant.ggufFilename))
+    if finalSize > 0 { return min(finalSize, Int64(quant.ggufBytes)) }
+    var total: Int64 = 0
+    for part in quant.downloadParts {
+        let done = downloadedBytes(ggufDir: ggufDir, filename: part.filename)
+        total += done > 0 ? min(done, part.bytes) : 0
+    }
+    return min(total, Int64(quant.ggufBytes))
+}
+
+/// True when a prior session left recoverable state for this quant: a partial part (bitmap or
+/// legacy bytes), a complete part awaiting its join, or an interrupted join's `.assembling` file.
+/// The final file itself is the caller's business.
+func hasPartialDownload(ggufDir: URL, quant: Quant) -> Bool {
+    let fm = FileManager.default
+    if fm.fileExists(atPath: ggufDir.appendingPathComponent(quant.ggufFilename + ".assembling").path) {
+        return true
+    }
+    for part in quant.downloadParts {
+        if resumableBytes(ggufDir: ggufDir, filename: part.filename) > 0 { return true }
+        if downloadedBytes(ggufDir: ggufDir, filename: part.filename) > 0 { return true }
+    }
+    return false
+}
+
 /// Read a little-endian Int64 at `offset` in `data` (the sidecar header is LE — see ChunkBitmap).
 private func readInt64LE(_ data: Data, at offset: Int) -> Int64 {
     let slice = data.subdata(in: offset..<(offset + 8))

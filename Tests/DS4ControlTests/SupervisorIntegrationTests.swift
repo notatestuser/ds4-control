@@ -17,7 +17,7 @@ private actor IntegrationProbeSequence {
 @MainActor
 final class SupervisorIntegrationTests: XCTestCase {
     /// A fetch that never returns — keeps the download in flight without touching the network.
-    private static let pending: SupervisorService.FetchFile = { _, _, _, _, _ in
+    private static let pending: SupervisorService.FetchFile = { _, _, _, _, _, _ in
         try await Task.sleep(nanoseconds: 600_000_000_000)
     }
     /// Stub `ds4-server` + `download_model.sh` so `validateDs4Dir()` passes.
@@ -266,7 +266,16 @@ final class SupervisorIntegrationTests: XCTestCase {
         try FileManager.default.createDirectory(
             at: dir.appendingPathComponent("gguf"), withIntermediateDirectories: true)
         try stubDs4(dir)
-        let s = SupervisorService(ds4Dir: dir, runner: RealProcessRunner(), fetchFile: { _, _, _, _, _ in })
+        let s = SupervisorService(
+            ds4Dir: dir, runner: RealProcessRunner(),
+            fetchFile: { _, file, destDir, _, _, _ in
+                // Sparse materialization at the published size so size verification passes.
+                let url = destDir.appendingPathComponent(file)
+                FileManager.default.createFile(atPath: url.path, contents: nil)
+                let handle = try FileHandle(forWritingTo: url)
+                try handle.truncate(atOffset: UInt64(Quant.q2q4Imatrix.ggufBytes))
+                try handle.close()
+            })
         s.download(selection: .flash(.q2q4))
         await until { s.state == .idle }
         XCTAssertEqual(s.state, .idle)
@@ -286,7 +295,7 @@ final class SupervisorIntegrationTests: XCTestCase {
         let total: Int64 = 100 * 1024 * 1024
         let s = SupervisorService(
             ds4Dir: dir, runner: RealProcessRunner(),
-            fetchFile: { _, _, _, _, onProgress in
+            fetchFile: { _, _, _, _, _, onProgress in
                 for step in 1...4 {
                     try Task.checkCancellation()
                     onProgress(Int64(step) * 25 * 1024 * 1024, total)
@@ -392,7 +401,7 @@ final class SupervisorIntegrationTests: XCTestCase {
         let total = chunkSize * 8
         // Fake fetch: create the real partial in the destDir (2nd positional arg), report one progress
         // tick, then throw the retries-exhausted failure. No network.
-        let failing: SupervisorService.FetchFile = { _, destDir, _, _, onProgress in
+        let failing: SupervisorService.FetchFile = { _, _, destDir, _, _, onProgress in
             let part = destDir.appendingPathComponent(filename + ".part")
             FileManager.default.createFile(atPath: part.path, contents: nil)
             let bitmap = try ChunkBitmap.loadOrCreate(
