@@ -20,11 +20,17 @@ enum GGUFJoiner {
     private static let blockSize = 16 * 1024 * 1024
 
     /// Streaming SHA-256 (lowercase hex). A one-pass read: ~minutes for the 483 GiB Q4.
+    ///
+    /// The autorelease pool must be drained per iteration: Foundation's `Data` bridges through
+    /// it, and a tight read loop otherwise accumulates every 16 MiB chunk until Jetsam kills
+    /// the app — measured at ~200 GiB into a 480 GiB verification.
     static func sha256(of url: URL) throws -> String {
         let handle = try FileHandle(forReadingFrom: url)
         defer { try? handle.close() }
         var hasher = SHA256()
-        while let chunk = try handle.read(upToCount: blockSize), !chunk.isEmpty {
+        while true {
+            let chunk: Data? = try autoreleasepool { try handle.read(upToCount: blockSize) }
+            guard let chunk, !chunk.isEmpty else { break }
             hasher.update(data: chunk)
         }
         return hasher.finalize().map { String(format: "%02x", $0) }.joined()
@@ -85,7 +91,9 @@ enum GGUFJoiner {
             try write.seekToEnd()
             let read = try FileHandle(forReadingFrom: part2)
             defer { try? read.close() }
-            while let chunk = try read.read(upToCount: blockSize), !chunk.isEmpty {
+            while true {
+                let chunk: Data? = try autoreleasepool { try read.read(upToCount: blockSize) }
+                guard let chunk, !chunk.isEmpty else { break }
                 try write.write(contentsOf: chunk)
             }
             try write.synchronize()

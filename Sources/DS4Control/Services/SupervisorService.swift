@@ -653,9 +653,13 @@ final class SupervisorService: ObservableObject {
                             }
                         }
                         // Size always, published digest when available: a resumed part is
-                        // re-verified before it counts as complete.
-                        try GGUFJoiner.verify(
-                            url: partURL, expectedBytes: part.bytes, expectedSHA256: part.sha256)
+                        // re-verified before it counts as complete. Hashing a 480 GiB part
+                        // takes minutes of synchronous I/O, so keep it off the main actor.
+                        try await Task.detached(priority: .utility) {
+                            try GGUFJoiner.verify(
+                                url: partURL, expectedBytes: part.bytes,
+                                expectedSHA256: part.sha256)
+                        }.value
                     }
                     let cumulativeBytes = completedBytes + part.bytes
                     completedBytes = cumulativeBytes
@@ -666,18 +670,24 @@ final class SupervisorService: ObservableObject {
                     }
                 }
                 if parts.count > 1 {
-                    try GGUFJoiner.join(
-                        part1: baseDir.appendingPathComponent(parts[0].filename),
-                        part2: baseDir.appendingPathComponent(parts[1].filename),
-                        into: baseDir.appendingPathComponent(finalName),
-                        part1Bytes: parts[0].bytes, expectedBytes: expectedBytes,
-                        expectedSHA256: q.sha256,
-                        // The tail plus headroom; the prefix is appended in place.
-                        freeSpaceRequired: parts[1].bytes + 1_073_741_824)
+                    // Joining + verifying the 518 GiB result is minutes of synchronous I/O;
+                    // run it off the main actor so the popup and metrics stay responsive.
+                    try await Task.detached(priority: .utility) {
+                        try GGUFJoiner.join(
+                            part1: baseDir.appendingPathComponent(parts[0].filename),
+                            part2: baseDir.appendingPathComponent(parts[1].filename),
+                            into: baseDir.appendingPathComponent(finalName),
+                            part1Bytes: parts[0].bytes, expectedBytes: expectedBytes,
+                            expectedSHA256: q.sha256,
+                            // The tail plus headroom; the prefix is appended in place.
+                            freeSpaceRequired: parts[1].bytes + 1_073_741_824)
+                    }.value
                 } else if let sha = q.sha256 {
-                    try GGUFJoiner.verify(
-                        url: baseDir.appendingPathComponent(finalName), expectedBytes: expectedBytes,
-                        expectedSHA256: sha)
+                    try await Task.detached(priority: .utility) {
+                        try GGUFJoiner.verify(
+                            url: baseDir.appendingPathComponent(finalName),
+                            expectedBytes: expectedBytes, expectedSHA256: sha)
+                    }.value
                 }
                 Self.onMain { self?.completeDownload(gen: gen, filename: finalName) }
             } catch is CancellationError {
