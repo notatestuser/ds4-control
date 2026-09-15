@@ -122,6 +122,19 @@ final class GUIHostOptionSourceTests: XCTestCase {
         XCTAssertTrue(settings.contains("supervisor.cleanupUnusedFlash41Quants(keep: app.selectedFlash41Quant)"))
     }
 
+    /// The `.verified` marker must be published only from the generation-guarded completion on
+    /// the MainActor — never from the background verify/join path — so a stale (cancelled or
+    /// retried) task cannot certify bytes a newer download owns.
+    func testMarkerPublicationIsGenerationGuarded() throws {
+        let supervisor = try source("Sources/DS4Control/Services/SupervisorService.swift")
+
+        XCTAssertTrue(
+            supervisor.contains(
+                "try Data().write(to: ggufBaseDir().appendingPathComponent(filename + \".verified\"))"))
+        XCTAssertFalse(supervisor.contains("url.path + \".verified\""))
+        XCTAssertFalse(supervisor.contains("target.path + \".verified\""))
+    }
+
     /// Cancel's artifact sweep is not atomic as a group, and HFDownloader's rename runs on a
     /// concurrent thread: if the final were unlinked BEFORE the transport `.part`, a rename
     /// landing between the two removals would unlink the source only after it had already

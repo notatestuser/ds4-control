@@ -294,6 +294,10 @@ final class SupervisorIntegrationTests: XCTestCase {
         await until { s.state == .idle }
         XCTAssertEqual(s.state, .idle)
         XCTAssertEqual(s.download?.pct, 100)
+        XCTAssertTrue(  // the gen-guarded completion publishes the verification marker
+            FileManager.default.fileExists(
+                atPath: dir.appendingPathComponent("gguf")
+                    .appendingPathComponent(Quant.q2q4Imatrix.ggufFilename + ".verified").path))
     }
 
     /// Live downloaded-MB / % / speed display now updates from the native downloader's `onProgress`
@@ -791,6 +795,9 @@ final class SupervisorIntegrationTests: XCTestCase {
         XCTAssertTrue(
             FileManager.default.fileExists(atPath: final.path),
             "the byte-complete final must survive the cancelled re-verification")
+        XCTAssertFalse(
+            FileManager.default.fileExists(atPath: final.path + ".verified"),
+            "a cancelled verification must publish no marker")
     }
 
     func testGenerationSpecificKVCachePaths() {

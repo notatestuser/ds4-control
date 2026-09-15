@@ -594,19 +594,18 @@ final class SupervisorService: ObservableObject {
     /// Runs a (minutes-long, synchronous) digest pass on the global executor. `nonisolated
     /// async` inherits the download Task's cancellation — unlike `Task.detached`, which would
     /// keep hashing after Cancel — and `GGUFJoiner` checks cancellation between blocks.
+    /// The `.verified` marker is deliberately NOT published here: publication happens in
+    /// `completeDownload`, on the MainActor behind its generation check, so a stale (cancelled
+    /// or retried) task can never certify bytes a newer download owns.
     private nonisolated static func verifyArtifact(
         _ url: URL, expectedBytes: Int64, expectedSHA256: String?
     ) async throws {
         try Task.checkCancellation()
         try GGUFJoiner.verify(url: url, expectedBytes: expectedBytes, expectedSHA256: expectedSHA256)
-        // Verification succeeded: write the durable marker `isDownloaded` requires. A cancel or
-        // quit mid-hash leaves no marker, so the final is treated as unverified across launches.
-        // Deliberately NOT try?-suppressed: a failed write (disk full, permissions) must fail
-        // the download, not complete with an artifact isDownloaded can never accept.
-        try Data().write(to: URL(fileURLWithPath: url.path + ".verified"))
     }
 
-    /// The join twin of `verifyArtifact`: same executor and cancellation rules.
+    /// The join twin of `verifyArtifact`: same executor, cancellation rules, and marker
+    /// discipline (the marker is published by `completeDownload`).
     private nonisolated static func joinArtifacts(
         part1: URL, part2: URL, into target: URL, part1Bytes: Int64, expectedBytes: Int64,
         expectedSHA256: String?, freeSpaceRequired: Int64
@@ -616,13 +615,13 @@ final class SupervisorService: ObservableObject {
             part1: part1, part2: part2, into: target, part1Bytes: part1Bytes,
             expectedBytes: expectedBytes, expectedSHA256: expectedSHA256,
             freeSpaceRequired: freeSpaceRequired)
-        try Data().write(to: URL(fileURLWithPath: target.path + ".verified"))
     }
 
-    /// Removes a part that failed size/digest verification, plus any downloader sidecars, so a
-    /// retry fetches it again rather than re-verifying the same bad file.
+    /// Removes a part that failed size/digest verification, plus any downloader sidecars and
+    /// its verification marker, so a retry fetches it again rather than re-verifying the same
+    /// bad file — and a stale marker can never certify the refetched bytes.
     private nonisolated static func discardCorruptPart(_ filename: String, baseDir: URL) {
-        for suffix in ["", ".part", ".part.dl"] {
+        for suffix in ["", ".part", ".part.dl", ".verified"] {
             try? FileManager.default.removeItem(at: baseDir.appendingPathComponent(filename + suffix))
         }
     }
@@ -810,6 +809,16 @@ final class SupervisorService: ObservableObject {
 
     private func completeDownload(gen: Int, filename: String) {
         guard downloadGeneration == gen else { return }
+        // Publish the durable verification marker HERE — on the MainActor, behind the
+        // generation check — never from the background verify/join path: a stale task must not
+        // certify bytes a newer download owns. A failed write (disk full, permissions) fails
+        // the download rather than completing with an artifact `isDownloaded` can never accept.
+        do {
+            try Data().write(to: ggufBaseDir().appendingPathComponent(filename + ".verified"))
+        } catch {
+            failDownload(gen: gen, error: error)
+            return
+        }
         endDownloadActivity()
         download = DownloadProgress(pct: 100, file: filename, receivedBytes: 0, totalBytes: nil)
         state = .idle
@@ -888,6 +897,10 @@ final class SupervisorService: ObservableObject {
                 // assembly, and cancel keeps the verified prefix (.assembling + part2) for resume.
                 if parts.count == 1, !preexistingFinalOnDownloadStart {
                     try? FileManager.default.removeItem(at: base.appendingPathComponent(part.filename))
+                    // The marker dies with the final: an orphan marker must never certify a
+                    // later refetch of the same path.
+                    try? FileManager.default.removeItem(
+                        at: base.appendingPathComponent(part.filename + ".verified"))
                 }
             }
         } else if let f = download?.file {
