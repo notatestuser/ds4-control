@@ -723,6 +723,37 @@ final class SupervisorIntegrationTests: XCTestCase {
         XCTAssertFalse(s.hasFlash41PartialDownload(.q2))
     }
 
+    /// Cancel must not delete a byte-complete final that existed BEFORE the session started:
+    /// resuming a marker-less final only re-runs verification (no fetch, no rename — minutes
+    /// of hashing for V4.1), and cancelling that hash must not force a full re-download. Only
+    /// a final this session's own fetch renamed into place is cancel's to delete (pinned by
+    /// testCancelDuringVerificationRemovesUnverifiedSinglePartFinal).
+    func testCancelDuringReverifyPreservesPreexistingFinal() throws {
+        let dir = URL(fileURLWithPath: NSTemporaryDirectory()).appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let g = dir.appendingPathComponent("gguf")
+        try FileManager.default.createDirectory(at: g, withIntermediateDirectories: true)
+        try stubDs4(dir)
+        let quant = Quant.for(.flash, flashQuant: .q2)
+        let final = g.appendingPathComponent(quant.ggufFilename)
+        FileManager.default.createFile(atPath: final.path, contents: nil)
+        let handle = try FileHandle(forWritingTo: final)
+        try handle.truncate(atOffset: UInt64(quant.ggufBytes))
+        try handle.close()
+
+        let s = SupervisorService(ds4Dir: dir, runner: RealProcessRunner())
+        s.resumeInFlightDownloadIfAny(selection: .flash(.q2))
+        XCTAssertEqual(s.state, .downloading, "a marker-less final re-verifies in place")
+        s.cancelDownload()
+        XCTAssertEqual(s.state, .idle)
+        XCTAssertTrue(
+            FileManager.default.fileExists(atPath: final.path),
+            "cancel during re-verification must preserve the pre-existing final")
+        XCTAssertFalse(
+            FileManager.default.fileExists(atPath: final.path + ".verified"),
+            "the cancelled verification must not leave a marker")
+    }
+
     func testGenerationSpecificKVCachePaths() {
         let dir = URL(fileURLWithPath: NSTemporaryDirectory()).appendingPathComponent(UUID().uuidString)
         let s = SupervisorService(

@@ -585,6 +585,11 @@ final class SupervisorService: ObservableObject {
     private var downloadTask: Task<Void, Never>?
     /// The selection whose download is in flight; cancel uses it to clean every transport part.
     private var activeDownloadSelection: QuantSelection?
+    /// True when a single-part quant's final already existed when download() started — a
+    /// pre-existing artifact (typically a marker-less final being re-verified). Cancel must
+    /// preserve it; only a final this session's own fetch renamed into place is cancel's to
+    /// delete.
+    private var preexistingFinalOnDownloadStart = false
 
     /// Runs a (minutes-long, synchronous) digest pass on the global executor. `nonisolated
     /// async` inherits the download Task's cancellation — unlike `Task.detached`, which would
@@ -649,6 +654,9 @@ final class SupervisorService: ObservableObject {
         state = .downloading
         lastDownloadSample = nil
         activeDownloadSelection = selection
+        preexistingFinalOnDownloadStart =
+            parts.count == 1
+            && FileManager.default.fileExists(atPath: baseDir.appendingPathComponent(finalName).path)
         downloadGeneration += 1
         let gen = downloadGeneration
         let token = resolveHFToken(
@@ -803,6 +811,7 @@ final class SupervisorService: ObservableObject {
         downloadTask = nil
         downloadProcessLive = false
         activeDownloadSelection = nil
+        preexistingFinalOnDownloadStart = false
     }
 
     /// Cancel whatever download is in flight and start a fresh one — the user's escape hatch from a
@@ -841,15 +850,18 @@ final class SupervisorService: ObservableObject {
                 // catches the result) or fails with ENOENT.
                 try? FileManager.default.removeItem(at: base.appendingPathComponent(part.filename + ".part"))
                 try? FileManager.default.removeItem(at: base.appendingPathComponent(part.filename + ".part.dl"))
-                // A single-part quant's transport name IS its final gguf name: once the fetcher
-                // has renamed `.part` into place, only digest verification remains — so a cancel
-                // in that window must remove the final too, or an artifact that never passed its
-                // digest check counts as downloaded (isDownloaded is a pure existence check).
+                // A single-part quant's transport name IS its final gguf name. Remove that
+                // final ONLY when this session's own fetch renamed it into place
+                // (preexistingFinalOnDownloadStart == false): cancel discards bytes this
+                // session fetched, but must never destroy a pre-existing artifact — resuming
+                // a marker-less final only re-runs verification (minutes for V4.1), and
+                // cancelling that hash must leave the file for a later re-verify. A preserved
+                // final carries no `.verified` marker, so it never counts as downloaded.
                 // Never fires for a verified file: cancel is gated to .downloading, and a
                 // verified final only exists once completeDownload has moved state to .idle.
                 // Two-part quants are excluded: their final is produced by the joiner's atomic
                 // assembly, and cancel keeps the verified prefix (.assembling + part2) for resume.
-                if parts.count == 1 {
+                if parts.count == 1, !preexistingFinalOnDownloadStart {
                     try? FileManager.default.removeItem(at: base.appendingPathComponent(part.filename))
                 }
             }
@@ -859,6 +871,7 @@ final class SupervisorService: ObservableObject {
         }
         downloadProcessLive = false
         activeDownloadSelection = nil
+        preexistingFinalOnDownloadStart = false
         lastDownloadSample = nil
         download = nil
         state = .idle
