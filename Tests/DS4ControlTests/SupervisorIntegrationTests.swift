@@ -14,6 +14,12 @@ private actor IntegrationProbeSequence {
     }
 }
 
+/// Counts fetch invocations from a @Sendable fetch stub without touching main-actor state.
+private actor FetchProbe {
+    private(set) var calls = 0
+    func bump() { calls += 1 }
+}
+
 @MainActor
 final class SupervisorIntegrationTests: XCTestCase {
     /// A fetch that never returns — keeps the download in flight without touching the network.
@@ -752,6 +758,39 @@ final class SupervisorIntegrationTests: XCTestCase {
         XCTAssertFalse(
             FileManager.default.fileExists(atPath: final.path + ".verified"),
             "the cancelled verification must not leave a marker")
+    }
+
+    /// A byte-complete JOINED V4.1 final without its marker (quit/crash between the join's
+    /// rename and the `.verified` write) must be re-verified in place, not refetched: the join
+    /// consumed the transport parts, so the part loop would re-download ~518 GiB. The fetch
+    /// stub counts calls; the real verification is minutes of hashing and is cancelled at the
+    /// end instead of being awaited.
+    func testMultiPartMarkerlessFinalReverifiesWithoutRefetch() async throws {
+        let dir = URL(fileURLWithPath: NSTemporaryDirectory()).appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let g = dir.appendingPathComponent("gguf")
+        try FileManager.default.createDirectory(at: g, withIntermediateDirectories: true)
+        try stubDs4(dir)
+        let final = g.appendingPathComponent(Quant.q41Q4.ggufFilename)
+        FileManager.default.createFile(atPath: final.path, contents: nil)
+        let handle = try FileHandle(forWritingTo: final)
+        try handle.truncate(atOffset: UInt64(Quant.q41Q4.ggufBytes))
+        try handle.close()
+
+        let probe = FetchProbe()
+        let s = SupervisorService(
+            ds4Dir: dir, runner: RealProcessRunner(),
+            fetchFile: { _, _, _, _, _, _ in await probe.bump() })
+        s.resumeInFlightDownloadIfAny(selection: .flash41(.q4))
+        XCTAssertEqual(s.state, .downloading)
+        try await Task.sleep(nanoseconds: 300_000_000)  // let the task pick verify-vs-fetch
+        let calls = await probe.calls
+        XCTAssertEqual(calls, 0, "a marker-less joined final must not refetch the consumed parts")
+        s.cancelDownload()  // stops the minutes-long hash
+        XCTAssertEqual(s.state, .idle)
+        XCTAssertTrue(
+            FileManager.default.fileExists(atPath: final.path),
+            "the byte-complete final must survive the cancelled re-verification")
     }
 
     func testGenerationSpecificKVCachePaths() {

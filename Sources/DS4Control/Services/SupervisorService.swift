@@ -675,6 +675,31 @@ final class SupervisorService: ObservableObject {
         downloadTask = Task { [weak self] in
             do {
                 let assembling = baseDir.appendingPathComponent(finalName + ".assembling")
+                // A byte-complete joined final with no marker (quit/crash between the join's
+                // rename and the `.verified` write) only needs verification: the join consumed
+                // the transport parts, so entering the part loop would refetch ~all of them.
+                // Mirrors the single-part path, where the final IS the part the loop re-verifies.
+                let finalURL = baseDir.appendingPathComponent(finalName)
+                if parts.count > 1, FileManager.default.fileExists(atPath: finalURL.path),
+                    !FileManager.default.fileExists(atPath: assembling.path)
+                {
+                    do {
+                        try await Self.verifyArtifact(
+                            finalURL, expectedBytes: expectedBytes, expectedSHA256: q.sha256)
+                    } catch let error as GGUFJoiner.Failure {
+                        switch error {
+                        case .wrongSize, .checksumMismatch:
+                            // The assembled result is invalid: drop it so Retry re-downloads
+                            // rather than re-verifying the same bad join forever.
+                            Self.discardCorruptPart(finalName, baseDir: baseDir)
+                        default:
+                            break
+                        }
+                        throw error
+                    }
+                    Self.onMain { self?.completeDownload(gen: gen, filename: finalName) }
+                    return
+                }
                 var completedBytes: Int64 = 0
                 for (index, part) in parts.enumerated() {
                     let partURL = baseDir.appendingPathComponent(part.filename)
