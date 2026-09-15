@@ -33,14 +33,22 @@ struct SettingsView: View {
     private func flashCleanupGiB(_ quants: [FlashQuant]) -> Int {
         Int((quants.reduce(0.0) { $0 + Double(supervisor.flashArtifactBytes($1)) }) / 1_073_741_824)
     }
-    /// Downloaded V4.1 Flash quants other than the selected one — candidates for cleanup.
-    private var removableFlash41Quants: [Flash41Quant] {
+    /// V4.1 quants with any removable on-disk artifact — a verified final, an unverified
+    /// final, or stranded partials (`.part`/`.part.dl`, an interrupted join's `.assembling`).
+    private var flash41CleanupQuants: [Flash41Quant] {
         Flash41Quant.allCases.filter {
-            $0 != app.selectedFlash41Quant && supervisor.isFlash41QuantDownloaded($0)
+            supervisor.isFlash41QuantDownloaded($0) || supervisor.hasFlash41PartialDownload($0)
         }
     }
-    private var removable41FreedGiB: Int {
-        Int(removableFlash41Quants.reduce(0.0) { $0 + $1.quant.weightsGiB })
+    /// Cleanup candidates excluding the selected quant — "Delete the other V4.1 quant".
+    private var removableFlash41CleanupQuants: [Flash41Quant] {
+        flash41CleanupQuants.filter { $0 != app.selectedFlash41Quant }
+    }
+    private func flash41CleanupFiles(_ quants: [Flash41Quant]) -> Int {
+        quants.reduce(0) { $0 + supervisor.flash41ArtifactURLs($1).count }
+    }
+    private func flash41CleanupGiB(_ quants: [Flash41Quant]) -> Int {
+        Int((quants.reduce(0.0) { $0 + Double(supervisor.flash41ArtifactBytes($1)) }) / 1_073_741_824)
     }
     private var flashModelFooter: String {
         let base =
@@ -280,8 +288,8 @@ struct SettingsView: View {
                     }
                 }
                 .disabled(supervisor.state == .downloading)  // locked while a download is in progress
-                Button("Clean up unused V4.1 downloads") { confirming41Cleanup = true }
-                    .disabled(removableFlash41Quants.isEmpty || isBusy)
+                Button("Clean up V4.1 downloads…") { confirming41Cleanup = true }
+                    .disabled(flash41CleanupQuants.isEmpty || isBusy)
             } header: {
                 Text("V4.1 Flash model")
             } footer: {
@@ -291,11 +299,13 @@ struct SettingsView: View {
                 "Delete the other V4.1 Flash quant?", isPresented: $confirming41Cleanup,
                 titleVisibility: .visible
             ) {
-                Button(
-                    "Delete \(removableFlash41Quants.count) quant(s) · ~\(removable41FreedGiB) GiB resident",
-                    role: .destructive
-                ) {
-                    supervisor.cleanupUnusedFlash41Quants(keep: app.selectedFlash41Quant)
+                if !removableFlash41CleanupQuants.isEmpty {
+                    Button(
+                        "Delete other downloads · \(flash41CleanupFiles(removableFlash41CleanupQuants)) file(s), ~\(flash41CleanupGiB(removableFlash41CleanupQuants)) GiB",
+                        role: .destructive
+                    ) {
+                        supervisor.cleanupUnusedFlash41Quants(keep: app.selectedFlash41Quant)
+                    }
                 }
                 Button("Cancel", role: .cancel) {}
             } message: {

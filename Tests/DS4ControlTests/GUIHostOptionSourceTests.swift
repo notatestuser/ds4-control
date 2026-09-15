@@ -108,6 +108,18 @@ final class GUIHostOptionSourceTests: XCTestCase {
         XCTAssertTrue(settings.contains("supervisor.flashArtifactBytes($1)"))
     }
 
+    /// The V4.1 cleanup must cover partial artifacts with the same artifact-aware probe the
+    /// 0731 Flash section uses, while preserving the selected-quant exclusion.
+    func testFlash41CleanupCoversPartialArtifacts() throws {
+        let settings = try source("Sources/DS4Control/Views/SettingsView.swift")
+
+        XCTAssertTrue(settings.contains("supervisor.hasFlash41PartialDownload($0)"))
+        XCTAssertTrue(settings.contains(".disabled(flash41CleanupQuants.isEmpty || isBusy)"))
+        XCTAssertTrue(settings.contains("supervisor.flash41ArtifactURLs($1).count"))
+        XCTAssertTrue(settings.contains("supervisor.flash41ArtifactBytes($1)"))
+        XCTAssertTrue(settings.contains("supervisor.cleanupUnusedFlash41Quants(keep: app.selectedFlash41Quant)"))
+    }
+
     /// Cancel's artifact sweep is not atomic as a group, and HFDownloader's rename runs on a
     /// concurrent thread: if the final were unlinked BEFORE the transport `.part`, a rename
     /// landing between the two removals would unlink the source only after it had already

@@ -35,6 +35,13 @@ final class SupervisorIntegrationTests: XCTestCase {
         }
     }
 
+    /// Seed a final GGUF plus its `.verified` marker — the on-disk state only a SUCCESSFUL
+    /// verification leaves behind (a bare final is deliberately treated as unverified).
+    private func seedVerifiedFinal(_ g: URL, _ quant: Quant) throws {
+        try Data(count: 4).write(to: g.appendingPathComponent(quant.ggufFilename))
+        try Data().write(to: g.appendingPathComponent(quant.ggufFilename + ".verified"))
+    }
+
     /// Seed a real sparse `<file>.part` preallocated to `total`, plus its `<file>.part.dl` bitmap
     /// sidecar with `completeChunks` chunks marked complete — exactly the resumable partial the real
     /// downloader leaves behind. The `ChunkBitmap` (which holds an open `FileHandle` to the sidecar)
@@ -86,6 +93,7 @@ final class SupervisorIntegrationTests: XCTestCase {
         let g = dir.appendingPathComponent("gguf")
         try FileManager.default.createDirectory(at: g, withIntermediateDirectories: true)
         try Data(count: 10).write(to: g.appendingPathComponent(Quant.proImatrix.ggufFilename))
+        try Data().write(to: g.appendingPathComponent(Quant.proImatrix.ggufFilename + ".verified"))
         let s = SupervisorService(ds4Dir: dir, runner: RealProcessRunner())
         s.resumeInFlightDownloadIfAny(selection: .pro)
         XCTAssertEqual(s.state, .idle)
@@ -504,9 +512,9 @@ final class SupervisorIntegrationTests: XCTestCase {
         let dir = URL(fileURLWithPath: NSTemporaryDirectory()).appendingPathComponent(UUID().uuidString)
         let g = dir.appendingPathComponent("gguf")
         try FileManager.default.createDirectory(at: g, withIntermediateDirectories: true)
-        // Seed all three Flash quants + the Pro file on disk.
+        // Seed all three Flash quants (verified) + the Pro file on disk.
         for q in FlashQuant.allCases {
-            try Data(count: 4).write(to: g.appendingPathComponent(q.quant.ggufFilename))
+            try seedVerifiedFinal(g, q.quant)
         }
         try Data(count: 4).write(to: g.appendingPathComponent(Quant.proImatrix.ggufFilename))
         let s = SupervisorService(ds4Dir: dir, runner: RealProcessRunner())
@@ -515,7 +523,13 @@ final class SupervisorIntegrationTests: XCTestCase {
 
         let removed = s.cleanupUnusedFlashQuants(keep: .q2q4)
 
-        XCTAssertEqual(Set(removed), [FlashQuant.q2.quant.ggufFilename, FlashQuant.q4.quant.ggufFilename])
+        XCTAssertEqual(
+            Set(removed),
+            Set([
+                FlashQuant.q2.quant.ggufFilename, FlashQuant.q4.quant.ggufFilename,
+                FlashQuant.q2.quant.ggufFilename + ".verified",
+                FlashQuant.q4.quant.ggufFilename + ".verified",
+            ]))
         XCTAssertTrue(s.isFlashQuantDownloaded(.q2q4))  // selected kept
         XCTAssertFalse(s.isFlashQuantDownloaded(.q2))  // removed
         XCTAssertFalse(s.isFlashQuantDownloaded(.q4))  // removed
@@ -532,9 +546,9 @@ final class SupervisorIntegrationTests: XCTestCase {
         let dir = URL(fileURLWithPath: NSTemporaryDirectory()).appendingPathComponent(UUID().uuidString)
         let g = dir.appendingPathComponent("gguf")
         try FileManager.default.createDirectory(at: g, withIntermediateDirectories: true)
-        // Seed all three Flash quants + the Pro file + a partial's artifacts for one quant.
+        // Seed all three Flash quants (verified) + the Pro file + a partial's artifacts for one quant.
         for q in FlashQuant.allCases {
-            try Data(count: 4).write(to: g.appendingPathComponent(q.quant.ggufFilename))
+            try seedVerifiedFinal(g, q.quant)
         }
         try Data(count: 4).write(to: g.appendingPathComponent(Quant.proImatrix.ggufFilename))
         let artifactBase = FlashQuant.q2.quant.ggufFilename
@@ -549,6 +563,7 @@ final class SupervisorIntegrationTests: XCTestCase {
         XCTAssertEqual(
             Set(removed),
             Set(FlashQuant.allCases.map { $0.quant.ggufFilename })
+                .union(FlashQuant.allCases.map { $0.quant.ggufFilename + ".verified" })
                 .union([artifactBase + ".part", artifactBase + ".part.dl"]))
         XCTAssertFalse(FlashQuant.allCases.contains { s.isFlashQuantDownloaded($0) })  // all gone
         XCTAssertTrue(  // V4 Pro always kept
@@ -573,7 +588,7 @@ final class SupervisorIntegrationTests: XCTestCase {
             part: g.appendingPathComponent(Quant.q2Imatrix.ggufFilename + ".part"),
             total: chunkSize * 8, chunkSize: chunkSize, completeChunks: 2)
         let finalQuant = Quant.for(.flash, flashQuant: .q2q4)
-        try Data(count: 4).write(to: g.appendingPathComponent(finalQuant.ggufFilename))
+        try seedVerifiedFinal(g, finalQuant)
 
         let s = SupervisorService(ds4Dir: dir, runner: RealProcessRunner())
 
@@ -589,6 +604,70 @@ final class SupervisorIntegrationTests: XCTestCase {
         XCTAssertFalse(s.hasFlashPartialDownload(.q4))
         XCTAssertTrue(s.flashArtifactURLs(.q4).isEmpty)
         XCTAssertEqual(s.flashArtifactBytes(.q4), 0)
+    }
+
+    /// A final GGUF that was renamed but never digest-verified (the app quit mid-hash — a
+    /// minutes-wide window for V4.1) must not count as downloaded across a NEW instance:
+    /// `isDownloaded` requires the durable `.verified` marker only a successful verification
+    /// writes, so the model row offers Download rather than Start. Startup resume re-runs the
+    /// verification WITHOUT refetching (download() skips the fetch when the final exists) and
+    /// promotes the file once verified.
+    func testPreVerificationFinalIsNotDownloadedAndReverifiesOnResume() async throws {
+        let dir = URL(fileURLWithPath: NSTemporaryDirectory()).appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let g = dir.appendingPathComponent("gguf")
+        try FileManager.default.createDirectory(at: g, withIntermediateDirectories: true)
+        try stubDs4(dir)
+        let quant = Quant.for(.flash, flashQuant: .q2)  // 0731: size-only verify, instant
+        let final = g.appendingPathComponent(quant.ggufFilename)
+        FileManager.default.createFile(atPath: final.path, contents: nil)
+        let handle = try FileHandle(forWritingTo: final)
+        try handle.truncate(atOffset: UInt64(quant.ggufBytes))
+        try handle.close()
+
+        let s = SupervisorService(ds4Dir: dir, runner: RealProcessRunner())
+        XCTAssertFalse(s.isDownloaded(.flash(.q2)), "unverified final must not count as downloaded")
+        XCTAssertFalse(s.isFlashQuantDownloaded(.q2))
+
+        s.resumeInFlightDownloadIfAny(selection: .flash(.q2))
+        XCTAssertEqual(s.state, .downloading, "a marker-less final must re-verify, not no-op")
+        await until { s.state == .idle }
+        XCTAssertEqual(s.state, .idle)
+        XCTAssertTrue(
+            FileManager.default.fileExists(atPath: final.path + ".verified"),
+            "a successful verification must write the durable marker")
+        XCTAssertTrue(s.isDownloaded(.flash(.q2)))
+    }
+
+    /// The V4.1 cleanup probe must see stranded partials (`.part`/`.part.dl`, the interrupted
+    /// join's `.assembling`) exactly like the 0731 Flash probe, plus the unverified-final case.
+    func testFlash41ArtifactProbeCoversPartialsAndFinals() throws {
+        let dir = URL(fileURLWithPath: NSTemporaryDirectory()).appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let g = dir.appendingPathComponent("gguf")
+        try FileManager.default.createDirectory(at: g, withIntermediateDirectories: true)
+        let chunkSize: Int64 = 16 * 1024 * 1024
+        let part2 = Quant.q41Q4.downloadParts[1].filename
+        try seedResumablePartial(
+            part: g.appendingPathComponent(part2 + ".part"),
+            total: chunkSize * 8, chunkSize: chunkSize, completeChunks: 2)
+
+        let s = SupervisorService(ds4Dir: dir, runner: RealProcessRunner())
+
+        // Partial-only quant: stranded artifacts, durable bytes only.
+        XCTAssertTrue(s.hasFlash41PartialDownload(.q4))
+        XCTAssertEqual(s.flash41ArtifactURLs(.q4).count, 2)  // .part + .part.dl
+        XCTAssertEqual(s.flash41ArtifactBytes(.q4), 2 * chunkSize)
+        // Untouched quant: nothing to clean.
+        XCTAssertFalse(s.hasFlash41PartialDownload(.q2))
+        XCTAssertTrue(s.flash41ArtifactURLs(.q2).isEmpty)
+        XCTAssertEqual(s.flash41ArtifactBytes(.q2), 0)
+        // Verified quant: the final file at its full on-disk size.
+        try Data(count: 4).write(to: g.appendingPathComponent(Quant.q41Q2.ggufFilename))
+        try Data().write(to: g.appendingPathComponent(Quant.q41Q2.ggufFilename + ".verified"))
+        XCTAssertFalse(s.hasFlash41PartialDownload(.q2))
+        XCTAssertEqual(s.flash41ArtifactURLs(.q2).count, 1)
+        XCTAssertEqual(s.flash41ArtifactBytes(.q2), Int64(Quant.q41Q2.ggufBytes))
     }
 
     func testGenerationSpecificKVCachePaths() {

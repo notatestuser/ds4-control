@@ -594,6 +594,9 @@ final class SupervisorService: ObservableObject {
     ) async throws {
         try Task.checkCancellation()
         try GGUFJoiner.verify(url: url, expectedBytes: expectedBytes, expectedSHA256: expectedSHA256)
+        // Verification succeeded: write the durable marker `isDownloaded` requires. A cancel or
+        // quit mid-hash leaves no marker, so the final is treated as unverified across launches.
+        try? Data().write(to: URL(fileURLWithPath: url.path + ".verified"))
     }
 
     /// The join twin of `verifyArtifact`: same executor and cancellation rules.
@@ -606,6 +609,7 @@ final class SupervisorService: ObservableObject {
             part1: part1, part2: part2, into: target, part1Bytes: part1Bytes,
             expectedBytes: expectedBytes, expectedSHA256: expectedSHA256,
             freeSpaceRequired: freeSpaceRequired)
+        try? Data().write(to: URL(fileURLWithPath: target.path + ".verified"))
     }
 
     /// Removes a part that failed size/digest verification, plus any downloader sidecars, so a
@@ -867,15 +871,28 @@ final class SupervisorService: ObservableObject {
         guard state == .idle else { return }
         let base = ggufBaseDir()
         let q = selection.quant
-        // Already fully downloaded → nothing to resume.
-        if FileManager.default.fileExists(atPath: base.appendingPathComponent(q.ggufFilename).path) { return }
+        let final = base.appendingPathComponent(q.ggufFilename)
+        // Fully downloaded AND verified → nothing to resume.
+        if isDownloaded(selection) { return }
+        // A final without its verification marker (the app quit mid-digest, or a pre-marker
+        // release) is byte-complete on disk: resume re-runs verification without refetching —
+        // download() skips the fetch when the final exists with no resumable partial.
+        if FileManager.default.fileExists(atPath: final.path) {
+            download(selection: selection, highPerformance: highPerformance)
+            return
+        }
         guard hasPartialDownload(ggufDir: base, quant: q) else { return }
         download(selection: selection, highPerformance: highPerformance)
     }
 
-    /// True when the selected variant's gguf exists on disk.
+    /// True when the selected variant's gguf exists on disk AND carries the durable marker a
+    /// successful verification writes. A renamed-but-unverified final (the app quit mid-hash)
+    /// is deliberately NOT downloaded: the model row offers Download — which re-verifies in
+    /// place without refetching — rather than Start.
     func isDownloaded(_ selection: QuantSelection) -> Bool {
-        FileManager.default.fileExists(atPath: ggufURL(for: selection).path)
+        let gguf = ggufURL(for: selection)
+        return FileManager.default.fileExists(atPath: gguf.path)
+            && FileManager.default.fileExists(atPath: gguf.path + ".verified")
     }
 
     // MARK: - Flash quant store (Settings: download markers + cleanup)
@@ -883,7 +900,7 @@ final class SupervisorService: ObservableObject {
         ggufBaseDir().appendingPathComponent(q.quant.ggufFilename)
     }
     func isFlashQuantDownloaded(_ q: FlashQuant) -> Bool {
-        FileManager.default.fileExists(atPath: flashQuantURL(q).path)
+        isDownloaded(.flash(q))
     }
     /// V4.1 Flash quant store (Settings: download markers + cleanup).
     func isFlash41QuantDownloaded(_ q: Flash41Quant) -> Bool {
@@ -891,16 +908,18 @@ final class SupervisorService: ObservableObject {
     }
     /// On-disk removable artifact files for a Flash quant: the final GGUF when downloaded,
     /// otherwise the sparse `.part` + `.part.dl` bitmap sidecar a failed download or an app
-    /// quit mid-download stranded on disk. Drives the Settings cleanup counts, which must
-    /// cover partial artifacts, not just completed finals.
+    /// quit mid-download stranded on disk — plus an unverified final (renamed but never
+    /// digest-checked). Drives the Settings cleanup counts, which must cover partial
+    /// artifacts, not just completed finals.
     func flashArtifactURLs(_ q: FlashQuant) -> [URL] {
         let base = ggufBaseDir()
-        if isFlashQuantDownloaded(q) {
-            return [base.appendingPathComponent(q.quant.ggufFilename)]
-        }
         let fm = FileManager.default
-        return [".part", ".part.dl"].map { base.appendingPathComponent(q.quant.ggufFilename + $0) }
+        let final = base.appendingPathComponent(q.quant.ggufFilename)
+        if isFlashQuantDownloaded(q) { return [final] }
+        var urls: [URL] = fm.fileExists(atPath: final.path) ? [final] : []
+        urls += [".part", ".part.dl"].map { base.appendingPathComponent(q.quant.ggufFilename + $0) }
             .filter { fm.fileExists(atPath: $0.path) }
+        return urls
     }
     /// Bytes reclaimed by deleting a Flash quant's artifacts: the final GGUF's exact on-disk
     /// size when downloaded; otherwise the durable partial bytes — the bitmap-accurate count,
@@ -913,6 +932,30 @@ final class SupervisorService: ObservableObject {
     /// failed-download / quit-mid-download case that must still enable cleanup.
     func hasFlashPartialDownload(_ q: FlashQuant) -> Bool {
         !isFlashQuantDownloaded(q) && hasPartialDownload(ggufDir: ggufBaseDir(), quant: q.quant)
+    }
+    /// V4.1 twin of `flashArtifactURLs`: the final GGUF when downloaded, otherwise every
+    /// transport part (with partials/sidecars), any unverified final, and an interrupted
+    /// join's `.assembling` file.
+    func flash41ArtifactURLs(_ q: Flash41Quant) -> [URL] {
+        let base = ggufBaseDir()
+        let fm = FileManager.default
+        let quant = q.quant
+        if isFlash41QuantDownloaded(q) { return [base.appendingPathComponent(quant.ggufFilename)] }
+        var names = [quant.ggufFilename, quant.ggufFilename + ".assembling"]
+        for part in quant.downloadParts {
+            names += [part.filename, part.filename + ".part", part.filename + ".part.dl"]
+        }
+        return names.map { base.appendingPathComponent($0) }.filter { fm.fileExists(atPath: $0.path) }
+    }
+    /// V4.1 twin of `flashArtifactBytes`: the final's exact on-disk size when verified;
+    /// otherwise the durable downloaded bytes (final wins, then per-part progress).
+    func flash41ArtifactBytes(_ q: Flash41Quant) -> Int64 {
+        if isFlash41QuantDownloaded(q) { return Int64(q.quant.ggufBytes) }
+        return downloadedBytes(ggufDir: ggufBaseDir(), quant: q.quant)
+    }
+    /// V4.1 twin of `hasFlashPartialDownload`.
+    func hasFlash41PartialDownload(_ q: Flash41Quant) -> Bool {
+        !isFlash41QuantDownloaded(q) && hasPartialDownload(ggufDir: ggufBaseDir(), quant: q.quant)
     }
     /// Delete on-disk Flash quant ggufs other than `keep`. V4 Pro is untouched by construction
     /// (the loop only iterates `FlashQuant`). Gate the call site to idle/error so a loaded or
@@ -955,9 +998,12 @@ final class SupervisorService: ObservableObject {
     /// all transport parts and their downloader sidecars, and any interrupted-join file.
     private func removeQuantFiles(_ quant: Quant) -> [String] {
         let base = ggufBaseDir()
-        var names = [quant.ggufFilename]
+        var names = [quant.ggufFilename, quant.ggufFilename + ".verified"]
         for part in quant.downloadParts {
-            names += [part.filename, part.filename + ".part", part.filename + ".part.dl"]
+            names += [
+                part.filename, part.filename + ".verified",
+                part.filename + ".part", part.filename + ".part.dl",
+            ]
         }
         names.append(quant.ggufFilename + ".assembling")
         var removed: [String] = []
