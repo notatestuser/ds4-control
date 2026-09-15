@@ -563,10 +563,16 @@ func flash41UsesSSDStreaming(
     return resident > flash41BudgetMB(ramGiB: ramGiB, wiredLimitMB: wiredLimitMB)
 }
 
+/// Documented RAM floor per V4.1 quant (README tier table): 41-q2 runs from 128 GiB via SSD
+/// streaming; 41-q4 requires ≥ 256 GiB — the 128 GiB class would have to stream essentially
+/// every routed expert, which the supported tiers do not offer.
+func flash41MinRamGiB(_ q: Flash41Quant) -> Double { q == .q4 ? 256 : 128 }
+
 /// Whether a V4.1 quant's default launch fits this machine. Drives which options the
-/// Settings picker offers; below the 128 GiB tier nothing is offered.
+/// Settings quant picker offers; the RAM floor is the documented tier, then the launch's
+/// exact working set is checked against the wired-limit advisory.
 func flash41QuantFits(_ q: Flash41Quant, ramGiB: Double, wiredLimitMB: Int) -> Bool {
-    guard ramGiB >= 128 else { return false }
+    guard ramGiB >= flash41MinRamGiB(q) else { return false }
     let ctx = defaultCtx(ramGiB: ramGiB, selection: .flash41(q))
     let streaming = flash41UsesSSDStreaming(
         ramGiB: ramGiB, wiredLimitMB: wiredLimitMB, quant: q.quant, ctx: ctx, sessions: 1)
@@ -698,10 +704,11 @@ func feasibility(
             )
         }
     case .flash41:
-        if ramGiB < 128 {
+        if case let .flash41(q) = selection, ramGiB < flash41MinRamGiB(q) {
             return .blocked(
-                reason:
-                    "V4.1 Flash needs ≥ 128 GiB unified memory. Its 152 GiB of resident main weights, plus disk-only Engram streaming, cannot run safely below that."
+                reason: q == .q4
+                    ? "V4.1 Flash 41-q4 needs ≥ 256 GiB unified memory. Its 294 GiB of main weights would stream essentially every routed expert below that tier, which is not supported."
+                    : "V4.1 Flash needs ≥ 128 GiB unified memory. Its 152 GiB of resident main weights, plus disk-only Engram streaming, cannot run safely below that."
             )
         }
     }

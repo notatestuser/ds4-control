@@ -52,6 +52,15 @@ cleanup() {
 trap 'cleanup; exit 1' INT TERM HUP
 trap cleanup EXIT
 
+# Track the server's peak RSS ($pid) across its whole lifetime — startup (model load,
+# warm-weights) included, not just the inference window. Callers sample from spawn until the
+# process is killed; the peak feeds the LIMIT_GIB evaluation.
+sample_rss() {
+  rss="$(ps -o rss= -p "$pid" 2>/dev/null | tr -d ' ')"
+  [ -n "$rss" ] && [ "$rss" -gt "$peak_rss" ] 2>/dev/null && peak_rss="$rss"
+  return 0
+}
+
 # run_one <ctx> <disk:0|1>  -> prints a result row; returns non-zero if over the ceiling
 run_one() {
   ctx="$1"; disk="$2"
@@ -70,11 +79,14 @@ run_one() {
         --metal --power 100 --ssd-streaming --warm-weights ) >"$log" 2>&1 &
   fi
   pid=$!   # exec in the subshell => $! is ds4-server itself
+  peak_rss=0
+  sample_rss   # first reading at spawn, so the load/warm-up phase is never missed
 
   # wait for readiness; ≤900 s (a streaming start may read a lot of the GGUF)
   t=0
   while ! grep -q "listening on http://" "$log" 2>/dev/null; do
     kill -0 "$pid" 2>/dev/null || { echo "ctx=$ctx $label: server exited early:"; tail -4 "$log"; rm -f "$log"; return 1; }
+    sample_rss
     sleep 1; t=$((t + 1))
     [ "$t" -gt 900 ] && { echo "ctx=$ctx $label: startup timeout"; kill "$pid" 2>/dev/null; wait "$pid" 2>/dev/null; rm -f "$log"; return 1; }
   done
@@ -90,6 +102,16 @@ run_one() {
   # Streaming must keep the disk-only Engram rows out of the resident model.
   if awk "BEGIN{exit !($resident_gib > 20)}"; then
     echo "ctx=$ctx $label: resident model ${resident_gib} GiB exceeds the ~9.4 GiB non-routed set"
+    kill "$pid" 2>/dev/null; wait "$pid" 2>/dev/null; rm -f "$log"; sleep 2
+    return 1
+  fi
+  # Cross-check ds4's live plan against the Feasibility mirror the app gates on: in streaming
+  # mode the resident model must equal ds41NonRoutedBytes within the sampling tolerance.
+  # ds41GraphBytes is ctx-dependent (a full Swift formula with its own pinned unit tests), so
+  # the harness validates the constant here rather than re-deriving the graph in shell.
+  mirror_non_routed_gib="$(awk 'BEGIN{printf "%.2f", 10061367744/1073741824}')"
+  if awk "BEGIN{diff=$resident_gib-$mirror_non_routed_gib; if (diff<0) diff=-diff; exit !(diff > $RSS_COMPARISON_TOLERANCE_MIB/1024)}"; then
+    echo "ctx=$ctx $label: resident model ${resident_gib} GiB differs from the ds41NonRoutedBytes mirror (${mirror_non_routed_gib} GiB) by more than ${RSS_COMPARISON_TOLERANCE_MIB} MiB"
     kill "$pid" 2>/dev/null; wait "$pid" 2>/dev/null; rm -f "$log"; sleep 2
     return 1
   fi
@@ -114,10 +136,9 @@ run_one() {
   curl -fsS --max-time "$INFERENCE_TIMEOUT_S" "http://127.0.0.1:$PORT/v1/chat/completions" \
     -H 'Content-Type: application/json' -H 'Expect:' --data-binary "@$request" >"$response" 2>>"$log" &
   cpid=$!
-  peak_rss=0; n=0
+  n=0
   while kill -0 "$cpid" 2>/dev/null || [ "$n" -lt 6 ]; do   # at least ~3 s of samples
-    rss="$(ps -o rss= -p "$pid" 2>/dev/null | tr -d ' ')"
-    [ -n "$rss" ] && [ "$rss" -gt "$peak_rss" ] 2>/dev/null && peak_rss="$rss"
+    sample_rss
     n=$((n + 1)); sleep 0.5
   done
   if ! wait "$cpid"; then

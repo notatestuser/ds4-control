@@ -83,4 +83,44 @@ final class MemoryHarnessSourceTests: XCTestCase {
         XCTAssertTrue(harness.contains("trap cleanup EXIT"))
         XCTAssertTrue(harness.contains("trap 'cleanup; exit 1' INT TERM HUP"))
     }
+
+    /// Peak RSS must cover the whole server lifetime — startup (model load, warm-weights)
+    /// included, not just the inference window: the sampler runs in the readiness loop and
+    /// the request loop.
+    func testV41HarnessSamplesRssFromStartup() throws {
+        let repoRoot = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+        let harness = try String(
+            contentsOf: repoRoot.appendingPathComponent("scripts/flash41-mem-harness.sh"),
+            encoding: .utf8)
+
+        XCTAssertTrue(harness.contains("sample_rss() {"))
+        let readiness = try XCTUnwrap(harness.range(of: "while ! grep -q \"listening on http://\""))
+        let request = try XCTUnwrap(harness.range(of: "while kill -0 \"$cpid\""))
+        XCTAssertTrue(
+            harness[readiness.lowerBound..<request.lowerBound].contains("sample_rss"),
+            "startup (readiness) must be sampled")
+        let requestEnd = try XCTUnwrap(
+            harness.range(of: "if ! wait \"$cpid\"", range: request.lowerBound..<harness.endIndex))
+        XCTAssertTrue(
+            harness[request.lowerBound..<requestEnd.lowerBound].contains("sample_rss"),
+            "the inference window must be sampled")
+    }
+
+    /// The harness must cross-check ds4's live plan against the Feasibility mirror constant:
+    /// the resident model equals ds41NonRoutedBytes (streaming) within the sampling tolerance.
+    func testV41HarnessCrossChecksResidentAgainstMirror() throws {
+        let repoRoot = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+        let harness = try String(
+            contentsOf: repoRoot.appendingPathComponent("scripts/flash41-mem-harness.sh"),
+            encoding: .utf8)
+
+        XCTAssertTrue(harness.contains("ds41NonRoutedBytes"))
+        XCTAssertTrue(harness.contains("RSS_COMPARISON_TOLERANCE_MIB/1024"))
+    }
 }

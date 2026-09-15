@@ -347,6 +347,13 @@ final class FeasibilityTests: XCTestCase {
         } else {
             XCTFail("V4.1 q2 on 128 GiB with streaming must pass")
         }
+        if case let .blocked(reason) = feasibility(
+            ramGiB: 128, selection: .flash41(.q4), ctx: 32_768, wiredLimitMB: Int.max)
+        {
+            XCTAssertTrue(reason.contains("256 GiB"))
+        } else {
+            XCTFail("V4.1 41-q4 below 256 GiB must block (documented tier table)")
+        }
         if case .standard = feasibility(
             ramGiB: 256, selection: .flash41(.q4), ctx: 32_768, wiredLimitMB: 196_608)
         {
@@ -355,11 +362,15 @@ final class FeasibilityTests: XCTestCase {
         }
     }
 
-    func testFlash41QuantFitRequires128GiB() {
+    func testFlash41QuantFitFloors() {
         XCTAssertFalse(flash41QuantFits(.q2, ramGiB: 96, wiredLimitMB: Int.max))
         XCTAssertFalse(flash41QuantFits(.q4, ramGiB: 96, wiredLimitMB: Int.max))
         XCTAssertTrue(flash41QuantFits(.q2, ramGiB: 128, wiredLimitMB: 98_304))
-        XCTAssertTrue(flash41QuantFits(.q4, ramGiB: 128, wiredLimitMB: 98_304))
+        // 41-q4's documented floor is 256 GiB (README tier table): the 128 GiB class streams
+        // essentially every routed expert, which the supported tiers do not offer.
+        XCTAssertFalse(flash41QuantFits(.q4, ramGiB: 128, wiredLimitMB: Int.max))
+        XCTAssertFalse(flash41QuantFits(.q4, ramGiB: 255, wiredLimitMB: Int.max))
+        XCTAssertTrue(flash41QuantFits(.q4, ramGiB: 256, wiredLimitMB: 196_608))
     }
 
     func testFlash41DefaultCtxAndQuant() {
