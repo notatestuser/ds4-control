@@ -893,6 +893,19 @@ final class SupervisorService: ObservableObject {
         if !removed.isEmpty { ggufStoreVersion += 1 }
         return removed
     }
+    /// Delete EVERY on-disk Flash quant gguf — including the selected one — plus their
+    /// transport parts and sidecar files. V4 Pro is untouched by construction (the loop only
+    /// iterates `FlashQuant`). Same idle/error gating as the sibling cleanups (enforced at the
+    /// call site). This is the escape hatch after switching to V4.1. Returns removed filenames.
+    @discardableResult
+    func cleanupAllFlashQuants() -> [String] {
+        var removed: [String] = []
+        for q in FlashQuant.allCases {
+            removed += removeQuantFiles(q.quant)
+        }
+        if !removed.isEmpty { ggufStoreVersion += 1 }
+        return removed
+    }
 
     /// Remove every on-disk artifact of a quant: the final GGUF (single file or joined),
     /// all transport parts and their downloader sidecars, and any interrupted-join file.

@@ -487,6 +487,38 @@ final class SupervisorIntegrationTests: XCTestCase {
         XCTAssertEqual(s.ggufStoreVersion, before + 1)
     }
 
+    /// "Delete all" cleanup must remove EVERY Flash quant — including the selected one — plus
+    /// downloader artifacts (`.part` / `.part.dl`), while V4 Pro survives. This is the path a
+    /// user takes after moving to V4.1 and wanting the old 0731 weights gone.
+    func testCleanupAllFlashQuantsRemovesEverythingKeepingPro() throws {
+        let dir = URL(fileURLWithPath: NSTemporaryDirectory()).appendingPathComponent(UUID().uuidString)
+        let g = dir.appendingPathComponent("gguf")
+        try FileManager.default.createDirectory(at: g, withIntermediateDirectories: true)
+        // Seed all three Flash quants + the Pro file + a partial's artifacts for one quant.
+        for q in FlashQuant.allCases {
+            try Data(count: 4).write(to: g.appendingPathComponent(q.quant.ggufFilename))
+        }
+        try Data(count: 4).write(to: g.appendingPathComponent(Quant.proImatrix.ggufFilename))
+        let artifactBase = FlashQuant.q2.quant.ggufFilename
+        try Data(count: 4).write(to: g.appendingPathComponent(artifactBase + ".part"))
+        try Data(count: 4).write(to: g.appendingPathComponent(artifactBase + ".part.dl"))
+        let s = SupervisorService(ds4Dir: dir, runner: RealProcessRunner())
+        XCTAssertTrue(FlashQuant.allCases.allSatisfy { s.isFlashQuantDownloaded($0) })
+        let before = s.ggufStoreVersion
+
+        let removed = s.cleanupAllFlashQuants()
+
+        XCTAssertEqual(
+            Set(removed),
+            Set(FlashQuant.allCases.map { $0.quant.ggufFilename })
+                .union([artifactBase + ".part", artifactBase + ".part.dl"]))
+        XCTAssertFalse(FlashQuant.allCases.contains { s.isFlashQuantDownloaded($0) })  // all gone
+        XCTAssertTrue(  // V4 Pro always kept
+            FileManager.default.fileExists(
+                atPath: g.appendingPathComponent(Quant.proImatrix.ggufFilename).path))
+        XCTAssertEqual(s.ggufStoreVersion, before + 1)
+    }
+
     func testGenerationSpecificKVCachePaths() {
         let dir = URL(fileURLWithPath: NSTemporaryDirectory()).appendingPathComponent(UUID().uuidString)
         let s = SupervisorService(

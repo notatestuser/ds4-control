@@ -23,6 +23,13 @@ struct SettingsView: View {
     private var removableFreedGiB: Int {
         Int(removableFlashQuants.reduce(0.0) { $0 + $1.quant.weightsGiB })
     }
+    /// Every downloaded Flash quant, including the selected one — "delete all" candidates.
+    private var downloadedFlashQuants: [FlashQuant] {
+        FlashQuant.allCases.filter { supervisor.isFlashQuantDownloaded($0) }
+    }
+    private var allFlashFreedGiB: Int {
+        Int(downloadedFlashQuants.reduce(0.0) { $0 + $1.quant.weightsGiB })
+    }
     /// Downloaded V4.1 Flash quants other than the selected one — candidates for cleanup.
     private var removableFlash41Quants: [Flash41Quant] {
         Flash41Quant.allCases.filter {
@@ -38,7 +45,9 @@ struct SettingsView: View {
             + "options that don't fit this Mac's RAM are unavailable."
         return isBusy
             ? base + " Stop the server to delete unused downloads."
-            : base + " Clean up deletes other downloaded Flash variants (V4 Pro is always kept)."
+            : base
+                + " Clean up can delete the other downloaded Flash variants or all of them "
+                + "(V4 Pro is always kept)."
     }
     private var flash41ModelFooter: String {
         let base =
@@ -227,26 +236,34 @@ struct SettingsView: View {
                     }
                 }
                 .disabled(supervisor.state == .downloading)  // locked while a download is in progress
-                Button("Clean up unused Flash downloads") { confirmingCleanup = true }
-                    .disabled(removableFlashQuants.isEmpty || isBusy)
+                Button("Clean up Flash downloads…") { confirmingCleanup = true }
+                    .disabled(downloadedFlashQuants.isEmpty || isBusy)
             } header: {
                 Text("V4 Flash (0731) model")
             } footer: {
                 Text(flashModelFooter)
             }
             .confirmationDialog(
-                "Delete other V4 Flash downloads?", isPresented: $confirmingCleanup,
+                "Delete V4 Flash downloads?", isPresented: $confirmingCleanup,
                 titleVisibility: .visible
             ) {
+                if !removableFlashQuants.isEmpty {
+                    Button(
+                        "Delete other downloads · \(removableFlashQuants.count) file(s), ~\(removableFreedGiB) GiB",
+                        role: .destructive
+                    ) {
+                        supervisor.cleanupUnusedFlashQuants(keep: app.selectedFlashQuant)
+                    }
+                }
                 Button(
-                    "Delete \(removableFlashQuants.count) file(s) · ~\(removableFreedGiB) GiB",
+                    "Delete all downloads · \(downloadedFlashQuants.count) file(s), ~\(allFlashFreedGiB) GiB",
                     role: .destructive
                 ) {
-                    supervisor.cleanupUnusedFlashQuants(keep: app.selectedFlashQuant)
+                    supervisor.cleanupAllFlashQuants()
                 }
                 Button("Cancel", role: .cancel) {}
             } message: {
-                Text("Keeps the selected variant and V4 Pro. Deleted weights must be downloaded again.")
+                Text("V4 Pro is always kept. Deleted weights must be downloaded again.")
             }
 
             Section {
