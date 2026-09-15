@@ -10,6 +10,7 @@
 #
 # Usage: scripts/flash41-mem-harness.sh ["ctx1 ctx2 …"]   (default: 32768 131072)
 # Env:   DS41_LIMIT_GIB  hard machine ceiling (default 128)
+#        DS41_INFERENCE_TIMEOUT_S  curl deadline for one inference request (default 900)
 # Exit non-zero if a run exceeds the ceiling or ds4's memory plan is missing.
 set -u
 
@@ -24,12 +25,32 @@ USABLE_GIB=$((LIMIT_GIB - 4))      # practical limit after the OS reserve
 FRONTIER_MARGIN_TOKENS=64
 RSS_COMPARISON_TOLERANCE_MIB=64
 KVDISK="/tmp/ds41-memharness-kv"
+INFERENCE_TIMEOUT_S=${DS41_INFERENCE_TIMEOUT_S:-900}  # curl deadline for one inference request
 CTXS="${1:-32768 131072}"
 
 [ -x "$DS4/ds4-server" ] || { echo "ds4-server not built at $DS4"; exit 2; }
 [ -s "$Q2" ] || { echo "Q2 gguf missing: $Q2  (run: $DS4/download_model.sh ds41f-q2)"; exit 2; }
 
 fail=0
+pid="" log="" request="" response=""
+
+# Tear down whatever a run may have left: the server process, this run's temp files, and the
+# disk-KV scratch dir. Shared by the EXIT/INT/TERM/HUP traps below; every resource is checked
+# before it is touched, so repeat calls and already-reaped/removed state are no-ops. run_one's
+# explicit kill/clean paths reassign these same globals as they go, so the trap never resurrects
+# old handles (a reaped PID fails kill -0 and is skipped).
+cleanup() {
+  if [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null; then
+    kill "$pid" 2>/dev/null
+    wait "$pid" 2>/dev/null
+  fi
+  [ -n "$log" ] && rm -f "$log"
+  [ -n "$request" ] && rm -f "$request"
+  [ -n "$response" ] && rm -f "$response"
+  [ -n "$KVDISK" ] && rm -rf "$KVDISK"
+}
+trap 'cleanup; exit 1' INT TERM HUP
+trap cleanup EXIT
 
 # run_one <ctx> <disk:0|1>  -> prints a result row; returns non-zero if over the ceiling
 run_one() {
@@ -90,8 +111,8 @@ run_one() {
     printf '%s' '"}],"max_tokens":1,"temperature":0}'
   } > "$request"
 
-  curl -fsS "http://127.0.0.1:$PORT/v1/chat/completions" -H 'Content-Type: application/json' \
-    -H 'Expect:' --data-binary "@$request" >"$response" 2>>"$log" &
+  curl -fsS --max-time "$INFERENCE_TIMEOUT_S" "http://127.0.0.1:$PORT/v1/chat/completions" \
+    -H 'Content-Type: application/json' -H 'Expect:' --data-binary "@$request" >"$response" 2>>"$log" &
   cpid=$!
   peak_rss=0; n=0
   while kill -0 "$cpid" 2>/dev/null || [ "$n" -lt 6 ]; do   # at least ~3 s of samples
