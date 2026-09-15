@@ -557,6 +557,40 @@ final class SupervisorIntegrationTests: XCTestCase {
         XCTAssertEqual(s.ggufStoreVersion, before + 1)
     }
 
+    /// The cleanup probe must see stranded partials, not just final GGUFs: a failed download
+    /// or an app quit mid-download leaves a sparse `.part` + `.part.dl` bitmap with no final
+    /// file — multi-GiB artifacts the Settings cleanup is the only way to reclaim. A partial
+    /// quant reports its artifacts (2 files) and DURABLE bytes (bitmap-accurate, not the sparse
+    /// file's apparent size); a downloaded quant reports its final file; an untouched quant
+    /// reports nothing.
+    func testFlashArtifactProbeCoversPartialsAndFinals() throws {
+        let dir = URL(fileURLWithPath: NSTemporaryDirectory()).appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let g = dir.appendingPathComponent("gguf")
+        try FileManager.default.createDirectory(at: g, withIntermediateDirectories: true)
+        let chunkSize: Int64 = 16 * 1024 * 1024
+        try seedResumablePartial(
+            part: g.appendingPathComponent(Quant.q2Imatrix.ggufFilename + ".part"),
+            total: chunkSize * 8, chunkSize: chunkSize, completeChunks: 2)
+        let finalQuant = Quant.for(.flash, flashQuant: .q2q4)
+        try Data(count: 4).write(to: g.appendingPathComponent(finalQuant.ggufFilename))
+
+        let s = SupervisorService(ds4Dir: dir, runner: RealProcessRunner())
+
+        // Partial-only quant: stranded artifacts, durable bytes only.
+        XCTAssertTrue(s.hasFlashPartialDownload(.q2))
+        XCTAssertEqual(s.flashArtifactURLs(.q2).count, 2)  // .part + .part.dl
+        XCTAssertEqual(s.flashArtifactBytes(.q2), 2 * chunkSize)
+        // Downloaded quant: the final file at its full on-disk size, no partial.
+        XCTAssertFalse(s.hasFlashPartialDownload(.q2q4))
+        XCTAssertEqual(s.flashArtifactURLs(.q2q4).count, 1)
+        XCTAssertEqual(s.flashArtifactBytes(.q2q4), Int64(finalQuant.ggufBytes))
+        // Untouched quant: nothing to clean.
+        XCTAssertFalse(s.hasFlashPartialDownload(.q4))
+        XCTAssertTrue(s.flashArtifactURLs(.q4).isEmpty)
+        XCTAssertEqual(s.flashArtifactBytes(.q4), 0)
+    }
+
     func testGenerationSpecificKVCachePaths() {
         let dir = URL(fileURLWithPath: NSTemporaryDirectory()).appendingPathComponent(UUID().uuidString)
         let s = SupervisorService(

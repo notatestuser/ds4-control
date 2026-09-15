@@ -16,19 +16,22 @@ struct SettingsView: View {
         default: return true
         }
     }
-    /// Downloaded Flash quants other than the selected one — candidates for cleanup.
-    private var removableFlashQuants: [FlashQuant] {
-        FlashQuant.allCases.filter { $0 != app.selectedFlashQuant && supervisor.isFlashQuantDownloaded($0) }
+    /// Flash quants with any removable on-disk artifact — a final GGUF, or stranded partial
+    /// artifacts (`.part` + `.part.dl` from a failed or interrupted download) with no final.
+    private var flashCleanupQuants: [FlashQuant] {
+        FlashQuant.allCases.filter {
+            supervisor.isFlashQuantDownloaded($0) || supervisor.hasFlashPartialDownload($0)
+        }
     }
-    private var removableFreedGiB: Int {
-        Int(removableFlashQuants.reduce(0.0) { $0 + $1.quant.weightsGiB })
+    /// Cleanup candidates excluding the selected quant — "Delete other downloads".
+    private var removableFlashCleanupQuants: [FlashQuant] {
+        flashCleanupQuants.filter { $0 != app.selectedFlashQuant }
     }
-    /// Every downloaded Flash quant, including the selected one — "delete all" candidates.
-    private var downloadedFlashQuants: [FlashQuant] {
-        FlashQuant.allCases.filter { supervisor.isFlashQuantDownloaded($0) }
+    private func flashCleanupFiles(_ quants: [FlashQuant]) -> Int {
+        quants.reduce(0) { $0 + supervisor.flashArtifactURLs($1).count }
     }
-    private var allFlashFreedGiB: Int {
-        Int(downloadedFlashQuants.reduce(0.0) { $0 + $1.quant.weightsGiB })
+    private func flashCleanupGiB(_ quants: [FlashQuant]) -> Int {
+        Int((quants.reduce(0.0) { $0 + Double(supervisor.flashArtifactBytes($1)) }) / 1_073_741_824)
     }
     /// Downloaded V4.1 Flash quants other than the selected one — candidates for cleanup.
     private var removableFlash41Quants: [Flash41Quant] {
@@ -237,7 +240,7 @@ struct SettingsView: View {
                 }
                 .disabled(supervisor.state == .downloading)  // locked while a download is in progress
                 Button("Clean up Flash downloads…") { confirmingCleanup = true }
-                    .disabled(downloadedFlashQuants.isEmpty || isBusy)
+                    .disabled(flashCleanupQuants.isEmpty || isBusy)
             } header: {
                 Text("V4 Flash (0731) model")
             } footer: {
@@ -247,16 +250,16 @@ struct SettingsView: View {
                 "Delete V4 Flash downloads?", isPresented: $confirmingCleanup,
                 titleVisibility: .visible
             ) {
-                if !removableFlashQuants.isEmpty {
+                if !removableFlashCleanupQuants.isEmpty {
                     Button(
-                        "Delete other downloads · \(removableFlashQuants.count) file(s), ~\(removableFreedGiB) GiB",
+                        "Delete other downloads · \(flashCleanupFiles(removableFlashCleanupQuants)) file(s), ~\(flashCleanupGiB(removableFlashCleanupQuants)) GiB",
                         role: .destructive
                     ) {
                         supervisor.cleanupUnusedFlashQuants(keep: app.selectedFlashQuant)
                     }
                 }
                 Button(
-                    "Delete all downloads · \(downloadedFlashQuants.count) file(s), ~\(allFlashFreedGiB) GiB",
+                    "Delete all downloads · \(flashCleanupFiles(flashCleanupQuants)) file(s), ~\(flashCleanupGiB(flashCleanupQuants)) GiB",
                     role: .destructive
                 ) {
                     supervisor.cleanupAllFlashQuants()

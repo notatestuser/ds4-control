@@ -97,6 +97,17 @@ final class GUIHostOptionSourceTests: XCTestCase {
         XCTAssertTrue(settings.contains("Text(\"V4 Flash (0731) model\")"))
     }
 
+    /// The Flash cleanup must react to stranded partial artifacts (`.part` + `.part.dl` with no
+    /// final GGUF), not only downloaded finals — and count the actual artifact files.
+    func testFlashCleanupCoversPartialArtifacts() throws {
+        let settings = try source("Sources/DS4Control/Views/SettingsView.swift")
+
+        XCTAssertTrue(settings.contains("supervisor.hasFlashPartialDownload($0)"))
+        XCTAssertTrue(settings.contains(".disabled(flashCleanupQuants.isEmpty || isBusy)"))
+        XCTAssertTrue(settings.contains("supervisor.flashArtifactURLs($1).count"))
+        XCTAssertTrue(settings.contains("supervisor.flashArtifactBytes($1)"))
+    }
+
     func testModelRowOffersFlash41ByRAMTier() throws {
         let modelRow = try source("Sources/DS4Control/Views/ModelRowView.swift")
 

@@ -882,6 +882,31 @@ final class SupervisorService: ObservableObject {
     func isFlash41QuantDownloaded(_ q: Flash41Quant) -> Bool {
         isDownloaded(.flash41(q))
     }
+    /// On-disk removable artifact files for a Flash quant: the final GGUF when downloaded,
+    /// otherwise the sparse `.part` + `.part.dl` bitmap sidecar a failed download or an app
+    /// quit mid-download stranded on disk. Drives the Settings cleanup counts, which must
+    /// cover partial artifacts, not just completed finals.
+    func flashArtifactURLs(_ q: FlashQuant) -> [URL] {
+        let base = ggufBaseDir()
+        if isFlashQuantDownloaded(q) {
+            return [base.appendingPathComponent(q.quant.ggufFilename)]
+        }
+        let fm = FileManager.default
+        return [".part", ".part.dl"].map { base.appendingPathComponent(q.quant.ggufFilename + $0) }
+            .filter { fm.fileExists(atPath: $0.path) }
+    }
+    /// Bytes reclaimed by deleting a Flash quant's artifacts: the final GGUF's exact on-disk
+    /// size when downloaded; otherwise the durable partial bytes — the bitmap-accurate count,
+    /// since the sparse `.part`'s apparent size is meaningless.
+    func flashArtifactBytes(_ q: FlashQuant) -> Int64 {
+        if isFlashQuantDownloaded(q) { return Int64(q.quant.ggufBytes) }
+        return downloadedBytes(ggufDir: ggufBaseDir(), quant: q.quant)
+    }
+    /// True when a Flash quant has stranded downloader artifacts but no final GGUF — the
+    /// failed-download / quit-mid-download case that must still enable cleanup.
+    func hasFlashPartialDownload(_ q: FlashQuant) -> Bool {
+        !isFlashQuantDownloaded(q) && hasPartialDownload(ggufDir: ggufBaseDir(), quant: q.quant)
+    }
     /// Delete on-disk Flash quant ggufs other than `keep`. V4 Pro is untouched by construction
     /// (the loop only iterates `FlashQuant`). Gate the call site to idle/error so a loaded or
     /// downloading model is never removed. Returns the removed filenames.
