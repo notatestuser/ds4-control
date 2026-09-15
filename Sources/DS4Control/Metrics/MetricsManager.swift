@@ -19,10 +19,21 @@ final class MetricsManager: ObservableObject {
         isRunning = true
         collect()
         timer = Timer.scheduledTimer(withTimeInterval: refreshInterval, repeats: true) { [weak self] _ in
-            Task { @MainActor in self?.collect() }
+            Task { @MainActor in
+                guard let self, self.isRunning else { return }  // a tick enqueued at deactivation must not sample
+                self.collect()
+            }
         }
     }
     func stop() { timer?.invalidate(); timer = nil; isRunning = false }
+
+    /// Collection runs only while something is actively watching — the popup. Closing it stops
+    /// the timer, so an idle menu-bar app wakes no timers and samples nothing (each tick also
+    /// blocks the main thread ~100 ms in the power sampler). Reopening restarts collection
+    /// with an immediate snapshot.
+    func setActive(_ active: Bool) {
+        if active { start() } else { stop() }
+    }
 
     func collect() {
         let snap = SystemSnapshot(

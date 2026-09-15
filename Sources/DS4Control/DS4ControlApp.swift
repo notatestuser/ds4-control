@@ -60,7 +60,8 @@ struct DS4ControlApp: App {
         guard !menuBarStartup.started else { return }
         menuBarStartup.started = true
         DispatchQueue.main.async {
-            metrics.start()
+            // Metrics collection is visibility-driven: PopupView's onAppear/onDisappear call
+            // metrics.setActive(_:) — an idle app must not keep sampling in the background.
             supervisor.resumeRunningServerIfAny(port: app.port)
             supervisor.resumeInFlightDownloadIfAny(
                 selection: app.quantSelection, highPerformance: app.highPerformanceDownload)
