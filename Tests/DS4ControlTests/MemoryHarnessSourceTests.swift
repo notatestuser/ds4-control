@@ -123,4 +123,21 @@ final class MemoryHarnessSourceTests: XCTestCase {
         XCTAssertTrue(harness.contains("ds41NonRoutedBytes"))
         XCTAssertTrue(harness.contains("RSS_COMPARISON_TOLERANCE_MIB/1024"))
     }
+
+    /// The LIMIT_GIB verdict must rest on the OS-maintained lifetime peak
+    /// (proc_pid_rusage → ri_lifetime_max_phys_footprint), not only on polled RSS, which can
+    /// miss a transient allocation between polls and report a false PASS.
+    func testV41HarnessUsesKernelTrackedPeak() throws {
+        let repoRoot = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+        let harness = try String(
+            contentsOf: repoRoot.appendingPathComponent("scripts/flash41-mem-harness.sh"),
+            encoding: .utf8)
+
+        XCTAssertTrue(harness.contains("proc_pid_rusage"))
+        XCTAssertTrue(harness.contains("ri_lifetime_max_phys_footprint"))
+        XCTAssertTrue(harness.contains("footprint_bytes"))
+    }
 }

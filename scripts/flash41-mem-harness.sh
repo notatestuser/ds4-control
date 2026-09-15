@@ -31,6 +31,33 @@ CTXS="${1:-32768 131072}"
 [ -x "$DS4/ds4-server" ] || { echo "ds4-server not built at $DS4"; exit 2; }
 [ -s "$Q2" ] || { echo "Q2 gguf missing: $Q2  (run: $DS4/download_model.sh ds41f-q2)"; exit 2; }
 
+# The LIMIT_GIB verdict rests on the OS-maintained lifetime peak (proc_pid_rusage →
+# ri_lifetime_max_phys_footprint): the kernel tracks the process maximum, which polling
+# cannot miss. Build a tiny reader once per run; every harness machine has cc (it built
+# ds4-server). Falls back to the polled peak_rss when cc is unavailable.
+HELPER_DIR=""
+RUSAGE_HELPER=""
+if command -v cc >/dev/null 2>&1; then
+  HELPER_DIR="$(mktemp -d)"
+  if ! cc -O2 -o "$HELPER_DIR/pidrusage" -x c - 2>/dev/null <<'EOF'
+#include <libproc.h>
+#include <sys/resource.h>
+#include <stdint.h>
+#include <stdio.h>
+#include <stdlib.h>
+int main(int argc, char **argv) {
+    struct rusage_info_v4 ri;
+    if (argc != 2) return 2;
+    if (proc_pid_rusage(atoi(argv[1]), RUSAGE_INFO_V4, (rusage_info_t *)&ri) != 0) return 1;
+    printf("%llu\n", (unsigned long long)ri.ri_lifetime_max_phys_footprint);
+    return 0;
+}
+EOF
+  then
+    RUSAGE_HELPER="$HELPER_DIR/pidrusage"
+  fi
+fi
+
 fail=0
 pid="" log="" request="" response=""
 
@@ -48,6 +75,7 @@ cleanup() {
   [ -n "$request" ] && rm -f "$request"
   [ -n "$response" ] && rm -f "$response"
   [ -n "$KVDISK" ] && rm -rf "$KVDISK"
+  [ -n "$HELPER_DIR" ] && rm -rf "$HELPER_DIR"
 }
 trap 'cleanup; exit 1' INT TERM HUP
 trap cleanup EXIT
@@ -162,12 +190,24 @@ run_one() {
     rm -f "$log" "$request" "$response"; sleep 2
     return 1
   fi
+  # Kernel-accounted lifetime peak, read BEFORE the process dies: the authoritative value
+  # for the LIMIT_GIB verdict. The polled peak_rss stays as the fallback (and is still
+  # sampled across startup for the live row) when the helper could not be built.
+  footprint_bytes=""
+  if [ -n "$RUSAGE_HELPER" ]; then
+    footprint_bytes="$("$RUSAGE_HELPER" "$pid" 2>/dev/null)"
+    [ -n "$footprint_bytes" ] && [ "$footprint_bytes" -gt 0 ] 2>/dev/null || footprint_bytes=""
+  fi
   rm -f "$request" "$response"
   kill "$pid" 2>/dev/null; wait "$pid" 2>/dev/null
   rm -f "$log"; sleep 2   # free the port
 
-  rss_gib="$(awk "BEGIN{printf \"%.1f\", $peak_rss/1024/1024}")"
-  total_raw="$(awk "BEGIN{printf \"%.9f\", $peak_rss/1024/1024}")"
+  if [ -n "$footprint_bytes" ]; then
+    total_raw="$(awk "BEGIN{printf \"%.9f\", $footprint_bytes/1073741824}")"
+  else
+    total_raw="$(awk "BEGIN{printf \"%.9f\", $peak_rss/1024/1024}")"
+  fi
+  rss_gib="$(awk "BEGIN{printf \"%.1f\", $total_raw}")"
   total_gib="$(awk "BEGIN{printf \"%.1f\", $total_raw}")"
   ok="$(awk "BEGIN{print ($total_raw<=$LIMIT_GIB)?\"YES\":\"NO\"}")"
   warn="$(awk "BEGIN{print ($total_raw> $USABLE_GIB && $total_raw<=$LIMIT_GIB)?\" (>${USABLE_GIB} usable, will page)\":\"\"}")"
