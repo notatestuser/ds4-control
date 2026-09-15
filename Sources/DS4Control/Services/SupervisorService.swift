@@ -824,7 +824,19 @@ final class SupervisorService: ObservableObject {
         // bitmap. A verified 480 GiB prefix already renamed to `.assembling` is kept.
         let base = ggufBaseDir()
         if let selection = activeDownloadSelection {
-            for part in selection.quant.downloadParts {
+            let parts = selection.quant.downloadParts
+            for part in parts {
+                // A single-part quant's transport name IS its final gguf name: once the fetcher
+                // has renamed `.part` into place, only digest verification remains — so a cancel
+                // in that window must remove the final too, or an artifact that never passed its
+                // digest check counts as downloaded (isDownloaded is a pure existence check).
+                // Never fires for a verified file: cancel is gated to .downloading, and a
+                // verified final only exists once completeDownload has moved state to .idle.
+                // Two-part quants are excluded: their final is produced by the joiner's atomic
+                // assembly, and cancel keeps the verified prefix (.assembling + part2) for resume.
+                if parts.count == 1 {
+                    try? FileManager.default.removeItem(at: base.appendingPathComponent(part.filename))
+                }
                 try? FileManager.default.removeItem(at: base.appendingPathComponent(part.filename + ".part"))
                 try? FileManager.default.removeItem(at: base.appendingPathComponent(part.filename + ".part.dl"))
             }

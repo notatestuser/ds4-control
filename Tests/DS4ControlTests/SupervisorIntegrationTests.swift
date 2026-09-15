@@ -385,6 +385,44 @@ final class SupervisorIntegrationTests: XCTestCase {
         XCTAssertFalse(s.downloadProcessLive)
     }
 
+    /// Cancel during the post-rename verification window: the fetcher atomically renames `.part`
+    /// to the final file BEFORE returning (HFDownloader's fsync/drop-sidecar/rename tail), so when
+    /// only digest verification remains — minutes for a ~341 GiB part — the final file is already
+    /// on disk UNVERIFIED. The fetch stub completes that rename and then blocks, reproducing the
+    /// window. Cancel is a deliberate stop, so the unverified final must be removed too:
+    /// `isDownloaded` is a pure existence check and would otherwise report an artifact that never
+    /// passed its digest as downloaded (the same invariant discardCorruptPart enforces on failure).
+    func testCancelDuringVerificationRemovesUnverifiedSinglePartFinal() async throws {
+        let dir = URL(fileURLWithPath: NSTemporaryDirectory()).appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let g = dir.appendingPathComponent("gguf")
+        try FileManager.default.createDirectory(at: g, withIntermediateDirectories: true)
+        try stubDs4(dir)
+        let q = Quant.for(.flash, flashQuant: .q2)
+        let final = g.appendingPathComponent(q.ggufFilename)
+        // Fetch "completes" (final renamed into place), then hangs — the verify window.
+        let fetch: SupervisorService.FetchFile = { _, filename, destDir, _, _, _ in
+            try Data(count: 4).write(to: destDir.appendingPathComponent(filename))
+            try await Task.sleep(nanoseconds: 600_000_000_000)
+        }
+        let s = SupervisorService(ds4Dir: dir, runner: RealProcessRunner(), fetchFile: fetch)
+        s.download(selection: .flash(.q2))
+        XCTAssertEqual(s.state, .downloading)
+        await until { FileManager.default.fileExists(atPath: final.path) }
+        XCTAssertTrue(
+            FileManager.default.fileExists(atPath: final.path),
+            "renamed final exists while verification is pending")
+
+        s.cancelDownload()
+        XCTAssertEqual(s.state, .idle)
+        XCTAssertFalse(
+            FileManager.default.fileExists(atPath: final.path),
+            "cancel must remove the unverified single-part final")
+        XCTAssertFalse(
+            s.isDownloaded(.flash(.q2)),
+            "an unverified artifact must not count as downloaded")
+    }
+
     /// Failure is a KEEP: a download that fails (vs. is cancelled) leaves the partial on disk so a
     /// retry/relaunch resumes from the bitmap. The fake writes a real sparse `<file>.part` + bitmap
     /// sidecar (one chunk complete), reports progress once, then throws — driving `failDownload`, which
