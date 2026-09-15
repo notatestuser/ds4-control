@@ -826,6 +826,15 @@ final class SupervisorService: ObservableObject {
         if let selection = activeDownloadSelection {
             let parts = selection.quant.downloadParts
             for part in parts {
+                // ORDER MATTERS: the transport `.part` must be unlinked BEFORE the final. The
+                // removals are not atomic as a group, and HFDownloader's rename runs on a
+                // concurrent thread — a rename landing between the two removals would unlink
+                // the source only after it had already become the final, leaving an unverified
+                // single-part gguf on disk (the exact leak cancel exists to prevent). With
+                // `.part` gone first, any rename either preceded it (the final removal below
+                // catches the result) or fails with ENOENT.
+                try? FileManager.default.removeItem(at: base.appendingPathComponent(part.filename + ".part"))
+                try? FileManager.default.removeItem(at: base.appendingPathComponent(part.filename + ".part.dl"))
                 // A single-part quant's transport name IS its final gguf name: once the fetcher
                 // has renamed `.part` into place, only digest verification remains — so a cancel
                 // in that window must remove the final too, or an artifact that never passed its
@@ -837,8 +846,6 @@ final class SupervisorService: ObservableObject {
                 if parts.count == 1 {
                     try? FileManager.default.removeItem(at: base.appendingPathComponent(part.filename))
                 }
-                try? FileManager.default.removeItem(at: base.appendingPathComponent(part.filename + ".part"))
-                try? FileManager.default.removeItem(at: base.appendingPathComponent(part.filename + ".part.dl"))
             }
         } else if let f = download?.file {
             try? FileManager.default.removeItem(at: base.appendingPathComponent(f + ".part"))

@@ -108,6 +108,28 @@ final class GUIHostOptionSourceTests: XCTestCase {
         XCTAssertTrue(settings.contains("supervisor.flashArtifactBytes($1)"))
     }
 
+    /// Cancel's artifact sweep is not atomic as a group, and HFDownloader's rename runs on a
+    /// concurrent thread: if the final were unlinked BEFORE the transport `.part`, a rename
+    /// landing between the two removals would unlink the source only after it had already
+    /// become the final — leaving an unverified single-part gguf that `isDownloaded` counts as
+    /// downloaded. The `.part` must therefore be removed first: any rename either preceded it
+    /// (the final removal, last, catches the result) or fails with ENOENT.
+    func testCancelRemovesPartSourceBeforeFinal() throws {
+        let supervisor = try source("Sources/DS4Control/Services/SupervisorService.swift")
+        let cancel = try XCTUnwrap(supervisor.range(of: "func cancelDownload()"))
+        let body = supervisor[cancel.lowerBound..<supervisor.endIndex]
+        let nextFunc = try XCTUnwrap(body.range(of: "\n    func "))
+        let cancelBody = body[..<nextFunc.lowerBound]
+
+        let partRemoval = try XCTUnwrap(
+            cancelBody.range(of: "removeItem(at: base.appendingPathComponent(part.filename + \".part\"))"))
+        let finalRemoval = try XCTUnwrap(
+            cancelBody.range(
+                of: "removeItem(at: base.appendingPathComponent(part.filename))",
+                range: partRemoval.upperBound..<cancelBody.endIndex))
+        XCTAssertLessThan(partRemoval.lowerBound, finalRemoval.lowerBound)
+    }
+
     func testModelRowOffersFlash41ByRAMTier() throws {
         let modelRow = try source("Sources/DS4Control/Views/ModelRowView.swift")
 
