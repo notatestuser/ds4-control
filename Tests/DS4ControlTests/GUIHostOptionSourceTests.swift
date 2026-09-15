@@ -109,12 +109,14 @@ final class GUIHostOptionSourceTests: XCTestCase {
     }
 
     /// The V4.1 cleanup must cover partial artifacts with the same artifact-aware probe the
-    /// 0731 Flash section uses, while preserving the selected-quant exclusion.
+    /// 0731 Flash section uses, while preserving the selected-quant exclusion. Its dialog has
+    /// a single "delete other" option, so the button must be disabled when ONLY the selected
+    /// quant has artifacts — otherwise it opens a dialog with nothing destructive in it.
     func testFlash41CleanupCoversPartialArtifacts() throws {
         let settings = try source("Sources/DS4Control/Views/SettingsView.swift")
 
         XCTAssertTrue(settings.contains("supervisor.hasFlash41PartialDownload($0)"))
-        XCTAssertTrue(settings.contains(".disabled(flash41CleanupQuants.isEmpty || isBusy)"))
+        XCTAssertTrue(settings.contains(".disabled(removableFlash41CleanupQuants.isEmpty || isBusy)"))
         XCTAssertTrue(settings.contains("supervisor.flash41ArtifactURLs($1).count"))
         XCTAssertTrue(settings.contains("supervisor.flash41ArtifactBytes($1)"))
         XCTAssertTrue(settings.contains("supervisor.cleanupUnusedFlash41Quants(keep: app.selectedFlash41Quant)"))

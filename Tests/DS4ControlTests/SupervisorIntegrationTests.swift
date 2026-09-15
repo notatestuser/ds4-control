@@ -670,6 +670,59 @@ final class SupervisorIntegrationTests: XCTestCase {
         XCTAssertEqual(s.flash41ArtifactBytes(.q2), Int64(Quant.q41Q2.ggufBytes))
     }
 
+    /// A marker-write failure must fail the download rather than silently complete with an
+    /// artifact `isDownloaded` can never accept — otherwise the UI keeps offering Download and
+    /// every relaunch re-verifies in a loop. Seed a size-correct final without a marker, make
+    /// the gguf dir read-only so the post-verify marker write fails, and re-verify.
+    func testMarkerWriteFailureFailsDownload() async throws {
+        let dir = URL(fileURLWithPath: NSTemporaryDirectory()).appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let g = dir.appendingPathComponent("gguf")
+        try FileManager.default.createDirectory(at: g, withIntermediateDirectories: true)
+        try stubDs4(dir)
+        let quant = Quant.for(.flash, flashQuant: .q2)  // 0731: size-only verify, instant
+        let final = g.appendingPathComponent(quant.ggufFilename)
+        FileManager.default.createFile(atPath: final.path, contents: nil)
+        let handle = try FileHandle(forWritingTo: final)
+        try handle.truncate(atOffset: UInt64(quant.ggufBytes))
+        try handle.close()
+
+        try FileManager.default.setAttributes([.posixPermissions: 0o555], ofItemAtPath: g.path)
+        defer { try? FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: g.path) }
+
+        let s = SupervisorService(ds4Dir: dir, runner: RealProcessRunner())
+        s.resumeInFlightDownloadIfAny(selection: .flash(.q2))
+        await until {
+            if case .error = s.state { return true }
+            return s.state == .idle
+        }
+        if case .error = s.state {
+        } else {
+            XCTFail("marker write failure must surface as .error, got \(s.state)")
+        }
+        XCTAssertFalse(s.isDownloaded(.flash(.q2)))
+    }
+
+    /// Only the joined Q4 final on disk, no marker: for multi-part quants the parts were
+    /// consumed by the join, so the transport checks see nothing — yet the final is a
+    /// removable, unverified artifact the cleanup must treat as a candidate.
+    func testFlash41CleanupCandidateCoversUnverifiedFinal() throws {
+        let dir = URL(fileURLWithPath: NSTemporaryDirectory()).appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let g = dir.appendingPathComponent("gguf")
+        try FileManager.default.createDirectory(at: g, withIntermediateDirectories: true)
+        let final = Quant.q41Q4.ggufFilename
+        try Data(count: 4).write(to: g.appendingPathComponent(final))
+
+        let s = SupervisorService(ds4Dir: dir, runner: RealProcessRunner())
+
+        XCTAssertFalse(s.isFlash41QuantDownloaded(.q4))
+        XCTAssertTrue(s.hasFlash41PartialDownload(.q4))
+        XCTAssertEqual(s.flash41ArtifactURLs(.q4).map(\.lastPathComponent), [final])
+        XCTAssertEqual(s.flash41ArtifactBytes(.q4), 4)
+        XCTAssertFalse(s.hasFlash41PartialDownload(.q2))
+    }
+
     func testGenerationSpecificKVCachePaths() {
         let dir = URL(fileURLWithPath: NSTemporaryDirectory()).appendingPathComponent(UUID().uuidString)
         let s = SupervisorService(

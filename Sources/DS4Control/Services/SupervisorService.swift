@@ -596,7 +596,9 @@ final class SupervisorService: ObservableObject {
         try GGUFJoiner.verify(url: url, expectedBytes: expectedBytes, expectedSHA256: expectedSHA256)
         // Verification succeeded: write the durable marker `isDownloaded` requires. A cancel or
         // quit mid-hash leaves no marker, so the final is treated as unverified across launches.
-        try? Data().write(to: URL(fileURLWithPath: url.path + ".verified"))
+        // Deliberately NOT try?-suppressed: a failed write (disk full, permissions) must fail
+        // the download, not complete with an artifact isDownloaded can never accept.
+        try Data().write(to: URL(fileURLWithPath: url.path + ".verified"))
     }
 
     /// The join twin of `verifyArtifact`: same executor and cancellation rules.
@@ -609,7 +611,7 @@ final class SupervisorService: ObservableObject {
             part1: part1, part2: part2, into: target, part1Bytes: part1Bytes,
             expectedBytes: expectedBytes, expectedSHA256: expectedSHA256,
             freeSpaceRequired: freeSpaceRequired)
-        try? Data().write(to: URL(fileURLWithPath: target.path + ".verified"))
+        try Data().write(to: URL(fileURLWithPath: target.path + ".verified"))
     }
 
     /// Removes a part that failed size/digest verification, plus any downloader sidecars, so a
@@ -955,7 +957,13 @@ final class SupervisorService: ObservableObject {
     }
     /// V4.1 twin of `hasFlashPartialDownload`.
     func hasFlash41PartialDownload(_ q: Flash41Quant) -> Bool {
-        !isFlash41QuantDownloaded(q) && hasPartialDownload(ggufDir: ggufBaseDir(), quant: q.quant)
+        guard !isFlash41QuantDownloaded(q) else { return false }
+        // A marker-less final (an unverified download or join) is itself a cleanup candidate:
+        // for multi-part quants the parts were consumed by the join, so the transport checks
+        // below see nothing even though the final occupies its full size on disk.
+        let final = ggufBaseDir().appendingPathComponent(q.quant.ggufFilename)
+        if FileManager.default.fileExists(atPath: final.path) { return true }
+        return hasPartialDownload(ggufDir: ggufBaseDir(), quant: q.quant)
     }
     /// Delete on-disk Flash quant ggufs other than `keep`. V4 Pro is untouched by construction
     /// (the loop only iterates `FlashQuant`). Gate the call site to idle/error so a loaded or

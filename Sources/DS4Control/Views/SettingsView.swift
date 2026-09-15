@@ -289,7 +289,7 @@ struct SettingsView: View {
                 }
                 .disabled(supervisor.state == .downloading)  // locked while a download is in progress
                 Button("Clean up V4.1 downloads…") { confirming41Cleanup = true }
-                    .disabled(flash41CleanupQuants.isEmpty || isBusy)
+                    .disabled(removableFlash41CleanupQuants.isEmpty || isBusy)
             } header: {
                 Text("V4.1 Flash model")
             } footer: {
