@@ -629,8 +629,10 @@ final class SupervisorService: ObservableObject {
         verification = VerificationProgress(
             label: label, pct: 0, processedBytes: 0, totalBytes: totalBytes)
         defer {
-            verificationGeneration += 1
-            verification = nil
+            if verificationGeneration == gen {
+                verificationGeneration += 1
+                verification = nil
+            }
         }
         let throttle = HashProgressThrottle()
         return try await operation { [self] processed in
