@@ -67,6 +67,7 @@ final class AppState: ObservableObject {
         }
     }
 
+    /// Restores persisted preferences and chooses memory-appropriate defaults for a fresh install.
     init(defaults: UserDefaults = .standard, ramGiB: Double = systemRamGiB()) {
         self.d = defaults
         port = d.object(forKey: "port") as? Int ?? 8000

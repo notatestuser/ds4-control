@@ -363,6 +363,7 @@ final class FeasibilityTests: XCTestCase {
                 ramGiB: 512, wiredLimitMB: 393_216, quant: .q41Q4, ctx: 32_768, sessions: 1))
     }
 
+    /// V4.1 quant tiers admit supported memory sizes and block hosts below their RAM floors.
     func testFlash41FloorsAndGates() {
         if case .standard = feasibility(
             ramGiB: 96, selection: .flash41(.q2), ctx: 32_768, wiredLimitMB: 73_728)
@@ -427,6 +428,7 @@ final class FeasibilityTests: XCTestCase {
                 ramGiB: 96, selection: .flash41(.q2), ctx: 32_768, wiredLimitMB: wired), 6)
     }
 
+    /// Quant availability follows the 96 GiB Q2 and 256 GiB Q4 minimum-memory tiers.
     func testFlash41QuantFitFloors() {
         XCTAssertTrue(flash41QuantFits(.q2, ramGiB: 96, wiredLimitMB: 73_728))
         XCTAssertFalse(flash41QuantFits(.q2, ramGiB: 64, wiredLimitMB: Int.max))
@@ -439,6 +441,7 @@ final class FeasibilityTests: XCTestCase {
         XCTAssertTrue(flash41QuantFits(.q4, ramGiB: 256, wiredLimitMB: 196_608))
     }
 
+    /// V4.1 defaults use streaming context below full-residency tiers and the expected quant.
     func testFlash41DefaultCtxAndQuant() {
         // Streaming tiers keep upstream's documented 32,768 default: 41-q2 from 96 GiB, and
         // 41-q4 through its 256 GiB floor (the 1M window doesn't fit fully resident yet).

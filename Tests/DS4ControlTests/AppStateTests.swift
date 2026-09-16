@@ -122,6 +122,7 @@ final class AppStateTests: XCTestCase {
         XCTAssertEqual(AppState(defaults: off, ramGiB: 96).thinkingMode, .off)
     }
 
+    /// Max Think is downgraded safely while each 96 GiB model keeps its own default context.
     func testMaxThinkingModeDowngradesBelow128GiB() {
         let defaults = UserDefaults(suiteName: "test.\(UUID().uuidString)")!
         defaults.set(ThinkingMode.max.rawValue, forKey: "thinkingMode")
@@ -173,6 +174,7 @@ final class AppStateTests: XCTestCase {
         XCTAssertEqual(app2.thinkingMode, .max)
     }
 
+    /// Fresh installs select the expected model at each supported unified-memory tier.
     func testFreshInstallDefaultsFlash41From96GiB() {
         let a96 = AppState(
             defaults: UserDefaults(suiteName: "test.\(UUID().uuidString)")!, ramGiB: 96)

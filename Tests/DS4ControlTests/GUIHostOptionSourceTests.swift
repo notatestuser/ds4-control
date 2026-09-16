@@ -225,6 +225,7 @@ final class GUIHostOptionSourceTests: XCTestCase {
         XCTAssertLessThan(partRemoval.lowerBound, finalRemoval.lowerBound)
     }
 
+    /// The popup offers V4.1 Flash beginning at the supported 96 GiB memory tier.
     func testModelRowOffersFlash41ByRAMTier() throws {
         let modelRow = try source("Sources/DS4Control/Views/ModelRowView.swift")
 
