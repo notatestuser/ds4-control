@@ -283,7 +283,7 @@ final class HFDownloader: NSObject, @unchecked Sendable {
     /// exit OK. Proves the downloader works on the actual file without fetching 430 GB or a GUI.
     static func runSelfTestIfRequested() {
         guard ProcessInfo.processInfo.environment["DS4_SELFTEST_DOWNLOAD"] == "1" else { return }
-        let file = "DeepSeek-V4-Pro-IQ2XXS-w2Q2K-AProjQ8-SExpQ8-OutQ8-Instruct-imatrix.gguf"
+        let file = "DeepSeek-V4-Pro-IQ2XXS-w2Q2K-AProjQ8-SExpQ8-OutQ8-Instruct-imatrix-0813.gguf"
         let dir = URL(fileURLWithPath: NSTemporaryDirectory())
             .appendingPathComponent("ds4-dltest-\(UUID().uuidString)")
         let dl = HFDownloader(repo: "antirez/deepseek-v4-gguf")

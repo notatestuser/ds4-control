@@ -60,13 +60,13 @@ final class DownloadRaceTests: XCTestCase {
     }
 
     /// A fetch that never returns — the download stays in flight.
-    private let pending: SupervisorService.FetchFile = { _, _, _, _, _ in
+    private let pending: SupervisorService.FetchFile = { _, _, _, _, _, _ in
         try await Task.sleep(nanoseconds: 600_000_000_000)
     }
 
     func testDownloadEntersDownloadingAndShowsSpinner() throws {
         let s = SupervisorService(ds4Dir: try makeDir(), runner: NoopRunner(), fetchFile: pending)
-        s.download(variant: .flash, flashQuant: .q2q4)
+        s.download(selection: .flash(.q2q4))
         XCTAssertEqual(s.state, .downloading)
         XCTAssertTrue(s.downloadProcessLive, "spinner should show while the download task is in flight")
         XCTAssertEqual(s.download?.file, Quant.q2q4Imatrix.ggufFilename, "downloads the selected quant's file")
@@ -74,8 +74,17 @@ final class DownloadRaceTests: XCTestCase {
     }
 
     func testSuccessfulDownloadGoesIdle() async throws {
-        let s = SupervisorService(ds4Dir: try makeDir(), runner: NoopRunner(), fetchFile: { _, _, _, _, _ in })
-        s.download(variant: .flash, flashQuant: .q2q4)
+        let s = SupervisorService(
+            ds4Dir: try makeDir(), runner: NoopRunner(),
+            fetchFile: { _, file, dir, _, _, _ in
+                // Sparse materialization at the published size so size verification passes.
+                let url = dir.appendingPathComponent(file)
+                FileManager.default.createFile(atPath: url.path, contents: nil)
+                let handle = try FileHandle(forWritingTo: url)
+                try handle.truncate(atOffset: UInt64(Quant.q2q4Imatrix.ggufBytes))
+                try handle.close()
+            })
+        s.download(selection: .flash(.q2q4))
         await until { s.state == .idle }
         XCTAssertEqual(s.state, .idle)
         XCTAssertEqual(s.download?.pct, 100)
@@ -85,8 +94,8 @@ final class DownloadRaceTests: XCTestCase {
     func testFailedDownloadGoesError() async throws {
         let s = SupervisorService(
             ds4Dir: try makeDir(), runner: NoopRunner(),
-            fetchFile: { _, _, _, _, _ in throw HFDownloader.Failure.http(503) })
-        s.download(variant: .flash, flashQuant: .q2q4)
+            fetchFile: { _, _, _, _, _, _ in throw HFDownloader.Failure.http(503) })
+        s.download(selection: .flash(.q2q4))
         await until { if case .error = s.state { return true } else { return false } }
         guard case .error = s.state else { return XCTFail("expected .error, got \(s.state)") }
         XCTAssertFalse(s.downloadProcessLive)
@@ -94,7 +103,7 @@ final class DownloadRaceTests: XCTestCase {
 
     func testCancelDownloadReturnsToIdle() throws {
         let s = SupervisorService(ds4Dir: try makeDir(), runner: NoopRunner(), fetchFile: pending)
-        s.download(variant: .flash, flashQuant: .q2q4)
+        s.download(selection: .flash(.q2q4))
         s.cancelDownload()
         XCTAssertEqual(s.state, .idle)
         XCTAssertFalse(s.downloadProcessLive)
@@ -106,10 +115,108 @@ final class DownloadRaceTests: XCTestCase {
     /// guard).
     func testRetryStaysDownloading() throws {
         let s = SupervisorService(ds4Dir: try makeDir(), runner: NoopRunner(), fetchFile: pending)
-        s.download(variant: .flash, flashQuant: .q2q4)
-        s.retryDownload(variant: .flash, flashQuant: .q2q4)
+        s.download(selection: .flash(.q2q4))
+        s.retryDownload(selection: .flash(.q2q4))
         XCTAssertEqual(s.state, .downloading)
         s.cancelDownload()
+    }
+
+    /// V4.1 Q4 is split: the bar starts on part 1, and cancel removes both parts' partial
+    /// sidecars but keeps a verified `.assembling` prefix for a later resume.
+    func testQ4DownloadStartsOnPart1AndCancelCleansSidecars() throws {
+        let dir = try makeDir()
+        let s = SupervisorService(ds4Dir: dir, runner: NoopRunner(), fetchFile: pending)
+        s.download(selection: .flash41(.q4))
+        XCTAssertEqual(s.state, .downloading)
+        XCTAssertEqual(s.download?.file, Quant.q41Q4.downloadParts[0].filename)
+
+        let gguf = dir.appendingPathComponent("gguf")
+        let sidecars = Quant.q41Q4.downloadParts.map {
+            gguf.appendingPathComponent($0.filename + ".part.dl")
+        }
+        for sidecar in sidecars { FileManager.default.createFile(atPath: sidecar.path, contents: Data([1])) }
+        let assembling = gguf.appendingPathComponent(Quant.q41Q4.ggufFilename + ".assembling")
+        FileManager.default.createFile(atPath: assembling.path, contents: Data([1]))
+
+        s.cancelDownload()
+        XCTAssertEqual(s.state, .idle)
+        for sidecar in sidecars {
+            XCTAssertFalse(FileManager.default.fileExists(atPath: sidecar.path))
+        }
+        XCTAssertTrue(
+            FileManager.default.fileExists(atPath: assembling.path),
+            "a verified assembling prefix survives a deliberate cancel")
+    }
+
+    /// A part that downloads but fails its published size is an error, never a silent accept:
+    /// the bad artifact is removed and the quant reads as not downloaded.
+    func testDownloadPartSizeMismatchGoesErrorAndDiscardsArtifact() async throws {
+        let dir = try makeDir()
+        let s = SupervisorService(
+            ds4Dir: dir, runner: NoopRunner(),
+            fetchFile: { _, file, destDir, _, _, _ in
+                FileManager.default.createFile(
+                    atPath: destDir.appendingPathComponent(file).path, contents: Data([0]))
+            })
+        s.download(selection: .flash41(.q2))
+        await until { if case .error = s.state { return true } else { return false } }
+        guard case let .error(.downloadFailed(detail)) = s.state else {
+            return XCTFail("expected .error(.downloadFailed), got \(s.state)")
+        }
+        XCTAssertTrue(detail.contains("unexpected size"), "got: \(detail)")
+        let finalURL = dir.appendingPathComponent("gguf")
+            .appendingPathComponent(Quant.q41Q2.ggufFilename)
+        XCTAssertFalse(
+            FileManager.default.fileExists(atPath: finalURL.path),
+            "a rejected artifact must not stay on disk as a loadable/downloaded model")
+        XCTAssertFalse(s.isDownloaded(.flash41(.q2)))
+    }
+
+    /// A corrupt part left by an earlier session is discarded on verification failure, so Retry
+    /// fetches it again instead of re-verifying the same bad file forever.
+    func testCorruptPreexistingPartIsDiscarded() async throws {
+        let dir = try makeDir()
+        let part1 = dir.appendingPathComponent("gguf")
+            .appendingPathComponent(Quant.q41Q4.downloadParts[0].filename)
+        FileManager.default.createFile(atPath: part1.path, contents: Data([1, 2, 3]))
+        let s = SupervisorService(ds4Dir: dir, runner: NoopRunner(), fetchFile: pending)
+        s.download(selection: .flash41(.q4))
+        await until { if case .error = s.state { return true } else { return false } }
+        guard case let .error(.downloadFailed(detail)) = s.state else {
+            return XCTFail("expected .error(.downloadFailed), got \(s.state)")
+        }
+        XCTAssertTrue(detail.contains("unexpected size"), "got: \(detail)")
+        XCTAssertFalse(FileManager.default.fileExists(atPath: part1.path))
+        XCTAssertFalse(
+            hasPartialDownload(ggufDir: dir.appendingPathComponent("gguf"), quant: .q41Q4),
+            "the discarded part must not count as resumable progress")
+    }
+
+    /// A leftover `.assembling` file from an interrupted join resumes the download (the tail
+    /// is fetched; the verified 480 GiB prefix is never re-fetched).
+    func testResumePicksUpInterruptedJoin() throws {
+        let dir = try makeDir()
+        let assembling = dir.appendingPathComponent("gguf")
+            .appendingPathComponent(Quant.q41Q4.ggufFilename + ".assembling")
+        FileManager.default.createFile(atPath: assembling.path, contents: Data([0]))
+        let s = SupervisorService(ds4Dir: dir, runner: NoopRunner(), fetchFile: pending)
+        s.resumeInFlightDownloadIfAny(selection: .flash41(.q4))
+        XCTAssertEqual(s.state, .downloading)
+        // The assembled prefix is complete, so the bar starts on the missing tail part.
+        XCTAssertEqual(s.download?.file, Quant.q41Q4.downloadParts[1].filename)
+        s.cancelDownload()
+    }
+
+    func testHasPartialDownloadSeesParts() throws {
+        let dir = try makeDir()
+        let gguf = dir.appendingPathComponent("gguf")
+        XCTAssertFalse(hasPartialDownload(ggufDir: gguf, quant: .q41Q4))
+        let part2 = gguf.appendingPathComponent(Quant.q41Q4.downloadParts[1].filename)
+        FileManager.default.createFile(atPath: part2.path, contents: Data([1, 2, 3]))
+        XCTAssertTrue(hasPartialDownload(ggufDir: gguf, quant: .q41Q4))
+        XCTAssertEqual(
+            downloadedBytes(ggufDir: gguf, quant: .q41Q4), 3,
+            "a partial tail counts toward aggregate progress")
     }
 
     /// A stale *completion* from a superseded download must be dropped by the generation guard. The
@@ -125,11 +232,11 @@ final class DownloadRaceTests: XCTestCase {
         let box = ContinuationBox()
         let s = SupervisorService(
             ds4Dir: try makeDir(), runner: NoopRunner(), fetchFile: box.gen1ReturnsFetch)
-        s.download(variant: .flash, flashQuant: .q2q4)  // gen1: suspends on the stored continuation
+        s.download(selection: .flash(.q2q4))  // gen1: suspends on the stored continuation
         XCTAssertEqual(s.state, .downloading)
         await until { box.firstInvoked }  // gen1's fetch is parked on the continuation
 
-        s.retryDownload(variant: .flash, flashQuant: .q2q4)  // cancels gen1's task, starts gen2 (forever)
+        s.retryDownload(selection: .flash(.q2q4))  // cancels gen1's task, starts gen2 (forever)
         XCTAssertEqual(s.state, .downloading)
 
         box.resumeFirst()  // gen1's fetch RETURNS → its Task calls completeDownload(gen1), now stale
@@ -152,11 +259,11 @@ final class DownloadRaceTests: XCTestCase {
         let box = ContinuationBox()
         let s = SupervisorService(
             ds4Dir: try makeDir(), runner: NoopRunner(), fetchFile: box.gen1ThrowsFetch)
-        s.download(variant: .flash, flashQuant: .q2q4)  // gen1: suspends on the stored continuation
+        s.download(selection: .flash(.q2q4))  // gen1: suspends on the stored continuation
         XCTAssertEqual(s.state, .downloading)
         await until { box.firstInvoked }
 
-        s.retryDownload(variant: .flash, flashQuant: .q2q4)  // cancels gen1, starts gen2 (forever)
+        s.retryDownload(selection: .flash(.q2q4))  // cancels gen1, starts gen2 (forever)
         XCTAssertEqual(s.state, .downloading)
 
         box.resumeFirst()  // gen1's fetch THROWS → its Task calls failDownload(gen1), now stale
@@ -191,11 +298,11 @@ private final class ContinuationBox: @unchecked Sendable {
 
     /// gen1 returns normally on resume; gen2+ suspend forever.
     var gen1ReturnsFetch: SupervisorService.FetchFile {
-        { _, _, _, _, _ in try await self.park(throwOnResume: false) }
+        { _, _, _, _, _, _ in try await self.park(throwOnResume: false) }
     }
     /// gen1 throws on resume; gen2+ suspend forever.
     var gen1ThrowsFetch: SupervisorService.FetchFile {
-        { _, _, _, _, _ in try await self.park(throwOnResume: true) }
+        { _, _, _, _, _, _ in try await self.park(throwOnResume: true) }
     }
 
     private func park(throwOnResume: Bool) async throws {

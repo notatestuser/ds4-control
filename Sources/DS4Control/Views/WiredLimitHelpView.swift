@@ -41,7 +41,8 @@ struct WiredLimitHelpView: View {
     private var requiredMB: Int? {
         boundedWiredRequirementMB(
             requiredWiredMB(
-                variant: app.selectedVariant, flashQuant: app.selectedFlashQuant,
+                ramGiB: ramGiB, wiredLimitMB: effectiveWiredLimitMB(ramGiB: ramGiB),
+                selection: app.quantSelection,
                 ctx: app.effectiveCtx(ramGiB: ramGiB), sessions: app.concurrentSessions))
     }
 
@@ -52,8 +53,7 @@ struct WiredLimitHelpView: View {
 
     private var blockedReason: String? {
         let result = feasibility(
-            ramGiB: ramGiB, variant: app.selectedVariant,
-            flashQuant: app.selectedFlashQuant,
+            ramGiB: ramGiB, selection: app.quantSelection,
             ctx: app.effectiveCtx(ramGiB: ramGiB),
             wiredLimitMB: effectiveWiredLimitMB(ramGiB: ramGiB),
             sessions: app.concurrentSessions)
