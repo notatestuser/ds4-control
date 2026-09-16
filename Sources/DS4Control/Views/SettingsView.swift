@@ -278,7 +278,7 @@ struct SettingsView: View {
             }
 
             Section {
-                Picker("Quant", selection: $app.selectedFlash41Quant) {
+                Picker("Variant", selection: $app.selectedFlash41Quant) {
                     ForEach(Flash41Quant.allCases) { q in
                         Text(q.label + (supervisor.isFlash41QuantDownloaded(q) ? "  (downloaded)" : ""))
                             .tag(q)
@@ -318,8 +318,9 @@ struct SettingsView: View {
                 Text("Downloads")
             } footer: {
                 Text(
-                    "Downloads use 64 connections instead of 8. Leave off behind CGNAT or strict NAT — "
-                        + "it can overload your router and knock you offline."
+                    "Downloads start at 8 connections and only add more (up to 64) while throughput "
+                        + "keeps improving, settling back when it stops. Leave off behind CGNAT or strict "
+                        + "NAT — many connections can overload your router and knock you offline."
                 )
             }
 

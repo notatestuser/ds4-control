@@ -12,7 +12,7 @@ let package = Package(
         // Upstream: https://github.com/Lakr233/MarkdownView — re-base the patches when bumping.
         .package(
             url: "https://github.com/notatestuser/MarkdownView",
-            revision: "d83032f91844e5365f49a174d9940036790e434c"),
+            revision: "d83032f91844e5365f49a174d9940036790e434c")
     ],
     targets: [
         .executableTarget(
