@@ -364,12 +364,18 @@ final class FeasibilityTests: XCTestCase {
     }
 
     func testFlash41FloorsAndGates() {
-        if case let .blocked(reason) = feasibility(
-            ramGiB: 96, selection: .flash41(.q2), ctx: 32_768, wiredLimitMB: 86_016)
+        if case .standard = feasibility(
+            ramGiB: 96, selection: .flash41(.q2), ctx: 32_768, wiredLimitMB: 73_728)
         {
-            XCTAssertTrue(reason.contains("128 GiB"))
         } else {
-            XCTFail("V4.1 below 128 GiB must block")
+            XCTFail("V4.1 q2 on 96 GiB with streaming must pass (verified against ds4 admission)")
+        }
+        if case let .blocked(reason) = feasibility(
+            ramGiB: 64, selection: .flash41(.q2), ctx: 32_768, wiredLimitMB: 61_440)
+        {
+            XCTAssertTrue(reason.contains("96 GiB"))
+        } else {
+            XCTFail("V4.1 below 96 GiB must block")
         }
         if case .standard = feasibility(
             ramGiB: 128, selection: .flash41(.q2), ctx: 32_768, wiredLimitMB: 98_304)
@@ -392,8 +398,38 @@ final class FeasibilityTests: XCTestCase {
         }
     }
 
+    /// The pinned ds4 admission at the app's lowest V4.1 tier: on a 96 GiB host with the
+    /// macOS-default ~72 GiB Metal set, the streamed fixed set leaves room for a routed
+    /// expert, so the launch is admitted (verified directly against `--memory-plan` with the
+    /// real Q2 weights: 4,827 cached experts at 32K ctx, 3,638 at 1M).
+    func testFlash41Q2AdmittedOn96GiBViaStreaming() {
+        let wired = 72 * 1024
+        XCTAssertTrue(
+            flash41UsesSSDStreaming(
+                ramGiB: 96, wiredLimitMB: wired, quant: .q41Q2, ctx: 32_768, sessions: 1))
+        XCTAssertEqual(
+            feasibility(
+                ramGiB: 96, selection: .flash41(.q2), ctx: 32_768, wiredLimitMB: wired),
+            .standard)
+        XCTAssertEqual(
+            feasibility(
+                ramGiB: 96, selection: .flash41(.q2), ctx: 1_048_576, wiredLimitMB: wired),
+            .standard)
+        // The streamed fixed set leaves ~46 GiB under the Metal set — far more than one
+        // routed layer's experts — so ds4's admission (mirrored here) holds.
+        let fixed = v41FixedWiredMB(quant: .q41Q2, ctx: 32_768, sessions: 1, streaming: true)
+        XCTAssertEqual(fixed, 27_007)
+        XCTAssertEqual(flash41BudgetMB(ramGiB: 96, wiredLimitMB: wired), wired)
+        XCTAssertGreaterThan(wired - fixed, ds41Q2PrefillHeadroomBytes / 1_048_576 / 2)
+        // Parallel slots: the 32K graph fits six sessions under the default Metal set.
+        XCTAssertEqual(
+            maxFittingSessions(
+                ramGiB: 96, selection: .flash41(.q2), ctx: 32_768, wiredLimitMB: wired), 6)
+    }
+
     func testFlash41QuantFitFloors() {
-        XCTAssertFalse(flash41QuantFits(.q2, ramGiB: 96, wiredLimitMB: Int.max))
+        XCTAssertTrue(flash41QuantFits(.q2, ramGiB: 96, wiredLimitMB: 73_728))
+        XCTAssertFalse(flash41QuantFits(.q2, ramGiB: 64, wiredLimitMB: Int.max))
         XCTAssertFalse(flash41QuantFits(.q4, ramGiB: 96, wiredLimitMB: Int.max))
         XCTAssertTrue(flash41QuantFits(.q2, ramGiB: 128, wiredLimitMB: 98_304))
         // 41-q4's documented floor is 256 GiB (README tier table): the 128 GiB class streams
@@ -404,8 +440,9 @@ final class FeasibilityTests: XCTestCase {
     }
 
     func testFlash41DefaultCtxAndQuant() {
-        // Streaming tiers keep upstream's documented 32,768 default: 41-q2 on 128 GiB, and
+        // Streaming tiers keep upstream's documented 32,768 default: 41-q2 from 96 GiB, and
         // 41-q4 through its 256 GiB floor (the 1M window doesn't fit fully resident yet).
+        XCTAssertEqual(defaultCtx(ramGiB: 96, selection: .flash41(.q2)), 32_768)
         XCTAssertEqual(defaultCtx(ramGiB: 128, selection: .flash41(.q2)), 32_768)
         XCTAssertEqual(defaultCtx(ramGiB: 256, selection: .flash41(.q4)), 32_768)
         // Tiers that hold the full 1M window resident default to the ceiling instead.

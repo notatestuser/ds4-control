@@ -229,7 +229,7 @@ final class GUIHostOptionSourceTests: XCTestCase {
         let modelRow = try source("Sources/DS4Control/Views/ModelRowView.swift")
 
         XCTAssertTrue(modelRow.contains("if ramGiB >= 512 { return [.pro, .flash, .flash41] }"))
-        XCTAssertTrue(modelRow.contains("if ramGiB >= 128 { return [.flash, .flash41] }"))
+        XCTAssertTrue(modelRow.contains("if ramGiB >= 96 { return [.flash, .flash41] }"))
         XCTAssertTrue(modelRow.contains("return [.flash]"))
     }
 }

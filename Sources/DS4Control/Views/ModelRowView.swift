@@ -8,7 +8,7 @@ struct ModelRowView: View {
 
     private var variants: [Variant] {
         if ramGiB >= 512 { return [.pro, .flash, .flash41] }
-        if ramGiB >= 128 { return [.flash, .flash41] }
+        if ramGiB >= 96 { return [.flash, .flash41] }
         return [.flash]
     }
 

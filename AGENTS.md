@@ -72,8 +72,9 @@ disown
 - `scripts/flash-mem-harness.sh` — manual harness that boots the real Flash 0731 model at various
   context sizes and samples resident memory (NOT part of `swift test`; loads ~81 GB).
 - `scripts/flash41-mem-harness.sh` — the V4.1 equivalent: `--ssd-streaming --power 100` on a
-  128 GiB+ Mac, cross-checks ds4's `ds4: memory:` plan against the `Feasibility` mirror (loads a
-  341 GiB GGUF; Engram rows stay on disk).
+  96 GiB+ Mac (set `DS41_LIMIT_GIB` to the machine's RAM; default 128), cross-checks ds4's
+  `ds4: memory:` plan against the `Feasibility` mirror (loads a 341 GiB GGUF; Engram rows stay
+  on disk).
 - CI: `.github/workflows/ci.yml` (build + test, bundles ds4), `release.yml` (tag-triggered
   Developer ID signed + notarized release).
 
