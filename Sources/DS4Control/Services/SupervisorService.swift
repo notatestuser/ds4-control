@@ -307,7 +307,10 @@ final class SupervisorService: ObservableObject {
                     Self.onMain { self?.handleExit(code, generation: generation) }
                 })
         } catch {
-            if activeServerGeneration == generation { activeServerGeneration = nil }
+            if activeServerGeneration == generation {
+                activeServerGeneration = nil
+                activeConfig = nil
+            }
             state = .error(.crashed(tail: "\(error)")); return
         }
         startupTimer = Timer.scheduledTimer(withTimeInterval: 600, repeats: false) { [weak self] _ in
