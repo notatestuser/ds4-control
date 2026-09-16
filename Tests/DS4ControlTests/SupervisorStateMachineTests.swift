@@ -390,6 +390,21 @@ final class SupervisorStateMachineTests: XCTestCase {
         XCTAssertNil(s.activeConfig)
     }
 
+    /// The published launch config describes a running server only: every transition into
+    /// `.error` — including the health poll's `.unhealthy` — clears it.
+    func testRuntimeErrorClearsActiveConfig() throws {
+        let r = FakeRunner(); let s = try makeSupervisor(r)
+        s.start(selection: .flash(.q2q4), ctx: 250_000, host: "127.0.0.1", port: 8000, power: nil)
+        r.emit("ds4-server: listening on http://127.0.0.1:8000")
+        XCTAssertEqual(s.state, .ready)
+        XCTAssertNotNil(s.activeConfig)
+
+        s.fail(.unhealthy)
+
+        XCTAssertEqual(s.state, .error(.unhealthy))
+        XCTAssertNil(s.activeConfig)
+    }
+
     func testStop() throws {
         let r = FakeRunner(); let s = try makeSupervisor(r)
         s.start(selection: .flash(.q2q4), ctx: 250_000, host: "127.0.0.1", port: 8000, power: nil)

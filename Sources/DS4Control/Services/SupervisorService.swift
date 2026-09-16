@@ -1252,8 +1252,14 @@ final class SupervisorService: ObservableObject {
         }
     }
     private var isErrorState: Bool { if case .error = state { return true }; return false }
-    private func fail(_ e: ServerError) {
-        healthTimer?.invalidate(); healthTimer = nil; startupTimer?.invalidate(); startupTimer = nil; state = .error(e)
+    /// The single runtime error transition (health failure). Exposed to tests so the
+    /// nil-`activeConfig`-on-error contract can be pinned, like `memoryArgs`.
+    func fail(_ e: ServerError) {
+        healthTimer?.invalidate(); healthTimer = nil; startupTimer?.invalidate(); startupTimer = nil
+        // The config describes a live server, and `.error` has none: clear before publishing
+        // so Settings' dirty check never reads a stale launch.
+        activeConfig = nil
+        state = .error(e)
     }
     private func emitBadState(_ cmd: String) { recentLog.append("ignored '\(cmd)' in state \(state)") }
 }
