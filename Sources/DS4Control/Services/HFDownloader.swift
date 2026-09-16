@@ -39,8 +39,10 @@ final class HFDownloader: NSObject, @unchecked Sendable {
     /// Performance (still under the 256 fd soft-limit, with headroom for HF 429).
     static func workerCount(highPerformance: Bool) -> Int { highPerformance ? 64 : 8 }
 
-    init(repo: String, endpoint: String = "https://huggingface.co", revision: String = "main", maxRetries: Int = 8,
-         sessionConfiguration: URLSessionConfiguration? = nil, probeRetryBackoff: TimeInterval = 1.0) {
+    init(
+        repo: String, endpoint: String = "https://huggingface.co", revision: String = "main", maxRetries: Int = 8,
+        sessionConfiguration: URLSessionConfiguration? = nil, probeRetryBackoff: TimeInterval = 1.0
+    ) {
         self.repo = repo
         self.endpoint = endpoint
         self.revision = revision
