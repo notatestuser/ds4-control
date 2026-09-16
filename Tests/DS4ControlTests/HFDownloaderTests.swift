@@ -5,7 +5,63 @@ import XCTest
 final class HFDownloaderTests: XCTestCase {
     func testWorkerCountTiers() {
         XCTAssertEqual(HFDownloader.workerCount(highPerformance: false), 8)  // CGNAT-safe default
-        XCTAssertEqual(HFDownloader.workerCount(highPerformance: true), 64)  // opt-in aggressive
+        XCTAssertEqual(HFDownloader.workerCount(highPerformance: true), 64)  // opt-in aggressive cap
+    }
+
+    /// The ramp's decision logic: baseline-then-double while windows improve by ≥10%, revert to
+    /// the best count and stop on the first window that fails to improve (the 64-connection
+    /// freeze seen over lossy paths), re-measure before settling at the cap, and treat stalled
+    /// windows as failures.
+    func testWorkerRampPolicy() {
+        var ramp = WorkerRamp(start: 8, cap: 64)
+        XCTAssertTrue(ramp.allows(7))
+        XCTAssertFalse(ramp.allows(8))
+
+        XCTAssertEqual(ramp.observe(rate: 100), 16, "the baseline window then tries more")  // 8 → 16
+        XCTAssertEqual(ramp.observe(rate: 150), 32, "a ≥10% improvement doubles toward the cap")
+        XCTAssertEqual(ramp.observe(rate: 200), 64, "still improving → the cap")
+        XCTAssertFalse(ramp.finished, "the cap is still measured before settling")
+        XCTAssertTrue(ramp.allows(63))
+        XCTAssertEqual(ramp.observe(rate: 260), 64, "an improving window at the cap holds it")
+        XCTAssertTrue(ramp.finished)
+
+        var capDrop = WorkerRamp(start: 8, cap: 64)
+        XCTAssertEqual(capDrop.observe(rate: 100), 16)
+        XCTAssertEqual(capDrop.observe(rate: 150), 32)
+        XCTAssertEqual(capDrop.observe(rate: 200), 64)
+        XCTAssertEqual(capDrop.observe(rate: 100), 32, "a drop at the cap settles back at the best")
+        XCTAssertTrue(capDrop.finished)
+
+        var degrading = WorkerRamp(start: 8, cap: 64)
+        XCTAssertEqual(degrading.observe(rate: 100), 16)  // baseline → try 16
+        XCTAssertEqual(degrading.observe(rate: 60), 8, "first non-improvement reverts to the best")
+        XCTAssertTrue(degrading.finished)
+        XCTAssertFalse(degrading.allows(8), "extra workers are told to stop")
+
+        var flat = WorkerRamp(start: 8, cap: 64)
+        XCTAssertEqual(flat.observe(rate: 100), 16)
+        XCTAssertEqual(flat.observe(rate: 105), 8, "+5% is within noise, not an improvement")
+        XCTAssertTrue(flat.finished)
+
+        var stalled = WorkerRamp(start: 8, cap: 64)
+        XCTAssertEqual(stalled.observe(rate: 0), 8, "a stalled window before the baseline adds nothing")
+        XCTAssertEqual(stalled.observe(rate: 100), 16)
+        XCTAssertEqual(stalled.observe(rate: 0), 8, "a stall after ramp-up reverts and stops")
+        XCTAssertTrue(stalled.finished)
+    }
+
+    /// The measurement window is quantization-aware: long enough for ~2 chunks at the current
+    /// rate, floored and capped so tiny or huge rates can't produce noisy or glacial windows.
+    func testRampWindowSeconds() {
+        let chunk: Int64 = 256 * 1024 * 1024
+        XCTAssertEqual(HFDownloader.rampWindowSeconds(rate: 0, chunkSize: chunk), 8)
+        XCTAssertEqual(HFDownloader.rampWindowSeconds(rate: 8_000_000, chunkSize: chunk), 30)  // slow → capped
+        XCTAssertEqual(HFDownloader.rampWindowSeconds(rate: 2_000_000_000, chunkSize: chunk), 8)  // fast → floored
+        let twoChunks = 2 * Double(chunk)  // exactly the ~2-chunk window
+        XCTAssertEqual(HFDownloader.rampWindowSeconds(rate: twoChunks, chunkSize: chunk), 8, accuracy: 0.01)
+        let smallFile = HFDownloader.rampWindowSeconds(
+            rate: 10_000_000, chunkSize: 65_536, minWindow: 0.05)
+        XCTAssertEqual(smallFile, 0.05, accuracy: 0.001, "small-file tests can lower the floor")
     }
 
     /// Real end-to-end network download of a small public GGUF through the native `HFDownloader`:
@@ -183,7 +239,7 @@ final class HFDownloaderTests: XCTestCase {
         try await dl.download(file: "tiny.gguf", into: dir, token: nil, highPerformance: false) { _, _ in }
 
         XCTAssertEqual(
-            try Data(contentsOf: dir.appendingPathComponent("tiny.gguf")), MockHFProtocol.body)
+            try Data(contentsOf: dir.appendingPathComponent("tiny.gguf")), MockHFProtocol.state.body)
         XCTAssertEqual(
             MockHFProtocol.state.requestCount, 3,
             "one failed probe + the retried probe + one chunk fetch")
@@ -207,6 +263,35 @@ final class HFDownloaderTests: XCTestCase {
         }
         XCTAssertEqual(
             MockHFProtocol.state.requestCount, 3, "probe attempts must be bounded, not unlimited")
+    }
+
+    /// A persist-per-chunk delay of `base × active²` makes aggregate throughput FALL as
+    /// connections multiply — the lossy-tunnel regime where 64 workers froze a real download at
+    /// ~0 MB/s. The ramp must back off instead of racing to the cap, and no chunk may be lost
+    /// when extra workers are told to stop.
+    func testHighPerformanceRampBacksOffWhenMoreConnectionsHurt() async throws {
+        MockHFProtocol.state.reset(failFirst: false, alwaysFail: false)
+        let total = 64 * 65_536
+        MockHFProtocol.state.configure(total: Int64(total), body: Data(repeating: 0, count: total))
+        MockHFProtocol.state.setDelayBase(0.002)
+        let dir = URL(fileURLWithPath: NSTemporaryDirectory()).appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let cfg = URLSessionConfiguration.ephemeral
+        cfg.protocolClasses = [MockHFProtocol.self]
+        let dl = HFDownloader(repo: "test/repo", sessionConfiguration: cfg, minRampWindow: 0.05)
+
+        try await dl.download(
+            file: "ramped.gguf", into: dir, token: nil, highPerformance: true, chunkSize: 65_536
+        ) { _, _ in }
+
+        XCTAssertEqual(
+            try Data(contentsOf: dir.appendingPathComponent("ramped.gguf")).count, total,
+            "workers exiting mid-ramp must not lose any chunk")
+        XCTAssertGreaterThanOrEqual(
+            MockHFProtocol.state.maxActive, 8, "the ramp must start with the base workers")
+        XCTAssertLessThan(
+            MockHFProtocol.state.maxActive, 64,
+            "a degrading path must stop growing instead of racing to the cap")
     }
 
     /// The session must fail fast instead of parking in `.waitingForConnectivity`: that wait is
@@ -256,21 +341,27 @@ final class HFDownloaderTests: XCTestCase {
             try await dl.download(file: "tiny.gguf", into: dir, token: nil, highPerformance: false) { _, _ in }
 
             XCTAssertEqual(
-                try Data(contentsOf: dir.appendingPathComponent("tiny.gguf")), MockHFProtocol.body,
+                try Data(contentsOf: dir.appendingPathComponent("tiny.gguf")), MockHFProtocol.state.body,
                 "backoff \(badBackoff) must be sanitized, not trap")
         }
     }
 }
 
-/// Offline `URLProtocol` answering HF-style closed-Range requests for a 4-byte file. Configured
-/// statically (reset per test) to fail the first request or every request, so the probe's retry
-/// path is exercised without network.
+/// Offline `URLProtocol` answering HF-style closed-Range requests for a configurable file.
+/// Configured statically (reset per test) to fail the first request or every request, and to
+/// simulate per-connection scarcity (`delayBase × active²`) so a test can degrade throughput as
+/// concurrency grows — the regime the worker ramp must detect.
 final class MockHFProtocol: URLProtocol {
     final class State: @unchecked Sendable {
         private let lock = NSLock()
         private var failFirst = false
         private var alwaysFail = false
         private var count = 0
+        private var active = 0
+        private var maxSeen = 0
+        private var delayBase: TimeInterval = 0
+        private var fileTotal: Int64 = 4
+        private var fileBody = Data("GGUF".utf8)
 
         func reset(failFirst: Bool, alwaysFail: Bool) {
             lock.lock()
@@ -278,14 +369,58 @@ final class MockHFProtocol: URLProtocol {
             self.failFirst = failFirst
             self.alwaysFail = alwaysFail
             count = 0
+            active = 0
+            maxSeen = 0
+            delayBase = 0
+            fileTotal = 4
+            fileBody = Data("GGUF".utf8)
         }
 
-        /// Record the request and decide whether it should fail.
-        func began() -> Bool {
+        func configure(total: Int64, body: Data) {
+            lock.lock()
+            defer { lock.unlock() }
+            fileTotal = total
+            fileBody = body
+        }
+
+        func setDelayBase(_ seconds: TimeInterval) {
+            lock.lock()
+            defer { lock.unlock() }
+            delayBase = seconds
+        }
+
+        /// Record a request beginning: whether it should fail, and the live concurrency.
+        func enter() -> (fail: Bool, active: Int) {
             lock.lock()
             defer { lock.unlock() }
             count += 1
-            return alwaysFail || (failFirst && count == 1)
+            active += 1
+            maxSeen = max(maxSeen, active)
+            return (alwaysFail || (failFirst && count == 1), active)
+        }
+
+        func leave() {
+            lock.lock()
+            defer { lock.unlock() }
+            active -= 1
+        }
+
+        var perConnectionDelayBase: TimeInterval {
+            lock.lock()
+            defer { lock.unlock() }
+            return delayBase
+        }
+
+        var total: Int64 {
+            lock.lock()
+            defer { lock.unlock() }
+            return fileTotal
+        }
+
+        var body: Data {
+            lock.lock()
+            defer { lock.unlock() }
+            return fileBody
         }
 
         var requestCount: Int {
@@ -293,41 +428,73 @@ final class MockHFProtocol: URLProtocol {
             defer { lock.unlock() }
             return count
         }
+
+        var maxActive: Int {
+            lock.lock()
+            defer { lock.unlock() }
+            return maxSeen
+        }
     }
 
     static let state = State()
-    static let total: Int64 = 4
-    static let body = Data("GGUF".utf8)
 
     override class func canInit(with request: URLRequest) -> Bool { true }
     override class func canonicalRequest(for request: URLRequest) -> URLRequest { request }
-    override func stopLoading() {}
+
+    private let stopLock = NSLock()
+    private var stopped = false
+    override func stopLoading() {
+        stopLock.lock()
+        stopped = true
+        stopLock.unlock()
+    }
+    private var isStopped: Bool {
+        stopLock.lock()
+        defer { stopLock.unlock() }
+        return stopped
+    }
 
     override func startLoading() {
-        if Self.state.began() {
+        let entry = Self.state.enter()
+        if entry.fail {
             let resp = HTTPURLResponse(
                 url: request.url!, statusCode: 503, httpVersion: "HTTP/1.1", headerFields: nil)!
             client?.urlProtocol(self, didReceive: resp, cacheStoragePolicy: .notAllowed)
             client?.urlProtocolDidFinishLoading(self)
+            Self.state.leave()
             return
         }
-        // Closed Range "bytes=a-b": the probe asks bytes=0-0, the chunk asks 0-(total-1).
-        let bounds =
-            (request.value(forHTTPHeaderField: "Range") ?? "bytes=0-\(Self.total - 1)")
-            .replacingOccurrences(of: "bytes=", with: "")
-            .split(separator: "-")
-            .compactMap { Int64($0) }
-        let start = bounds.first ?? 0
-        let end = bounds.count > 1 ? bounds[1] : Self.total - 1
-        let payload = Self.body[Int(start)...Int(end)]
-        let resp = HTTPURLResponse(
-            url: request.url!, statusCode: 206, httpVersion: "HTTP/1.1",
-            headerFields: [
-                "Content-Range": "bytes \(start)-\(end)/\(Self.total)",
-                "Content-Length": "\(payload.count)",
-            ])!
-        client?.urlProtocol(self, didReceive: resp, cacheStoragePolicy: .notAllowed)
-        client?.urlProtocol(self, didLoad: payload)
-        client?.urlProtocolDidFinishLoading(self)
+        let delay = Self.state.perConnectionDelayBase * Double(entry.active * entry.active)
+        // Deliver asynchronously: sleeping the URLProtocol thread here would serialize every
+        // request in the process and hide real concurrency from the ramp.
+        let work = { [self] in
+            defer { Self.state.leave() }
+            guard !isStopped else { return }
+            let total = Self.state.total
+            let body = Self.state.body
+            // Closed Range "bytes=a-b": the probe asks bytes=0-0, a chunk asks its slice.
+            let bounds =
+                (request.value(forHTTPHeaderField: "Range") ?? "bytes=0-\(total - 1)")
+                .replacingOccurrences(of: "bytes=", with: "")
+                .split(separator: "-")
+                .compactMap { Int64($0) }
+            let start = bounds.first ?? 0
+            let end = bounds.count > 1 ? bounds[1] : total - 1
+            let payload = body[Int(start)...Int(end)]
+            let resp = HTTPURLResponse(
+                url: request.url!, statusCode: 206, httpVersion: "HTTP/1.1",
+                headerFields: [
+                    "Content-Range": "bytes \(start)-\(end)/\(total)",
+                    "Content-Length": "\(payload.count)",
+                ])!
+            client?.urlProtocol(self, didReceive: resp, cacheStoragePolicy: .notAllowed)
+            client?.urlProtocol(self, didLoad: payload)
+            client?.urlProtocolDidFinishLoading(self)
+        }
+        if delay > 0 {
+            DispatchQueue.global().asyncAfter(deadline: .now() + delay, execute: work)
+        } else {
+            work()
+        }
     }
 }

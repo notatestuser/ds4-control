@@ -25,6 +25,8 @@ final class HFDownloader: NSObject, @unchecked Sendable {
     private let sessionConfiguration: URLSessionConfiguration?
     /// Backoff base between probe attempts (tests shrink it).
     private let probeRetryBackoff: TimeInterval
+    /// Ramp measurement-window floor (tests shrink it for small files).
+    private let minRampWindow: TimeInterval
 
     /// Coalesce progress callbacks so the UI isn't spammed (~8 MB granularity).
     private static let progressStep: Int64 = 8 * 1024 * 1024
@@ -34,14 +36,15 @@ final class HFDownloader: NSObject, @unchecked Sendable {
     /// `download` parameter so tests can force many chunks on a small file.
     static let parallelChunkSize: Int64 = 256 * 1024 * 1024
 
-    /// Parallel connection count: a CGNAT-safe 8 by default (up to ~16 sockets across the
-    /// resolve + cas-bridge hosts), an aggressive-but-safe 64 when the user opts into High
-    /// Performance (still under the 256 fd soft-limit, with headroom for HF 429).
+    /// Worker-count bounds: the CGNAT-safe base (8) that every download starts at, and the
+    /// opt-in aggressive ceiling (64) that High Performance ramps toward while throughput
+    /// improves. Also keeps us under the 256 fd soft-limit, with headroom for HF 429.
     static func workerCount(highPerformance: Bool) -> Int { highPerformance ? 64 : 8 }
 
     init(
         repo: String, endpoint: String = "https://huggingface.co", revision: String = "main", maxRetries: Int = 8,
-        sessionConfiguration: URLSessionConfiguration? = nil, probeRetryBackoff: TimeInterval = 1.0
+        sessionConfiguration: URLSessionConfiguration? = nil, probeRetryBackoff: TimeInterval = 1.0,
+        minRampWindow: TimeInterval = 8
     ) {
         self.repo = repo
         self.endpoint = endpoint
@@ -51,6 +54,7 @@ final class HFDownloader: NSObject, @unchecked Sendable {
         // Sanitized at the boundary: this knob exists for tests, and a negative, non-finite, or
         // gigantic value would otherwise trap the UInt64 nanosecond conversion in the probe retry.
         self.probeRetryBackoff = probeRetryBackoff.isFinite ? min(max(probeRetryBackoff, 0), 60) : 0
+        self.minRampWindow = minRampWindow.isFinite ? min(max(minRampWindow, 0), 30) : 8
         super.init()
     }
 
@@ -126,6 +130,7 @@ final class HFDownloader: NSObject, @unchecked Sendable {
         private var next: Int
         private let count: Int
         private let skip: Set<Int>
+        private var handedOut = 0
 
         init(chunkCount: Int, skip: Set<Int>) {
             self.next = 0
@@ -136,16 +141,37 @@ final class HFDownloader: NSObject, @unchecked Sendable {
         /// The number of chunks that still need fetching — used to size the worker pool.
         var remaining: Int { count - skip.count }
 
+        /// True once every outstanding index has been handed to a worker: the ramp controller's
+        /// stop condition (the pool then only drains what is already in flight).
+        var allHandedOut: Bool {
+            lock.lock()
+            defer { lock.unlock() }
+            return handedOut >= count - skip.count
+        }
+
         func nextIndex() -> Int? {
             lock.lock()
             defer { lock.unlock() }
             while next < count {
                 let i = next
                 next += 1
-                if !skip.contains(i) { return i }
+                if !skip.contains(i) {
+                    handedOut += 1
+                    return i
+                }
             }
             return nil
         }
+    }
+
+    /// Length of one ramp measurement window: long enough for ~2 chunks at the current rate so a
+    /// window's rate isn't dominated by chunk-boundary quantization, floored at `minWindow` (8 s
+    /// production; tests lower it for small files) and capped so a slow path can't stall the ramp.
+    static func rampWindowSeconds(
+        rate: Double, chunkSize: Int64, minWindow: TimeInterval = 8
+    ) -> TimeInterval {
+        let seconds = rate > 0 ? (2 * Double(chunkSize)) / rate : minWindow
+        return min(30, max(minWindow, seconds))
     }
 
     /// Download `file` into `destDir` with `workerCount(highPerformance:)` parallel chunk connections,
@@ -237,16 +263,49 @@ final class HFDownloader: NSObject, @unchecked Sendable {
         // Emit the resume baseline immediately so the UI jumps to the already-downloaded fraction.
         onProgress(progress.received(), total)
 
-        let spawn = min(workers, generator.remaining)
-        if spawn > 0 {
+        // Every download starts at the CGNAT-safe base; High Performance ramps toward the cap
+        // while measured throughput improves (see WorkerRamp — starting wide is what stalled a
+        // real 64-connection run over a lossy tunnel).
+        let capWorkers = workers
+        let baseWorkers = min(workers, HFDownloader.workerCount(highPerformance: false))
+        let ramp = WorkerRamp(start: baseWorkers, cap: capWorkers)
+        let initial = min(ramp.allowed, generator.remaining)
+        if initial > 0 {
             try await withThrowingTaskGroup(of: Void.self) { group in
-                for worker in 0..<spawn {
-                    group.addTask { [weak self] in
-                        guard let self else { return }
-                        try await self.runWorker(
-                            worker: worker, url: url, token: token, part: part, chunkSize: chunkSize,
-                            total: total, session: session, bitmap: bitmap, generator: generator,
-                            progress: progress, onProgress: onProgress)
+                var added = 0
+                func addWorkers(_ count: Int) {
+                    for _ in 0..<count {
+                        let worker = added
+                        added += 1
+                        group.addTask { [weak self] in
+                            guard let self else { return }
+                            try await self.runWorker(
+                                worker: worker, url: url, token: token, part: part, chunkSize: chunkSize,
+                                total: total, session: session, bitmap: bitmap, generator: generator,
+                                ramp: ramp, progress: progress, onProgress: onProgress)
+                        }
+                    }
+                }
+                addWorkers(initial)
+                if capWorkers > baseWorkers {
+                    // Adaptive ramp: sample durable bytes per window and grow the pool only while
+                    // the rate improves; the first window that doesn't settles back at the best
+                    // count (extra workers exit at their chunk boundary via `ramp.allows`).
+                    var lastCompleted = bitmap.completedBytes()
+                    var lastSample = Date()
+                    while !generator.allHandedOut, !ramp.finished {
+                        let now = Date()
+                        let completed = bitmap.completedBytes()
+                        let elapsed = max(now.timeIntervalSince(lastSample), 0.001)
+                        let rate = Double(completed - lastCompleted) / elapsed
+                        lastCompleted = completed
+                        lastSample = now
+                        let next = ramp.observe(rate: rate)
+                        if next > added { addWorkers(next - added) }
+                        if ramp.finished || generator.allHandedOut { break }
+                        let window = HFDownloader.rampWindowSeconds(
+                            rate: rate, chunkSize: chunkSize, minWindow: minRampWindow)
+                        try await Task.sleep(nanoseconds: UInt64(window * 1_000_000_000))
                     }
                 }
                 // Propagate the first worker failure (or cancellation) to the rest.
@@ -272,13 +331,16 @@ final class HFDownloader: NSObject, @unchecked Sendable {
     private func runWorker(
         worker: Int, url: URL, token: String?, part: URL, chunkSize: Int64, total: Int64,
         session: URLSession, bitmap: ChunkBitmap, generator: ChunkIndexGenerator,
-        progress: Progress, onProgress: @escaping @Sendable (Int64, Int64) -> Void
+        ramp: WorkerRamp, progress: Progress, onProgress: @escaping @Sendable (Int64, Int64) -> Void
     ) async throws {
         let fetcher = ChunkFetcher(session: session)
         let fh = try FileHandle(forWritingTo: part)
         defer { try? fh.close() }
 
-        while let idx = generator.nextIndex() {
+        // Check the ramp BEFORE pulling: a worker the ramp backed away from exits at its chunk
+        // boundary and leaves every index it hasn't taken for the workers that remain.
+        while ramp.allows(worker) {
+            guard let idx = generator.nextIndex() else { break }
             try Task.checkCancellation()
             let offset = Int64(idx) * chunkSize
             let end = min(offset + chunkSize - 1, total - 1)
@@ -354,5 +416,91 @@ final class HFDownloader: NSObject, @unchecked Sendable {
             }
         }
         dispatchMain()
+    }
+}
+
+/// Adaptive worker-count policy for High Performance downloads: begin at the CGNAT-safe base,
+/// double toward the cap while a measurement window beats the best rate by ≥10%, and on the
+/// first window that fails to improve (or stalls) settle back at the best-observed count and
+/// stop. Starting wide is what stalled a real download at 64 connections over a lossy tunnel;
+/// the ramp keeps the aggressive ceiling for healthy paths without racing into congestion.
+final class WorkerRamp: @unchecked Sendable {
+    static let improvementMargin = 1.10
+    private let lock = NSLock()
+    let cap: Int
+    private var _allowed: Int
+    private var bestRate: Double = 0
+    private var bestAllowed: Int
+    private var _finished = false
+
+    init(start: Int, cap: Int) {
+        self.cap = max(1, cap)
+        self._allowed = max(1, min(start, self.cap))
+        self.bestAllowed = self._allowed
+    }
+
+    /// Whether `worker` may pull more chunks. Checked before each handout, so workers the
+    /// ramp backed away from exit at their chunk boundary instead of competing on.
+    func allows(_ worker: Int) -> Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        return worker < _allowed
+    }
+
+    var allowed: Int {
+        lock.lock()
+        defer { lock.unlock() }
+        return _allowed
+    }
+
+    var finished: Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        return _finished
+    }
+
+    /// Feed one measurement window's aggregate rate (bytes/s); returns the count to allow next.
+    @discardableResult
+    func observe(rate: Double) -> Int {
+        lock.lock()
+        defer { lock.unlock() }
+        guard !_finished else { return _allowed }
+        if rate <= 0 {
+            // A stalled window must never grow the pool; once a baseline exists it ends the ramp.
+            if bestRate > 0 {
+                _allowed = bestAllowed
+                _finished = true
+            }
+            return _allowed
+        }
+        if _allowed >= cap {
+            // At the cap: hold it on improvement; the first window that fails to improve
+            // settles back at the best count.
+            if rate > bestRate * Self.improvementMargin {
+                bestRate = rate
+                bestAllowed = _allowed
+            } else {
+                _allowed = bestAllowed
+            }
+            _finished = true
+            return _allowed
+        }
+        if bestRate == 0 {
+            // First window: establish the baseline, then try more connections.
+            bestRate = rate
+            bestAllowed = _allowed
+            _allowed = min(cap, _allowed * 2)
+            return _allowed
+        }
+        if rate > bestRate * Self.improvementMargin {
+            bestRate = rate
+            bestAllowed = _allowed
+            _allowed = min(cap, _allowed * 2)
+        } else {
+            // First window that failed to improve: back to the best count and stop.
+            _allowed = bestAllowed
+            _finished = true
+        }
+        return _allowed
     }
 }
