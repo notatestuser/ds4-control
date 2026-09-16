@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## v1.8.0 — 2026-09-16
 - **V4.1 Flash support.** The app now offers DeepSeek V4.1 Flash next to V4 Flash 0731 and V4 Pro: `antirez/deepseek-v4.1-flash-gguf` Q2 (341 GiB on disk) and Q4 (483 GiB), Metal-only, arch `deepseek41`, served as `deepseek-v4.1-flash`. V4.1 needs ≥ 128 GiB; on 128–255 GiB it runs with automatic `--ssd-streaming` and a 32,768-token default context (ceiling 1,048,576). ~189 GiB of Engram tables stream from the SSD in every mode; resident main weights are ~152 GiB (Q2) / ~294 GiB (Q4). V4.1 always runs at full GPU power, and Max Think applies at any context (no 393,216 floor).
 - **Two-part Q4 with verified join.** V4.1 Q4 ships as two transport parts; the native downloader fetches each with resume, verifies the published SHA-256 digests, joins them in place (re-appending only the tail after an interruption), and verifies the joined file before use. A deliberate cancel keeps a verified 480 GiB assembled prefix for the next resume.
 - **V4.1 memory gate.** `Feasibility` mirrors ds4@bd66c40's `ds41_graph_bytes` / `ds41_memory_admit_for_host` exactly — pinned graph/streaming constants plus tests — including one graph per resident session and the fixed 2 GiB reserve; the app's Start gate and wired-limit advisory use it. V4.1 appears in Settings with its own quant picker and cleanup, and in the coding-agent launcher (`deepseek-v4.1-flash`).

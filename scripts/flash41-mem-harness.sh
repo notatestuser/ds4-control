@@ -208,7 +208,6 @@ run_one() {
     total_raw="$(awk "BEGIN{printf \"%.9f\", $peak_rss/1024/1024}")"
   fi
   rss_gib="$(awk "BEGIN{printf \"%.1f\", $total_raw}")"
-  total_gib="$(awk "BEGIN{printf \"%.1f\", $total_raw}")"
   ok="$(awk "BEGIN{print ($total_raw<=$LIMIT_GIB)?\"YES\":\"NO\"}")"
   warn="$(awk "BEGIN{print ($total_raw> $USABLE_GIB && $total_raw<=$LIMIT_GIB)?\" (>${USABLE_GIB} usable, will page)\":\"\"}")"
   printf '  %-9s %s resident_model=%-7s planned=%-7s peak_RSS=%-7s tokens=%-8s fits_%s=%s%s\n' \

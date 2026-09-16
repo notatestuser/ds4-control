@@ -949,9 +949,6 @@ final class SupervisorService: ObservableObject {
     }
 
     // MARK: - Flash quant store (Settings: download markers + cleanup)
-    func flashQuantURL(_ q: FlashQuant) -> URL {
-        ggufBaseDir().appendingPathComponent(q.quant.ggufFilename)
-    }
     func isFlashQuantDownloaded(_ q: FlashQuant) -> Bool {
         isDownloaded(.flash(q))
     }
