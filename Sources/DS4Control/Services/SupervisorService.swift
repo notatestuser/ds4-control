@@ -20,10 +20,42 @@ enum ListeningPIDResult: Equatable {
     case failure
 }
 
+/// The Server-group settings a launch was started with. Published by `SupervisorService` so
+/// Settings can enable "Apply & Restart Server" only while its controls differ from the
+/// running server. `nil` for a server adopted from a previous app run — its launch flags
+/// aren't knowable — in which case Apply stays available.
+struct LaunchConfig: Equatable {
+    var selection: QuantSelection
+    var ctx: Int
+    var host: String
+    var port: Int
+    /// Effective GPU power duty. ds4 defaults to 100 and V4.1 always forces full power
+    /// (`SupervisorService.memoryArgs`), so unset and explicit 100 compare equal.
+    var power: Int
+    var sessions: Int
+    var kvDiskCache: Bool
+
+    init(
+        selection: QuantSelection, ctx: Int, host: String, port: Int, power: Int?,
+        sessions: Int, kvDiskCache: Bool
+    ) {
+        self.selection = selection
+        self.ctx = ctx
+        self.host = host
+        self.port = port
+        self.power = selection.variant == .flash41 ? 100 : (power ?? 100)
+        self.sessions = sessions
+        self.kvDiskCache = kvDiskCache
+    }
+}
+
 @MainActor
 final class SupervisorService: ObservableObject {
     @Published private(set) var state: ServerState = .idle
     @Published private(set) var activeModel: String?
+    /// The launch config of the ds4-server this supervisor started (nil while idle/error,
+    /// and for a server adopted from a previous app run). Drives Settings' dirty check.
+    @Published private(set) var activeConfig: LaunchConfig?
     @Published private(set) var port: Int = 8000
     @Published private(set) var ctx: Int = 393_216
     @Published private(set) var health: HealthStatus?
@@ -56,8 +88,13 @@ final class SupervisorService: ObservableObject {
     /// Deferred start used by `restart`: when stopping an owned process, the relaunch
     /// can't happen until it has fully exited (port freed). `handleExit` runs this.
     private var pendingRestart: (() -> Void)?
+    /// When set, the in-flight owned teardown settles in `.error(this)` through
+    /// `completeStop` instead of `.idle`. Runtime failures must not be published (and Retry
+    /// enabled) while the process that caused them is still alive.
+    private var pendingStopError: ServerError?
     /// Identifies the runner callback belonging to the current owned server. A runner can
-    /// deliver an old process's exit after a replacement launch has already started.
+    /// deliver an old process's exit or stderr readiness after a replacement launch has
+    /// already started; both are matched against this before touching state.
     private var serverGeneration = 0
     private var activeServerGeneration: Int?
     /// Callers waiting for a confirmed stop (notably app termination). Multiple quit/stop
@@ -67,6 +104,9 @@ final class SupervisorService: ObservableObject {
     /// unresolved owned process must not leave app termination waiting forever.
     private var ownedStopWatchdog: Task<Void, Never>?
     private let ownedStopWatchdogDelay: TimeInterval
+    /// Startup watchdog: how long a loading ds4-server may stay in `.starting` before it is
+    /// torn down. Injectable so tests can drive the timeout without waiting ten minutes.
+    private let startupTimeout: TimeInterval
     typealias ListeningPIDLookup = @Sendable (Int) -> ListeningPIDResult
     private let listeningPIDLookup: ListeningPIDLookup
 
@@ -104,6 +144,7 @@ final class SupervisorService: ObservableObject {
         ggufBaseURL: URL? = nil, cacheBaseURL: URL? = nil,
         downloadRunner: ProcessRunner? = nil, fetchFile: FetchFile? = nil,
         wiredLimitGate: WiredLimitGate? = nil, ownedStopWatchdogDelay: TimeInterval = 35,
+        startupTimeout: TimeInterval = 600,
         listeningPIDLookup: ListeningPIDLookup? = nil
     ) {
         self.ds4Dir = ds4Dir
@@ -114,6 +155,7 @@ final class SupervisorService: ObservableObject {
         self.downloadRunner = downloadRunner ?? RealProcessRunner()
         self.wiredLimitGate = wiredLimitGate ?? Self.defaultWiredLimitGate
         self.ownedStopWatchdogDelay = ownedStopWatchdogDelay
+        self.startupTimeout = startupTimeout
         self.listeningPIDLookup = listeningPIDLookup ?? { Self.pidsListening(onPort: $0) }
         self.fetchFile =
             fetchFile ?? { repo, file, dir, token, highPerformance, prog in
@@ -194,7 +236,7 @@ final class SupervisorService: ObservableObject {
         "DS4_METAL_GRAPH_RAW_CAP",
     ]
 
-    private static func normalizedBindHost(_ host: String) -> String {
+    static func normalizedBindHost(_ host: String) -> String {
         let trimmed = host.trimmingCharacters(in: .whitespacesAndNewlines)
         return trimmed.isEmpty ? "127.0.0.1" : trimmed
     }
@@ -210,6 +252,7 @@ final class SupervisorService: ObservableObject {
         overrideWiredLimitGate: Bool = false
     ) {
         guard state == .idle || isErrorState else { emitBadState("start"); return }
+        guard !runner.isRunning else { emitBadState("start"); return }
         if let e = validateDs4Dir() { state = .error(e); return }
         if let reason = launchBoundsError(variant: selection.variant, ctx: ctx, sessions: sessions) {
             state = .error(.configurationBlocked(reason: reason))
@@ -233,7 +276,12 @@ final class SupervisorService: ObservableObject {
             state = .error(.modelMissing(filename: gguf.lastPathComponent)); return
         }
         self.port = port; self.ctx = ctx; self.activeModel = selection.variant.modelId
+        activeConfig = LaunchConfig(
+            selection: selection, ctx: ctx, host: Self.normalizedBindHost(host), port: port,
+            power: power, sessions: sessions, kvDiskCache: kvDiskDir != nil)
         stderrTail = []; expectingExit = false; serverAttached = false
+        // A fresh launch supersedes any teardown whose outcome was never settled.
+        pendingStopError = nil
         var args = [
             "-m", gguf.path,
             "--ctx", "\(ctx)",
@@ -267,20 +315,28 @@ final class SupervisorService: ObservableObject {
                 executable: ds4Dir.appendingPathComponent("ds4-server"),
                 args: args, cwd: ds4Dir, env: [:],
                 removingEnvironmentKeys: Self.allocatorEnvironmentKeys,
-                onStderrLine: { [weak self] line in Self.onMain { self?.handleStderr(line) } },
+                onStderrLine: { [weak self] line in
+                    Self.onMain { self?.handleStderr(line, generation: generation) }
+                },
                 onExit: { [weak self] code in
                     Self.onMain { self?.handleExit(code, generation: generation) }
                 })
         } catch {
-            if activeServerGeneration == generation { activeServerGeneration = nil }
+            if activeServerGeneration == generation {
+                activeServerGeneration = nil
+                activeConfig = nil
+            }
             state = .error(.crashed(tail: "\(error)")); return
         }
-        startupTimer = Timer.scheduledTimer(withTimeInterval: 600, repeats: false) { [weak self] _ in
-            Task { @MainActor in if self?.state == .starting { self?.fail(.startupTimeout) } }
+        startupTimer = Timer.scheduledTimer(withTimeInterval: startupTimeout, repeats: false) { [weak self] _ in
+            Task { @MainActor in self?.handleStartupTimeout(generation: generation) }
         }
     }
 
-    private func handleStderr(_ line: String) {
+    private func handleStderr(_ line: String, generation: Int) {
+        // Only the active loader's output is ours: a superseded process's late readiness
+        // line must not certify the replacement a Retry launched.
+        guard activeServerGeneration == generation else { return }
         recentLog.append(line); stderrTail.append(line)
         if stderrTail.count > 50 { stderrTail.removeFirst(stderrTail.count - 50) }
         if state == .starting, isReadyLine(line) {
@@ -290,9 +346,20 @@ final class SupervisorService: ObservableObject {
         }
     }
 
+    /// The startup watchdog fired: rather than publish `.error` while the loader is still
+    /// alive (Retry would then `start()` a replacement that races it for the port and the
+    /// GPU working set), terminate it and let `handleExit` settle the failure via
+    /// `pendingStopError`.
+    private func handleStartupTimeout(generation: Int) {
+        guard state == .starting, activeServerGeneration == generation else { return }
+        pendingStopError = .startupTimeout
+        stop()
+    }
+
     private func handleExit(_ code: Int32, generation: Int) {
         guard activeServerGeneration == generation else { return }
         activeServerGeneration = nil
+        activeConfig = nil
         ownedStopWatchdog?.cancel(); ownedStopWatchdog = nil
         healthTimer?.invalidate(); healthTimer = nil; startupTimer?.invalidate(); startupTimer = nil
         if expectingExit {
@@ -388,8 +455,13 @@ final class SupervisorService: ObservableObject {
     private func completeStop() {
         ownedStopWatchdog?.cancel(); ownedStopWatchdog = nil
         activeServerGeneration = nil
+        activeConfig = nil
         expectingExit = false
-        state = .idle
+        // A startup-timeout teardown settles as the failure that caused it; a normal stop
+        // settles idle.
+        let stopError = pendingStopError
+        pendingStopError = nil
+        state = stopError.map { .error($0) } ?? .idle
         let completions = pendingStopCompletions
         pendingStopCompletions.removeAll()
         for completion in completions { completion(true) }
@@ -411,6 +483,19 @@ final class SupervisorService: ObservableObject {
         ownedStopWatchdog = nil
         if !runner.isRunning {
             completeStop()
+            return
+        }
+        // A failed server that even SIGKILL didn't settle must not expose Retry, whose
+        // start() would race the live process for the port and the GPU working set. Keep
+        // the teardown pending, kill again, and re-arm the watchdog; a late exit still
+        // settles the failure through handleExit.
+        if pendingStopError != nil {
+            recentLog.append("Failed ds4-server still running; retrying teardown")
+            startOwnedStopWatchdog()
+            runner.terminate(graceSeconds: 30)
+            let completions = pendingStopCompletions
+            pendingStopCompletions.removeAll()
+            for completion in completions { completion(false) }
             return
         }
         pendingRestart = nil
@@ -1168,8 +1253,20 @@ final class SupervisorService: ObservableObject {
         }
     }
     private var isErrorState: Bool { if case .error = state { return true }; return false }
-    private func fail(_ e: ServerError) {
-        healthTimer?.invalidate(); healthTimer = nil; startupTimer?.invalidate(); startupTimer = nil; state = .error(e)
+    /// The single runtime error transition (health failure). A live owned server is first
+    /// stopped; `completeStop` clears its config and publishes the failure only after exit.
+    /// Exposed to tests so the lifecycle contract can be pinned, like `memoryArgs`.
+    func fail(_ e: ServerError) {
+        healthTimer?.invalidate(); healthTimer = nil; startupTimer?.invalidate(); startupTimer = nil
+        if runner.isRunning, state == .ready || state == .starting {
+            pendingStopError = e
+            stop()
+            return
+        }
+        // The config describes a live server, and `.error` has none: clear before publishing
+        // so Settings' dirty check never reads a stale launch.
+        activeConfig = nil
+        state = .error(e)
     }
     private func emitBadState(_ cmd: String) { recentLog.append("ignored '\(cmd)' in state \(state)") }
 }

@@ -61,7 +61,7 @@ make -C external/ds4 -j ds4-server          # build the ds4-server binary
 DS4_DIR="$PWD/external/ds4" swift run        # build + run the dev app against the submodule
 ```
 
-`DS4_DIR` points the app at that ds4 checkout so **Start** can spawn `ds4-server` — without it the dev build looks for a bundled `ds4/` next to the binary and won't find the server. It's a menu-bar app (no dock icon): after launch, click the bolt icon in the macOS menu bar, pick **Pro**, **V4.1 Flash**, or **Flash (0731)** (preselected by your RAM), then **Download** (if the model isn't present) and **Start**.
+`DS4_DIR` points the app at that ds4 checkout so **Start** can spawn `ds4-server` — without it the dev build looks for a bundled `ds4/` next to the binary and won't find the server. It's a menu-bar app (no dock icon): after launch, click the bolt icon in the macOS menu bar, pick **Pro**, **V4.1 Flash**, or **Flash (0731)** (preselected by your RAM), then **Download** (if the model isn't present) and **Start**. The popup's picker locks while the server is loading or running, so switching models later takes **Stop** first; the per-generation weight choice lives in Settings next to **Apply & Restart Server**.
 
 ## Requirements
 
@@ -90,7 +90,7 @@ sudo sysctl iogpu.wired_limit_mb=<value shown in the popup>
 
 and a "Metal wired limit help…" window walks through it step by step — including making it survive reboots (the sysctl resets on every restart, which is why a setup that worked before can hang after one). A confirmed "Start anyway" override remains if you know your setup works. This applies most often to 96–127 GiB machines running Flash q2, but also to V4 Pro on 512 GiB and Flash q2-q4 at 1M context on 128 GiB when their default cap is below the working set.
 
-**Default context** is `1,000,000` for Pro and for Flash on ≥ 128 GiB; Flash on 96–127 GiB defaults to `256,000`; **V4.1 Flash defaults to `32,768`** (upstream's documented SSD-streaming configuration — raise it in Settings when memory allows, up to its 1,048,576 ceiling). Max Think is unavailable below 128 GiB, including in the built-in chat and coding-agent launcher. For V4.1 Flash, `--ssd-streaming` is passed automatically when full residency doesn't fit and full GPU power is always used; Engram rows stream from the SSD in every mode, so keep the GGUF on a fast local disk. You can otherwise override the context in Settings, subject to the physical-memory and wired-limit checks above.
+**Default context** is `1,000,000` for Pro and for Flash on ≥ 128 GiB; Flash on 96–127 GiB defaults to `256,000`; **V4.1 Flash defaults to `1,048,576` when the 1M window fits fully resident at your RAM tier (41-q2 from 256 GiB, 41-q4 from 384 GiB), else to `32,768`** (upstream's documented SSD-streaming configuration — raise it in Settings when memory allows, up to its 1,048,576 ceiling). Max Think is unavailable below 128 GiB, including in the built-in chat and coding-agent launcher. For V4.1 Flash, `--ssd-streaming` is passed automatically when full residency doesn't fit and full GPU power is always used; Engram rows stream from the SSD in every mode, so keep the GGUF on a fast local disk. You can otherwise override the context in Settings, subject to the physical-memory and wired-limit checks above.
 
 ## Thinking
 

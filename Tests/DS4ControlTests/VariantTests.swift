@@ -136,7 +136,7 @@ final class VariantTests: XCTestCase {
         XCTAssertEqual(Flash41Quant.allCases, [.q2, .q4])  // smallest → largest (picker order)
         XCTAssertEqual(Flash41Quant.q2.quant, .q41Q2)
         XCTAssertEqual(Flash41Quant.q4.quant, .q41Q4)
-        XCTAssertTrue(Flash41Quant.q2.label.contains("41-q2"))
-        XCTAssertTrue(Flash41Quant.q4.label.contains("41-q4"))
+        XCTAssertEqual(Flash41Quant.q2.label, "41-q2 · ~152 GiB (341 GiB on disk)")
+        XCTAssertEqual(Flash41Quant.q4.label, "41-q4 · ~294 GiB (483 GiB on disk)")
     }
 }

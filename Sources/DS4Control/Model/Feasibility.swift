@@ -671,13 +671,22 @@ func defaultFlash41Quant(ramGiB: Double) -> Flash41Quant {
 
 /// Default context, tiered by model generation and machine memory. V4 Pro and ≥128 GiB
 /// Flash (q2-q4 quant) run the full 1M window all-resident; 96–127 GiB Flash (q2) is
-/// capped at 256K. V4.1 Flash defaults to 32,768 — upstream's documented SSD-streaming
-/// configuration (docs/MODELS.md@bd66c40); raise it from Settings when memory allows.
+/// capped at 256K. V4.1 Flash defaults to the 1,048,576 ceiling when the machine holds that
+/// window fully resident (the auto `--ssd-streaming` heuristic says no streaming is needed
+/// at this RAM tier — 41-q2 from 256 GiB, 41-q4 from 384 GiB), else to upstream's documented
+/// 32,768 SSD-streaming configuration (docs/MODELS.md@bd66c40); both are adjustable from
+/// Settings.
 func defaultCtx(ramGiB: Double, selection: QuantSelection) -> Int {
-    switch selection.variant {
+    switch selection {
     case .pro: return Variant.pro.ctxCeiling
     case .flash: return ramGiB >= 128 ? Variant.flash.ctxCeiling : 256_000
-    case .flash41: return 32_768
+    case .flash41(let q):
+        guard ramGiB >= flash41MinRamGiB(q) else { return 32_768 }
+        let ceiling = Variant.flash41.ctxCeiling
+        let streaming = flash41UsesSSDStreaming(
+            ramGiB: ramGiB, wiredLimitMB: wiredLimitAdvisoryMB(ramGiB: ramGiB),
+            quant: q.quant, ctx: ceiling, sessions: 1)
+        return streaming ? 32_768 : ceiling
     }
 }
 
@@ -742,4 +751,23 @@ func feasibility(
     feasibility(
         ramGiB: ramGiB, selection: variant == .pro ? .pro : .flash(flashQuant),
         ctx: ctx, wiredLimitMB: wiredLimitMB, sessions: sessions)
+}
+
+/// Largest resident-session count whose launch config passes the wired-limit gate at the
+/// live limit without the "Start anyway" override, capped at `maxConcurrentSessions`.
+/// Returns 0 when even one session fails the gate — the config needs the override (or is
+/// blocked outright), which the Start/Restart gate reports; callers keep the stepper's
+/// minimum at one.
+func maxFittingSessions(
+    ramGiB: Double, selection: QuantSelection, ctx: Int, wiredLimitMB: Int
+) -> Int {
+    for sessions in stride(from: maxConcurrentSessions, through: 1, by: -1) {
+        if case .standard = feasibility(
+            ramGiB: ramGiB, selection: selection, ctx: ctx, wiredLimitMB: wiredLimitMB,
+            sessions: sessions)
+        {
+            return sessions
+        }
+    }
+    return 0
 }

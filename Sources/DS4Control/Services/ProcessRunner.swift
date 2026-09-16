@@ -61,6 +61,10 @@ protocol ProcessRunner: AnyObject {
     var isRunning: Bool { get }
 }
 
+enum ProcessRunnerError: Error, Equatable {
+    case alreadyRunning
+}
+
 /// Buffers a process's stderr into newline-delimited lines. `FileHandle` invokes the
 /// readability handler serially on its own private queue, so the mutable buffer is never
 /// accessed concurrently — hence the `@unchecked Sendable` conformance (Swift 6 mode).
@@ -90,9 +94,10 @@ private final class StderrLineReader: @unchecked Sendable {
 
 final class RealProcessRunner: ProcessRunner {
     private var process: Process?
+    private let processLock = NSLock()
     private let queue = DispatchQueue(label: "ds4.process")
 
-    var isRunning: Bool { process?.isRunning ?? false }
+    var isRunning: Bool { processLock.withLock { process?.isRunning ?? false } }
 
     func launch(
         executable: URL, args: [String], cwd: URL, env: [String: String],
@@ -118,8 +123,20 @@ final class RealProcessRunner: ProcessRunner {
             reader.stop()
             onExit(proc.terminationStatus)
         }
-        try p.run()
-        self.process = p
+        do {
+            try processLock.withLock {
+                guard process?.isRunning != true else { throw ProcessRunnerError.alreadyRunning }
+                try p.run()
+                process = p
+            }
+        } catch {
+            // Neither a refused launch nor a failed `Process.run()` reaches
+            // `terminationHandler` — the only other reader stop — so clear the handler or it
+            // leaks with the pipe's descriptors (reader → FileHandle → readabilityHandler
+            // keeps the cycle alive).
+            reader.stop()
+            throw error
+        }
     }
 
     static func childEnvironment(
@@ -132,7 +149,7 @@ final class RealProcessRunner: ProcessRunner {
     }
 
     func terminate(graceSeconds: Double) {
-        guard let p = process else { return }
+        guard let p = processLock.withLock({ process }) else { return }
         // download_model.sh spawns `hf` as a child; SIGTERM to the shell alone orphans
         // hf, which keeps holding the hf download lock and blocks the next attempt.
         // Capture descendants *before* killing (they reparent to launchd once the shell
