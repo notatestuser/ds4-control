@@ -1,4 +1,4 @@
-# DS4 Control — project guide for Claude
+# DS4 Control agent notes
 
 ## Purpose
 
@@ -23,14 +23,22 @@ ds4 `munmap`s at load.
 `external/ds4` is the upstream [antirez/ds4](https://github.com/antirez/ds4) submodule, pinned to
 the V4.1-Flash-support commit `bd66c4020`. THINK_MAX is applied on top via
 `patches/ds4-think-max.patch` (`scripts/apply-ds4-patches.sh`) because upstream still emits the
-official 0731/0813 **high** prefix for `reasoning_effort: max` (antirez/ds4#635); V4.1 uses numeric
-reasoning effort and is unaffected. The Metal context-allocation formula, shared graph workspace,
-per-session graph allocations, and persistent backend-scratch bounds were verified byte-identical
-for 0731/Pro between the previous pin (`c35cf38`) and `bd66c4020`. V4.1 has its own estimator
-(`ds41_graph_bytes` / `ds41_memory_admit_for_host`), mirrored as `ds41GraphBytes` +
-`v41FixedWiredMB` in `Feasibility.swift` with pinned constants and tests. If a future ds4 bump
-changes any allocator or shape assumption, re-verify `Feasibility.swift` and the
-feasibility/memory-tier tests before release.
+official 0731/0813 **high** prefix for `reasoning_effort: max` (antirez/ds4#635); it still applies
+at this pin and remains 0731/Pro-only (V4.1 uses numeric reasoning effort and is unaffected). The
+Metal context-allocation formula, shared graph workspace, per-session graph allocations, and
+persistent backend-scratch bounds were verified byte-identical for 0731/Pro between the previous
+pin (`c35cf38`) and `bd66c4020`, so the existing `Feasibility` path and memory tiers carry over.
+V4.1 has its own estimator (`ds41_graph_bytes` / `ds41_memory_admit_for_host`), mirrored as
+`ds41GraphBytes` + `v41FixedWiredMB` in `Feasibility.swift`, with `ds41NonRoutedBytes` and the two
+`ds41Q*PrefillHeadroomBytes` constants derived from the quant recipe and verified against
+`external/ds4` source. The Q4 GGUF ships as two parts that are SHA-256 verified and joined in place
+(see `GGUFJoiner`); if a future ds4 bump changes any allocator or shape assumption, re-verify
+`Feasibility.swift` and the feasibility/variant/downloader tests before release.
+
+When bumping ds4, re-read the GA files' exact byte sizes into `Quant.ggufBytes` (and part sizes /
+digests into `downloadParts`), verify the Metal context-allocation formulas against that ds4
+revision, and refresh the feasibility/variant tests and documented memory tiers. Do not carry
+allocator assumptions across a revision that changed them.
 
 ## Stack
 
@@ -84,3 +92,46 @@ Entry point `DS4ControlApp.swift` (`@main`) builds one `AppState`, one `Supervis
 | Agent launcher | `Services/AgentLauncher.swift` | Generates a wrapper shell script + `osascript` to open Terminal running pi/claude against the local server (Max-Think prompt, env vars, bundled pi `models.json`). |
 | Views | `Views/PopupView.swift`, `SettingsView.swift`, `ModelRowView.swift`, `MetricCardView.swift` | Menu-bar popup (model selector + metric cards + gear/chat/terminal icons), Settings, feasibility row. |
 | Misc | `Paths.swift`, `WindowChrome.swift` | App-support dirs (gguf, pi-agent); accessory↔regular window switching for proper chat/settings windows. |
+
+<!-- headroom:rtk-instructions -->
+# RTK (Rust Token Killer) - Token-Optimized Commands
+
+When running shell commands, **always prefix with `rtk`**. This reduces context
+usage by 60-90% with zero behavior change. If rtk has no filter for a command,
+it passes through unchanged — so it is always safe to use.
+
+## Key Commands
+```bash
+# Git (59-80% savings)
+rtk git status          rtk git diff            rtk git log
+
+# Files & Search (60-75% savings)
+rtk ls <path>           rtk read <file>         rtk grep <pattern>
+rtk find <pattern>      rtk diff <file>
+
+# Test (90-99% savings) — shows failures only
+rtk pytest tests/       rtk cargo test          rtk test <cmd>
+
+# Build & Lint (80-90% savings) — shows errors only
+rtk tsc                 rtk lint                rtk cargo build
+rtk prettier --check    rtk mypy                rtk ruff check
+
+# Analysis (70-90% savings)
+rtk err <cmd>           rtk log <file>          rtk json <file>
+rtk summary <cmd>       rtk deps                rtk env
+
+# GitHub (26-87% savings)
+rtk gh pr view <n>      rtk gh run list         rtk gh issue list
+
+# Infrastructure (85% savings)
+rtk docker ps           rtk kubectl get         rtk docker logs <c>
+
+# Package managers (70-90% savings)
+rtk pip list            rtk pnpm install        rtk npm run <script>
+```
+
+## Rules
+- In command chains, prefix each segment: `rtk git add . && rtk git commit -m "msg"`
+- For debugging, use raw command without rtk prefix
+- `rtk proxy <cmd>` runs command without filtering but tracks usage
+<!-- /headroom:rtk-instructions -->
