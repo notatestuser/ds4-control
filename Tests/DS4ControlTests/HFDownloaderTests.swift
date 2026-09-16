@@ -222,6 +222,44 @@ final class HFDownloaderTests: XCTestCase {
             encoding: .utf8)
         XCTAssertTrue(source.contains("waitsForConnectivity = false"))
     }
+
+    /// The injected configuration is a borrowed reference: the download must copy it before
+    /// applying its session settings, never mutate the shared instance under another download.
+    func testInjectedSessionConfigurationIsNotMutated() async throws {
+        MockHFProtocol.state.reset(failFirst: false, alwaysFail: false)
+        let dir = URL(fileURLWithPath: NSTemporaryDirectory()).appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let cfg = URLSessionConfiguration.ephemeral
+        cfg.protocolClasses = [MockHFProtocol.self]
+        cfg.httpMaximumConnectionsPerHost = 13  // sentinel the download would overwrite to 8
+        let dl = HFDownloader(repo: "test/repo", sessionConfiguration: cfg, probeRetryBackoff: 0.01)
+
+        try await dl.download(file: "tiny.gguf", into: dir, token: nil, highPerformance: false) { _, _ in }
+
+        XCTAssertEqual(
+            cfg.httpMaximumConnectionsPerHost, 13,
+            "the injected configuration must not be mutated by a download")
+    }
+
+    /// The test-facing backoff knob must be sanitized before the `UInt64` nanosecond conversion:
+    /// a negative or non-finite value would otherwise trap and crash the app.
+    func testUnsafeProbeBackoffValuesDoNotTrap() async throws {
+        for badBackoff in [-5.0, Double.nan] {
+            MockHFProtocol.state.reset(failFirst: true, alwaysFail: false)
+            let dir = URL(fileURLWithPath: NSTemporaryDirectory()).appendingPathComponent(UUID().uuidString)
+            defer { try? FileManager.default.removeItem(at: dir) }
+            let cfg = URLSessionConfiguration.ephemeral
+            cfg.protocolClasses = [MockHFProtocol.self]
+            let dl = HFDownloader(
+                repo: "test/repo", sessionConfiguration: cfg, probeRetryBackoff: badBackoff)
+
+            try await dl.download(file: "tiny.gguf", into: dir, token: nil, highPerformance: false) { _, _ in }
+
+            XCTAssertEqual(
+                try Data(contentsOf: dir.appendingPathComponent("tiny.gguf")), MockHFProtocol.body,
+                "backoff \(badBackoff) must be sanitized, not trap")
+        }
+    }
 }
 
 /// Offline `URLProtocol` answering HF-style closed-Range requests for a 4-byte file. Configured

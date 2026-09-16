@@ -46,7 +46,9 @@ final class HFDownloader: NSObject, @unchecked Sendable {
         self.revision = revision
         self.maxRetries = maxRetries
         self.sessionConfiguration = sessionConfiguration
-        self.probeRetryBackoff = probeRetryBackoff
+        // Sanitized at the boundary: this knob exists for tests, and a negative, non-finite, or
+        // gigantic value would otherwise trap the UInt64 nanosecond conversion in the probe retry.
+        self.probeRetryBackoff = probeRetryBackoff.isFinite ? min(max(probeRetryBackoff, 0), 60) : 0
         super.init()
     }
 
@@ -164,7 +166,10 @@ final class HFDownloader: NSObject, @unchecked Sendable {
         // ONE shared session for all workers. CRITICAL: httpMaximumConnectionsPerHost defaults to 6,
         // which would silently cap parallelism — raise it to the worker count. With per-task delegates
         // (set inside each ChunkFetcher) the session needs no session-wide delegate.
-        let cfg = sessionConfiguration ?? URLSessionConfiguration.default
+        let base = sessionConfiguration ?? URLSessionConfiguration.default
+        // Copy before mutating: an injected configuration may be shared across downloads, and this
+        // download owns its session settings — a borrowed instance must never be altered.
+        let cfg = (base.copy() as? URLSessionConfiguration) ?? base
         cfg.timeoutIntervalForRequest = 60
         // Fail fast instead of parking in `.waitingForConnectivity`: that wait is unbounded, so a
         // first-contact network blip froze the whole download on a spinner with no speed (the
@@ -182,13 +187,14 @@ final class HFDownloader: NSObject, @unchecked Sendable {
         defer { try? devNull.close() }
         // Size probe, retried: it is the FIRST network contact (cold DNS/route, VPN churn), and the
         // workers' resilient path doesn't start until it returns. Capped at 3 attempts so a
-        // persistently unreachable server fails the download instead of spinning forever.
-        let probe = ChunkFetcher(session: session)
+        // persistently unreachable server fails the download instead of spinning forever. A fresh
+        // fetcher per attempt: the failed task's async cancellation completion must never resume
+        // the retry's continuation (a reused fetcher's `finish` can't tell the tasks apart).
         var probeTotal: Int64 = -1
         var probeAttempt = 0
         while true {
             do {
-                probeTotal = try await probe.fetch(
+                probeTotal = try await ChunkFetcher(session: session).fetch(
                     url: url, offset: 0, end: 0, token: token, fileHandle: devNull, onBytes: { _ in })
                 break
             } catch is CancellationError {
