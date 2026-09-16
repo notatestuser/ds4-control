@@ -755,8 +755,9 @@ func feasibility(
 
 /// Largest resident-session count whose launch config passes the wired-limit gate at the
 /// live limit without the "Start anyway" override, capped at `maxConcurrentSessions`.
-/// Always at least 1 — a config that needs the override (or is blocked outright) is
-/// reported by the Start/Restart gate itself.
+/// Returns 0 when even one session fails the gate — the config needs the override (or is
+/// blocked outright), which the Start/Restart gate reports; callers keep the stepper's
+/// minimum at one.
 func maxFittingSessions(
     ramGiB: Double, selection: QuantSelection, ctx: Int, wiredLimitMB: Int
 ) -> Int {
@@ -768,5 +769,5 @@ func maxFittingSessions(
             return sessions
         }
     }
-    return 1
+    return 0
 }

@@ -41,6 +41,7 @@ final class GUIHostOptionSourceTests: XCTestCase {
         XCTAssertTrue(settings.contains("in: 1...Double(stepperMaxSessions)"))
         XCTAssertTrue(settings.contains("maxFittingSessions("))
         XCTAssertTrue(settings.contains("sessionsMemoryCaption"))
+        XCTAssertTrue(settings.contains("No slot fits this selection at the current context."))
         XCTAssertFalse(settings.contains("Slider(value: sessionsBinding"))
     }
 

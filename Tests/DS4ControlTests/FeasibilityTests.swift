@@ -84,6 +84,11 @@ final class FeasibilityTests: XCTestCase {
         XCTAssertEqual(
             maxFittingSessions(
                 ramGiB: 512, selection: .pro, ctx: 1_000_000, wiredLimitMB: 520_192), 1)
+        // A selection where even one session fails the gate reports zero — 96 GiB Flash q2
+        // @256K needs 93,390 MB against the machine's default-equivalent 73,728 MB cap.
+        XCTAssertEqual(
+            maxFittingSessions(
+                ramGiB: 96, selection: .flash(.q2), ctx: 256_000, wiredLimitMB: 73_728), 0)
     }
 
     func testWiredLimitRejectsFractionalKVOverage() {

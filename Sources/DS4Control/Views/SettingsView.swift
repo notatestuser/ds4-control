@@ -122,15 +122,16 @@ struct SettingsView: View {
         Binding(get: { Double(app.concurrentSessions) }, set: { app.concurrentSessions = Int($0.rounded()) })
     }
     /// Largest parallel-slot count whose launch config clears the wired-limit gate at the
-    /// live context without the "Start anyway" override. Always ≥ 1.
+    /// live context without the "Start anyway" override; 0 when even one slot doesn't pass.
     private var fittingSessionCount: Int {
         maxFittingSessions(
             ramGiB: ram, selection: app.quantSelection,
             ctx: app.effectiveCtx(ramGiB: ram), wiredLimitMB: effectiveWiredLimitMB(ramGiB: ram))
     }
     /// Stepper bound: the fitting count, never below an already-stored value — a config that
-    /// stopped fitting (raised context, heavier model tier) stays visible and reversible.
-    private var stepperMaxSessions: Int { max(fittingSessionCount, app.concurrentSessions) }
+    /// stopped fitting (raised context, heavier model tier) stays visible and reversible —
+    /// and never below one, so the control always has a valid range.
+    private var stepperMaxSessions: Int { max(fittingSessionCount, app.concurrentSessions, 1) }
     /// GPU-wired MB for `sessions` resident sessions at the live context and selection.
     private func wiredMB(sessions: Int) -> Int {
         requiredWiredMB(
@@ -156,8 +157,12 @@ struct SettingsView: View {
         return gib >= 1 ? gib : nil
     }
     /// Live cost line under the stepper: per-slot memory at the current context, the extra
-    /// for the selected count, and how many slots fit this Mac's wired limit.
+    /// for the selected count, and how many slots fit this Mac's wired limit. A selection
+    /// where even one slot doesn't pass the gate says so instead of implying one fits.
     private var sessionsMemoryCaption: String {
+        guard fittingSessionCount > 0 else {
+            return "No slot fits this selection at the current context."
+        }
         var parts: [String] = []
         if let perSlot = perSlotGiB {
             parts.append("≈ \(perSlot) GiB per slot at \(app.effectiveCtx(ramGiB: ram).formatted()) ctx")
