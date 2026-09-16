@@ -319,8 +319,9 @@ struct SettingsView: View {
             } footer: {
                 Text(
                     "Downloads start at 8 connections and only add more (up to 64) while throughput "
-                        + "keeps improving, settling back when it stops. Leave off behind CGNAT or strict "
-                        + "NAT — many connections can overload your router and knock you offline."
+                        + "keeps improving, settling back when it stops and re-trying every few minutes. "
+                        + "Leave off behind CGNAT or strict NAT — many connections can overload your "
+                        + "router and knock you offline."
                 )
             }
 

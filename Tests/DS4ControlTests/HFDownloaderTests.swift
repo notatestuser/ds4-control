@@ -8,8 +8,8 @@ final class HFDownloaderTests: XCTestCase {
         XCTAssertEqual(HFDownloader.workerCount(highPerformance: true), 64)  // opt-in aggressive cap
     }
 
-    /// The ramp's decision logic: baseline-then-double while windows improve by ≥10%, revert to
-    /// the best count and stop on the first window that fails to improve (the 64-connection
+    /// The ramp's decision logic: baseline-then-double while windows improve by ≥10%, settle back
+    /// at the best count and stop the first time a window fails to improve (the 64-connection
     /// freeze seen over lossy paths), re-measure before settling at the cap, and treat stalled
     /// windows as failures.
     func testWorkerRampPolicy() {
@@ -20,34 +20,65 @@ final class HFDownloaderTests: XCTestCase {
         XCTAssertEqual(ramp.observe(rate: 100), 16, "the baseline window then tries more")  // 8 → 16
         XCTAssertEqual(ramp.observe(rate: 150), 32, "a ≥10% improvement doubles toward the cap")
         XCTAssertEqual(ramp.observe(rate: 200), 64, "still improving → the cap")
-        XCTAssertFalse(ramp.finished, "the cap is still measured before settling")
+        XCTAssertFalse(ramp.settled, "the cap is still measured before settling")
         XCTAssertTrue(ramp.allows(63))
         XCTAssertEqual(ramp.observe(rate: 260), 64, "an improving window at the cap holds it")
-        XCTAssertTrue(ramp.finished)
+        XCTAssertTrue(ramp.settled)
 
         var capDrop = WorkerRamp(start: 8, cap: 64)
         XCTAssertEqual(capDrop.observe(rate: 100), 16)
         XCTAssertEqual(capDrop.observe(rate: 150), 32)
         XCTAssertEqual(capDrop.observe(rate: 200), 64)
         XCTAssertEqual(capDrop.observe(rate: 100), 32, "a drop at the cap settles back at the best")
-        XCTAssertTrue(capDrop.finished)
+        XCTAssertTrue(capDrop.settled)
 
         var degrading = WorkerRamp(start: 8, cap: 64)
         XCTAssertEqual(degrading.observe(rate: 100), 16)  // baseline → try 16
         XCTAssertEqual(degrading.observe(rate: 60), 8, "first non-improvement reverts to the best")
-        XCTAssertTrue(degrading.finished)
+        XCTAssertTrue(degrading.settled)
         XCTAssertFalse(degrading.allows(8), "extra workers are told to stop")
 
         var flat = WorkerRamp(start: 8, cap: 64)
         XCTAssertEqual(flat.observe(rate: 100), 16)
         XCTAssertEqual(flat.observe(rate: 105), 8, "+5% is within noise, not an improvement")
-        XCTAssertTrue(flat.finished)
+        XCTAssertTrue(flat.settled)
 
         var stalled = WorkerRamp(start: 8, cap: 64)
         XCTAssertEqual(stalled.observe(rate: 0), 8, "a stalled window before the baseline adds nothing")
         XCTAssertEqual(stalled.observe(rate: 100), 16)
         XCTAssertEqual(stalled.observe(rate: 0), 8, "a stall after ramp-up reverts and stops")
-        XCTAssertTrue(stalled.finished)
+        XCTAssertTrue(stalled.settled)
+    }
+
+    /// Re-arming: after settling, one promotion may be probed; it is kept if the path recovered
+    /// (≥10% over the best) and growth resumes, otherwise the ramp settles back at the best count.
+    func testWorkerRampRearm() {
+        var ramp = WorkerRamp(start: 8, cap: 64)
+        XCTAssertEqual(ramp.observe(rate: 100), 16)
+        XCTAssertEqual(ramp.observe(rate: 60), 8, "the drop settles at the best count")
+        XCTAssertTrue(ramp.settled)
+
+        XCTAssertEqual(ramp.startProbe(), 16, "the probe re-tries one level")
+        XCTAssertFalse(ramp.settled)
+        XCTAssertEqual(ramp.observe(rate: 150), 16, "a recovered path keeps the probe")
+        XCTAssertFalse(ramp.settled)
+        XCTAssertEqual(ramp.observe(rate: 200), 32, "and normal ramping resumes on the next window")
+
+        var stillBad = WorkerRamp(start: 8, cap: 64)
+        XCTAssertEqual(stillBad.observe(rate: 100), 16)
+        XCTAssertEqual(stillBad.observe(rate: 60), 8)
+        XCTAssertEqual(stillBad.startProbe(), 16)
+        XCTAssertEqual(stillBad.observe(rate: 50), 8, "a failed probe settles back again")
+        XCTAssertTrue(stillBad.settled)
+        XCTAssertEqual(stillBad.startProbe(), 16, "and can be probed again later")
+
+        var atCap = WorkerRamp(start: 8, cap: 64)
+        XCTAssertEqual(atCap.observe(rate: 100), 16)
+        XCTAssertEqual(atCap.observe(rate: 150), 32)
+        XCTAssertEqual(atCap.observe(rate: 200), 64)
+        XCTAssertEqual(atCap.observe(rate: 300), 64)
+        XCTAssertTrue(atCap.settled)
+        XCTAssertEqual(atCap.startProbe(), 64, "nothing to probe at the cap")
     }
 
     /// The measurement window is quantization-aware: long enough for ~2 chunks at the current
@@ -290,7 +321,9 @@ final class HFDownloaderTests: XCTestCase {
         defer { try? FileManager.default.removeItem(at: dir) }
         let cfg = URLSessionConfiguration.ephemeral
         cfg.protocolClasses = [MockHFProtocol.self]
-        let dl = HFDownloader(repo: "test/repo", sessionConfiguration: cfg, minRampWindow: 0.05)
+        let dl = HFDownloader(
+            repo: "test/repo", sessionConfiguration: cfg, minRampWindow: 0.05,
+            rampRearmInterval: 0.05)  // aggressive re-arm: probes must not break the backoff
         let conns = ConnsBox()
 
         try await dl.download(

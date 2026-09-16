@@ -27,6 +27,8 @@ final class HFDownloader: NSObject, @unchecked Sendable {
     private let probeRetryBackoff: TimeInterval
     /// Ramp measurement-window floor (tests shrink it for small files).
     private let minRampWindow: TimeInterval
+    /// Cooldown between a settled ramp's one-promotion probes (tests shrink it).
+    private let rampRearmInterval: TimeInterval
 
     /// Coalesce progress callbacks so the UI isn't spammed (~8 MB granularity).
     private static let progressStep: Int64 = 8 * 1024 * 1024
@@ -44,7 +46,7 @@ final class HFDownloader: NSObject, @unchecked Sendable {
     init(
         repo: String, endpoint: String = "https://huggingface.co", revision: String = "main", maxRetries: Int = 8,
         sessionConfiguration: URLSessionConfiguration? = nil, probeRetryBackoff: TimeInterval = 1.0,
-        minRampWindow: TimeInterval = 8
+        minRampWindow: TimeInterval = 8, rampRearmInterval: TimeInterval = 300
     ) {
         self.repo = repo
         self.endpoint = endpoint
@@ -55,6 +57,8 @@ final class HFDownloader: NSObject, @unchecked Sendable {
         // gigantic value would otherwise trap the UInt64 nanosecond conversion in the probe retry.
         self.probeRetryBackoff = probeRetryBackoff.isFinite ? min(max(probeRetryBackoff, 0), 60) : 0
         self.minRampWindow = minRampWindow.isFinite ? min(max(minRampWindow, 0), 30) : 8
+        self.rampRearmInterval =
+            rampRearmInterval.isFinite ? min(max(rampRearmInterval, 0), 3600) : 300
         super.init()
     }
 
@@ -292,23 +296,49 @@ final class HFDownloader: NSObject, @unchecked Sendable {
                 if capWorkers > baseWorkers {
                     // Adaptive ramp: sample durable bytes per window and grow the pool only while
                     // the rate improves; the first window that doesn't settles back at the best
-                    // count (extra workers exit at their chunk boundary via `ramp.allows`).
+                    // count (extra workers exit at their chunk boundary via `ramp.allows`). A
+                    // settled ramp re-arms after `rampRearmInterval` with one promotion, so a
+                    // recovering path is exploited instead of staying at the backed-off count.
                     var lastCompleted = bitmap.completedBytes()
                     var lastSample = Date()
-                    while !generator.allHandedOut, !ramp.finished {
+                    var nextProbeAt: Date? = nil
+                    while !generator.allHandedOut {
                         let now = Date()
                         let completed = bitmap.completedBytes()
                         let elapsed = max(now.timeIntervalSince(lastSample), 0.001)
                         let rate = Double(completed - lastCompleted) / elapsed
                         lastCompleted = completed
                         lastSample = now
-                        let before = ramp.allowed
-                        let next = ramp.observe(rate: rate)
-                        if next > added { addWorkers(next - added) }
-                        if next != before { onProgress(progress.received(), total, next) }
-                        if ramp.finished || generator.allHandedOut { break }
                         let window = HFDownloader.rampWindowSeconds(
                             rate: rate, chunkSize: chunkSize, minWindow: minRampWindow)
+
+                        if ramp.settled, ramp.allowed >= ramp.cap {
+                            try await Task.sleep(nanoseconds: UInt64(window * 1_000_000_000))
+                            continue  // nothing left to probe at the cap
+                        }
+                        if ramp.settled {
+                            if let probeAt = nextProbeAt, now < probeAt {
+                                try await Task.sleep(nanoseconds: UInt64(window * 1_000_000_000))
+                                continue  // cooldown: hold the backed-off count
+                            }
+                            let before = ramp.allowed
+                            let next = ramp.startProbe()
+                            if next > added { addWorkers(next - added) }
+                            if next != before { onProgress(progress.received(), total, next) }
+                            nextProbeAt =
+                                next < ramp.cap
+                                ? now.addingTimeInterval(rampRearmInterval) : nil
+                        } else {
+                            let before = ramp.allowed
+                            let next = ramp.observe(rate: rate)
+                            if next > added { addWorkers(next - added) }
+                            if next != before { onProgress(progress.received(), total, next) }
+                            if ramp.settled {
+                                nextProbeAt =
+                                    ramp.allowed < ramp.cap
+                                    ? now.addingTimeInterval(rampRearmInterval) : nil
+                            }
+                        }
                         try await Task.sleep(nanoseconds: UInt64(window * 1_000_000_000))
                     }
                 }
@@ -427,18 +457,23 @@ final class HFDownloader: NSObject, @unchecked Sendable {
 }
 
 /// Adaptive worker-count policy for High Performance downloads: begin at the CGNAT-safe base,
-/// double toward the cap while a measurement window beats the best rate by ≥10%, and on the
-/// first window that fails to improve (or stalls) settle back at the best-observed count and
-/// stop. Starting wide is what stalled a real download at 64 connections over a lossy tunnel;
-/// the ramp keeps the aggressive ceiling for healthy paths without racing into congestion.
+/// double toward the cap while a measurement window beats the best rate by ≥10%, and on the first
+/// window that fails to improve (or stalls) settle back at the best-observed count. The controller
+/// re-arms a settled ramp after a cooldown with ONE promotion probe, so a recovering path is
+/// exploited instead of staying backed off. Starting wide is what stalled a real download at 64
+/// connections over a lossy tunnel; the ramp keeps the aggressive ceiling for healthy paths without
+/// racing into congestion.
 final class WorkerRamp: @unchecked Sendable {
     static let improvementMargin = 1.10
+    /// Ramping is judging windows and may grow; settled is holding at the best count (the
+    /// controller re-arms a probe after its cooldown); probing is the one promotion tried then.
+    enum Phase { case ramping, settled, probing }
     private let lock = NSLock()
     let cap: Int
     private var _allowed: Int
     private var bestRate: Double = 0
     private var bestAllowed: Int
-    private var _finished = false
+    private var _phase: Phase = .ramping
 
     init(start: Int, cap: Int) {
         self.cap = max(1, cap)
@@ -460,10 +495,10 @@ final class WorkerRamp: @unchecked Sendable {
         return _allowed
     }
 
-    var finished: Bool {
+    var settled: Bool {
         lock.lock()
         defer { lock.unlock() }
-        return _finished
+        return _phase == .settled
     }
 
     /// Feed one measurement window's aggregate rate (bytes/s); returns the count to allow next.
@@ -471,43 +506,69 @@ final class WorkerRamp: @unchecked Sendable {
     func observe(rate: Double) -> Int {
         lock.lock()
         defer { lock.unlock() }
-        guard !_finished else { return _allowed }
         if rate <= 0 {
-            // A stalled window must never grow the pool; once a baseline exists it ends the ramp.
-            if bestRate > 0 {
+            // A stalled window must never grow the pool; once a baseline exists it ends the attempt.
+            if bestRate > 0, _phase != .settled {
                 _allowed = bestAllowed
-                _finished = true
+                _phase = .settled
             }
             return _allowed
         }
-        if _allowed >= cap {
-            // At the cap: hold it on improvement; the first window that fails to improve
-            // settles back at the best count.
+        switch _phase {
+        case .settled:
+            return _allowed  // only the controller's re-arm starts growth again
+        case .probing:
             if rate > bestRate * Self.improvementMargin {
                 bestRate = rate
                 bestAllowed = _allowed
+                _phase = .ramping  // the path recovered: keep the probe and resume growing
             } else {
                 _allowed = bestAllowed
+                _phase = .settled  // the probe failed: back to the best, wait for the next re-arm
             }
-            _finished = true
+            return _allowed
+        case .ramping:
+            if bestRate == 0 {
+                // First window: establish the baseline, then try more connections.
+                bestRate = rate
+                bestAllowed = _allowed
+                _allowed = min(cap, _allowed * 2)
+                return _allowed
+            }
+            if _allowed >= cap {
+                // At the cap: hold it on improvement; the first window that fails to improve
+                // settles back at the best count.
+                if rate > bestRate * Self.improvementMargin {
+                    bestRate = rate
+                    bestAllowed = _allowed
+                } else {
+                    _allowed = bestAllowed
+                }
+                _phase = .settled
+                return _allowed
+            }
+            if rate > bestRate * Self.improvementMargin {
+                bestRate = rate
+                bestAllowed = _allowed
+                _allowed = min(cap, _allowed * 2)
+            } else {
+                // First window that failed to improve: back to the best count and hold.
+                _allowed = bestAllowed
+                _phase = .settled
+            }
             return _allowed
         }
-        if bestRate == 0 {
-            // First window: establish the baseline, then try more connections.
-            bestRate = rate
-            bestAllowed = _allowed
-            _allowed = min(cap, _allowed * 2)
-            return _allowed
-        }
-        if rate > bestRate * Self.improvementMargin {
-            bestRate = rate
-            bestAllowed = _allowed
-            _allowed = min(cap, _allowed * 2)
-        } else {
-            // First window that failed to improve: back to the best count and stop.
-            _allowed = bestAllowed
-            _finished = true
-        }
+    }
+
+    /// The controller's re-arm after the cooldown: probe ONE promotion from the settled count.
+    /// Returns the count to allow (unchanged at the cap or if the ramp isn't settled).
+    @discardableResult
+    func startProbe() -> Int {
+        lock.lock()
+        defer { lock.unlock() }
+        guard _phase == .settled, _allowed < cap else { return _allowed }
+        _phase = .probing
+        _allowed = min(cap, _allowed * 2)
         return _allowed
     }
 }
