@@ -86,7 +86,7 @@ final class SupervisorService: ObservableObject {
     typealias FetchFile =
         @Sendable (
             _ repo: String, _ file: String, _ destDir: URL, _ token: String?, _ highPerformance: Bool,
-            _ onProgress: @escaping @Sendable (Int64, Int64) -> Void
+            _ onProgress: @escaping @Sendable (Int64, Int64, Int) -> Void
         ) async throws -> Void
     private let fetchFile: FetchFile
 
@@ -710,7 +710,10 @@ final class SupervisorService: ObservableObject {
         }
         download = DownloadProgress(
             pct: 0, file: firstPending?.filename ?? finalName, receivedBytes: 0,
-            totalBytes: expectedBytes)
+            totalBytes: expectedBytes,
+            // Every download starts at the CGNAT-safe base; High Performance ramps up from there
+            // (live updates arrive with the downloader's progress ticks).
+            connections: HFDownloader.workerCount(highPerformance: false))
         state = .downloading
         lastDownloadSample = nil
         activeDownloadSelection = selection
@@ -804,12 +807,12 @@ final class SupervisorService: ObservableObject {
                                     group.addTask {
                                         try await fetch(
                                             q.repo, part.filename, baseDir, token, highPerformance
-                                        ) { received, _ in
+                                        ) { received, _, connections in
                                             Self.onMain {
                                                 self?.updateDownloadProgress(
                                                     gen: gen, file: part.filename,
                                                     received: baseBytes + received,
-                                                    total: expectedBytes)
+                                                    total: expectedBytes, connections: connections)
                                             }
                                         }
                                     }
@@ -825,11 +828,12 @@ final class SupervisorService: ObservableObject {
                             }
                         } else if needsFetch {
                             try await fetch(q.repo, part.filename, baseDir, token, highPerformance) {
-                                received, _ in
+                                received, _, connections in
                                 Self.onMain {
                                     self?.updateDownloadProgress(
                                         gen: gen, file: part.filename,
-                                        received: baseBytes + received, total: expectedBytes)
+                                        received: baseBytes + received, total: expectedBytes,
+                                        connections: connections)
                                 }
                             }
                         }
@@ -869,7 +873,7 @@ final class SupervisorService: ObservableObject {
                     Self.onMain {
                         self?.updateDownloadProgress(
                             gen: gen, file: part.filename, received: cumulativeBytes,
-                            total: expectedBytes)
+                            total: expectedBytes, connections: self?.download?.connections)
                     }
                 }
                 // The last part's verification may still be running while nothing else fetches.
@@ -925,7 +929,9 @@ final class SupervisorService: ObservableObject {
     /// compute pct, and a transfer rate from the delta against the last sample (the rate logic moved
     /// here from the old on-disk poll). Generation-guarded so a superseded download's late callback
     /// can't clobber the current bar. `Date()` is fine in app code.
-    private func updateDownloadProgress(gen: Int, file: String, received: Int64, total: Int64) {
+    private func updateDownloadProgress(
+        gen: Int, file: String, received: Int64, total: Int64, connections: Int?
+    ) {
         guard downloadGeneration == gen, state == .downloading else { return }
         let now = Date()
         // Rate over a fixed ~0.5 s window: advance the anchor only when the window elapses, so the
@@ -944,7 +950,7 @@ final class SupervisorService: ObservableObject {
         let pct = total > 0 ? min(100, Double(received) / Double(total) * 100) : 0
         download = DownloadProgress(
             pct: pct, file: file, receivedBytes: received, totalBytes: total > 0 ? total : nil,
-            rate: rate)
+            rate: rate, connections: connections)
     }
 
     private func completeDownload(gen: Int, filename: String) {

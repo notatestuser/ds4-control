@@ -1,6 +1,7 @@
 # Changelog
 
 ## Unreleased
+- **Connection count in the progress line.** The download status shows the live pool size next to the speed (e.g. `2% · 8/366 GB · 123 MB/s · 16 conns`), so the High Performance ramp's decisions are visible while they happen.
 - **Adaptive High Performance downloads.** High performance mode no longer hands the server 64 connections at once — it starts at the safe 8 and doubles toward 64 only while measured throughput keeps improving, settling back at the best-observed count the moment a window fails to improve (including a stall). On a lossy or high-latency path (e.g. a VPN), the old fixed 64 could freeze a download at ~0 MB/s while burning bandwidth on stuck-and-retried chunks; healthy paths still reach the aggressive ceiling.
 - **Verification progress in the popup.** Digest passes (minutes-long on the V4.1 quants) now show as their own row — "Verifying part 1 of 2…" / "Verifying the joined file…" with a percentage that advances as the hash reads — instead of a frozen download bar with no speed. The download row steps aside once all bytes are fetched; quants without a published digest (Flash 0731, Pro) keep their instant size check.
 - **Pipelined Q4 downloads.** Part 1's digest pass now runs concurrently with part 2's fetch (the hash is CPU/disk-bound, the fetch network-bound), saving the whole verification window (~4 minutes on a fast link) on every V4.1 Q4 download. Correctness is unchanged: each part is still fully verified before anything downstream uses it, and the join still re-verifies the assembled ~483 GiB result.

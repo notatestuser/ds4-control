@@ -176,13 +176,15 @@ final class HFDownloader: NSObject, @unchecked Sendable {
 
     /// Download `file` into `destDir` with `workerCount(highPerformance:)` parallel chunk connections,
     /// resuming any partial `<file>.part`/`<file>.part.dl` left by a prior run. Returns once the full
-    /// file is durably on disk (atomically renamed from `.part`). `onProgress(received, total)` fires
-    /// from worker tasks as a single monotonic counter. Throws `CancellationError` if the surrounding
-    /// task is cancelled, or `Failure`/the underlying I/O error after exhausting per-chunk retries.
+    /// file is durably on disk (atomically renamed from `.part`). `onProgress(received, total,
+    /// connections)` fires from worker tasks as a single monotonic counter, with the live pool size
+    /// so the UI can show how many connections the download is using. Throws `CancellationError` if
+    /// the surrounding task is cancelled, or `Failure`/the underlying I/O error after exhausting
+    /// per-chunk retries.
     func download(
         file: String, into destDir: URL, token: String?, highPerformance: Bool,
         chunkSize: Int64 = HFDownloader.parallelChunkSize,
-        onProgress: @escaping @Sendable (Int64, Int64) -> Void
+        onProgress: @escaping @Sendable (Int64, Int64, Int) -> Void
     ) async throws {
         let dest = destDir.appendingPathComponent(file)
         if FileManager.default.fileExists(atPath: dest.path) { return }
@@ -260,8 +262,6 @@ final class HFDownloader: NSObject, @unchecked Sendable {
 
         let progress = Progress(completedBytes: bitmap.completedBytes(), workerCount: workers, total: total)
         let generator = ChunkIndexGenerator(chunkCount: bitmap.chunkCount, skip: bitmap.completedIndices())
-        // Emit the resume baseline immediately so the UI jumps to the already-downloaded fraction.
-        onProgress(progress.received(), total)
 
         // Every download starts at the CGNAT-safe base; High Performance ramps toward the cap
         // while measured throughput improves (see WorkerRamp — starting wide is what stalled a
@@ -269,6 +269,8 @@ final class HFDownloader: NSObject, @unchecked Sendable {
         let capWorkers = workers
         let baseWorkers = min(workers, HFDownloader.workerCount(highPerformance: false))
         let ramp = WorkerRamp(start: baseWorkers, cap: capWorkers)
+        // Emit the resume baseline immediately so the UI jumps to the already-downloaded fraction.
+        onProgress(progress.received(), total, ramp.allowed)
         let initial = min(ramp.allowed, generator.remaining)
         if initial > 0 {
             try await withThrowingTaskGroup(of: Void.self) { group in
@@ -300,8 +302,10 @@ final class HFDownloader: NSObject, @unchecked Sendable {
                         let rate = Double(completed - lastCompleted) / elapsed
                         lastCompleted = completed
                         lastSample = now
+                        let before = ramp.allowed
                         let next = ramp.observe(rate: rate)
                         if next > added { addWorkers(next - added) }
+                        if next != before { onProgress(progress.received(), total, next) }
                         if ramp.finished || generator.allHandedOut { break }
                         let window = HFDownloader.rampWindowSeconds(
                             rate: rate, chunkSize: chunkSize, minWindow: minRampWindow)
@@ -331,7 +335,8 @@ final class HFDownloader: NSObject, @unchecked Sendable {
     private func runWorker(
         worker: Int, url: URL, token: String?, part: URL, chunkSize: Int64, total: Int64,
         session: URLSession, bitmap: ChunkBitmap, generator: ChunkIndexGenerator,
-        ramp: WorkerRamp, progress: Progress, onProgress: @escaping @Sendable (Int64, Int64) -> Void
+        ramp: WorkerRamp, progress: Progress,
+        onProgress: @escaping @Sendable (Int64, Int64, Int) -> Void
     ) async throws {
         let fetcher = ChunkFetcher(session: session)
         let fh = try FileHandle(forWritingTo: part)
@@ -353,7 +358,9 @@ final class HFDownloader: NSObject, @unchecked Sendable {
                     _ = try await fetcher.fetch(
                         url: url, offset: offset, end: end, token: token, fileHandle: fh,
                         onBytes: { n in
-                            if let received = progress.addInflight(worker, n) { onProgress(received, total) }
+                            if let received = progress.addInflight(worker, n) {
+                                onProgress(received, total, ramp.allowed)
+                            }
                         })
                     break  // chunk delivered fully (ChunkFetcher rejects short reads).
                 } catch is CancellationError {
@@ -374,7 +381,7 @@ final class HFDownloader: NSObject, @unchecked Sendable {
             // this chunk's bytes from in-flight to completed and report.
             try fh.synchronize()
             try bitmap.markComplete(idx)
-            onProgress(progress.commit(worker), total)
+            onProgress(progress.commit(worker), total, ramp.allowed)
         }
     }
 
@@ -394,7 +401,7 @@ final class HFDownloader: NSObject, @unchecked Sendable {
         }
         let task = Task {
             do {
-                try await dl.download(file: file, into: dir, token: nil, highPerformance: false) { _, _ in }
+                try await dl.download(file: file, into: dir, token: nil, highPerformance: false) { _, _, _ in }
             } catch is CancellationError {
             } catch { err("\(error)") }
         }

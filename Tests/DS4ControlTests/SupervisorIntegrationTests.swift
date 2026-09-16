@@ -323,7 +323,7 @@ final class SupervisorIntegrationTests: XCTestCase {
             fetchFile: { _, _, _, _, _, onProgress in
                 for step in 1...4 {
                     try Task.checkCancellation()
-                    onProgress(Int64(step) * 25 * 1024 * 1024, total)
+                    onProgress(Int64(step) * 25 * 1024 * 1024, total, 8)
                     try await Task.sleep(nanoseconds: 200_000_000)
                 }
             })
@@ -473,7 +473,7 @@ final class SupervisorIntegrationTests: XCTestCase {
             let sizer = try FileHandle(forWritingTo: part)
             try sizer.truncate(atOffset: UInt64(total))
             try sizer.close()
-            onProgress(chunkSize, total)
+            onProgress(chunkSize, total, 8)
             throw HFDownloader.Failure.incompleteAfterRetries
         }
         let s = SupervisorService(ds4Dir: dir, runner: RealProcessRunner(), fetchFile: failing)
@@ -872,6 +872,27 @@ final class SupervisorIntegrationTests: XCTestCase {
         XCTAssertTrue(sawPart2, "part2's fetch must start while part1 is being verified")
         XCTAssertNotNil(s.verification, "part1's hash must still be running when part2 starts")
         s.cancelDownload()  // also stops the minutes-long hash if the assertion above failed
+        XCTAssertEqual(s.state, .idle)
+    }
+
+    /// The download progress shows the live connection count: the CGNAT-safe base at start, then
+    /// the downloader's reported pool size as ticks arrive (the High Performance ramp moves it).
+    func testDownloadProgressReportsConnectionCount() async throws {
+        let dir = URL(fileURLWithPath: NSTemporaryDirectory()).appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let g = dir.appendingPathComponent("gguf")
+        try FileManager.default.createDirectory(at: g, withIntermediateDirectories: true)
+        try stubDs4(dir)
+        let reporting: SupervisorService.FetchFile = { _, _, _, _, _, onProgress in
+            onProgress(1_000_000, 10_000_000, 16)
+            try await Task.sleep(nanoseconds: 600_000_000_000)
+        }
+        let s = SupervisorService(ds4Dir: dir, runner: RealProcessRunner(), fetchFile: reporting)
+        s.download(selection: .flash(.q2q4))
+        XCTAssertEqual(s.download?.connections, 8, "the initial progress shows the base pool")
+        await until { s.download?.connections == 16 }
+        XCTAssertEqual(s.download?.connections, 16, "ticks carry the downloader's live pool size")
+        s.cancelDownload()
         XCTAssertEqual(s.state, .idle)
     }
 

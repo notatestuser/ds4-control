@@ -292,6 +292,7 @@ struct PopupView: View {
             parts.append(String(format: "%.0f/%.0f GB", Double(d.receivedBytes) / 1e9, Double(total) / 1e9))
         }
         if let rate = d.rate { parts.append(rate) }
+        if let connections = d.connections { parts.append("\(connections) conns") }
         return parts.joined(separator: " · ")
     }
 

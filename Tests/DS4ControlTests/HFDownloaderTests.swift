@@ -91,7 +91,7 @@ final class HFDownloaderTests: XCTestCase {
         }
         let progress = Progress()
         let downloader = HFDownloader(repo: repo)
-        try await downloader.download(file: file, into: dir, token: nil, highPerformance: false) { received, total in
+        try await downloader.download(file: file, into: dir, token: nil, highPerformance: false) { received, total, _ in
             progress.set(received, total)
         }
 
@@ -119,6 +119,18 @@ final class HFDownloaderTests: XCTestCase {
                 received = r
                 total = t
             }
+        }
+    }
+
+    /// Lock-protected recorder for the progress callback's connection counts.
+    private final class ConnsBox: @unchecked Sendable {
+        private let lock = NSLock()
+        private var values: [Int] = []
+        func add(_ n: Int) {
+            lock.withLock { values.append(n) }
+        }
+        var all: [Int] {
+            lock.withLock { values }
         }
     }
 
@@ -154,7 +166,7 @@ final class HFDownloaderTests: XCTestCase {
         let downloader = HFDownloader(repo: Self.gemmaRepo)
         try await downloader.download(
             file: Self.gemmaFile, into: dir, token: nil, highPerformance: true, chunkSize: Self.smallChunk
-        ) { received, total in
+        ) { received, total, _ in
             progress.set(received, total)
         }
 
@@ -192,7 +204,7 @@ final class HFDownloaderTests: XCTestCase {
             let downloader = HFDownloader(repo: repo)
             try await downloader.download(
                 file: file, into: dir, token: nil, highPerformance: false, chunkSize: chunk
-            ) { _, _ in }
+            ) { _, _, _ in }
         }
         // Poll the sidecar's durable bytes until ≥2 chunks are complete (or the whole thing finishes).
         var resumedBytes: Int64 = 0
@@ -218,7 +230,7 @@ final class HFDownloaderTests: XCTestCase {
         let downloader = HFDownloader(repo: repo)
         try await downloader.download(
             file: file, into: dir, token: nil, highPerformance: false, chunkSize: chunk
-        ) { received, total in
+        ) { received, total, _ in
             progress.set(received, total)
         }
         try assertCompleteGGUF(dir.appendingPathComponent(file), expectedTotal: progress.total)
@@ -236,7 +248,7 @@ final class HFDownloaderTests: XCTestCase {
         cfg.protocolClasses = [MockHFProtocol.self]
         let dl = HFDownloader(repo: "test/repo", sessionConfiguration: cfg, probeRetryBackoff: 0.01)
 
-        try await dl.download(file: "tiny.gguf", into: dir, token: nil, highPerformance: false) { _, _ in }
+        try await dl.download(file: "tiny.gguf", into: dir, token: nil, highPerformance: false) { _, _, _ in }
 
         XCTAssertEqual(
             try Data(contentsOf: dir.appendingPathComponent("tiny.gguf")), MockHFProtocol.state.body)
@@ -256,7 +268,7 @@ final class HFDownloaderTests: XCTestCase {
         let dl = HFDownloader(repo: "test/repo", sessionConfiguration: cfg, probeRetryBackoff: 0.01)
 
         do {
-            try await dl.download(file: "tiny.gguf", into: dir, token: nil, highPerformance: false) { _, _ in }
+            try await dl.download(file: "tiny.gguf", into: dir, token: nil, highPerformance: false) { _, _, _ in }
             XCTFail("an all-503 server must fail the download")
         } catch let e as HFDownloader.Failure {
             XCTAssertEqual(e, .http(503))
@@ -279,10 +291,13 @@ final class HFDownloaderTests: XCTestCase {
         let cfg = URLSessionConfiguration.ephemeral
         cfg.protocolClasses = [MockHFProtocol.self]
         let dl = HFDownloader(repo: "test/repo", sessionConfiguration: cfg, minRampWindow: 0.05)
+        let conns = ConnsBox()
 
         try await dl.download(
             file: "ramped.gguf", into: dir, token: nil, highPerformance: true, chunkSize: 65_536
-        ) { _, _ in }
+        ) { _, _, connections in
+            conns.add(connections)
+        }
 
         XCTAssertEqual(
             try Data(contentsOf: dir.appendingPathComponent("ramped.gguf")).count, total,
@@ -292,6 +307,30 @@ final class HFDownloaderTests: XCTestCase {
         XCTAssertLessThan(
             MockHFProtocol.state.maxActive, 64,
             "a degrading path must stop growing instead of racing to the cap")
+        XCTAssertEqual(conns.all.first, 8, "the baseline reports the base pool")
+        let promoted = try XCTUnwrap(
+            conns.all.firstIndex(of: 16), "a promotion must be reported to the UI")
+        XCTAssertTrue(
+            conns.all[promoted...].contains(8),
+            "the backed-off pool must be reported after the first non-improving window")
+    }
+
+    /// Without High Performance the pool is fixed: every reported count is the base.
+    func testProgressReportsBaseConnectionsWithoutHighPerformance() async throws {
+        MockHFProtocol.state.reset(failFirst: false, alwaysFail: false)
+        let dir = URL(fileURLWithPath: NSTemporaryDirectory()).appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let cfg = URLSessionConfiguration.ephemeral
+        cfg.protocolClasses = [MockHFProtocol.self]
+        let dl = HFDownloader(repo: "test/repo", sessionConfiguration: cfg)
+        let conns = ConnsBox()
+
+        try await dl.download(file: "plain.gguf", into: dir, token: nil, highPerformance: false) {
+            _, _, connections in
+            conns.add(connections)
+        }
+
+        XCTAssertEqual(Set(conns.all), [8], "a fixed pool always reports the base count")
     }
 
     /// The session must fail fast instead of parking in `.waitingForConnectivity`: that wait is
@@ -319,7 +358,7 @@ final class HFDownloaderTests: XCTestCase {
         cfg.httpMaximumConnectionsPerHost = 13  // sentinel the download would overwrite to 8
         let dl = HFDownloader(repo: "test/repo", sessionConfiguration: cfg, probeRetryBackoff: 0.01)
 
-        try await dl.download(file: "tiny.gguf", into: dir, token: nil, highPerformance: false) { _, _ in }
+        try await dl.download(file: "tiny.gguf", into: dir, token: nil, highPerformance: false) { _, _, _ in }
 
         XCTAssertEqual(
             cfg.httpMaximumConnectionsPerHost, 13,
@@ -338,7 +377,7 @@ final class HFDownloaderTests: XCTestCase {
             let dl = HFDownloader(
                 repo: "test/repo", sessionConfiguration: cfg, probeRetryBackoff: badBackoff)
 
-            try await dl.download(file: "tiny.gguf", into: dir, token: nil, highPerformance: false) { _, _ in }
+            try await dl.download(file: "tiny.gguf", into: dir, token: nil, highPerformance: false) { _, _, _ in }
 
             XCTAssertEqual(
                 try Data(contentsOf: dir.appendingPathComponent("tiny.gguf")), MockHFProtocol.state.body,

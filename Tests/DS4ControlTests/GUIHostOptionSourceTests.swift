@@ -180,4 +180,12 @@ final class GUIHostOptionSourceTests: XCTestCase {
         XCTAssertTrue(popup.contains("verificationStatusLabel"))
         XCTAssertTrue(popup.contains("d.pct < 100"))
     }
+
+    /// The download status line shows the live connection count next to the speed.
+    func testPopupShowsConnectionCount() throws {
+        let popup = try source("Sources/DS4Control/Views/PopupView.swift")
+
+        XCTAssertTrue(popup.contains("d.connections"))
+        XCTAssertTrue(popup.contains("conns"))
+    }
 }
