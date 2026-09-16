@@ -16,7 +16,7 @@ struct PopupView: View {
             Divider()
             ModelRowView(supervisor: supervisor, ramGiB: ram)
             legacyStorageBanner
-            if supervisor.state == .downloading, let d = supervisor.download {
+            if supervisor.state == .downloading, let d = supervisor.download, d.pct < 100 {
                 ProgressView(value: d.pct, total: 100) {
                     HStack(spacing: 6) {
                         // Live spinner: shown only while a download process is confirmed running.
@@ -27,6 +27,18 @@ struct PopupView: View {
                     }
                 } currentValueLabel: {
                     Text(downloadStatusLabel(d)).font(.caption2)
+                }
+            }
+            if let v = supervisor.verification {
+                // The digest pass takes minutes on the V4.1 quants: its own row with an
+                // advancing % replaces the (100%-frozen) download bar above.
+                ProgressView(value: v.pct, total: 100) {
+                    HStack(spacing: 6) {
+                        ProgressView().progressViewStyle(.circular).controlSize(.small)
+                        Text(v.label).font(.caption2).lineLimit(1).truncationMode(.middle)
+                    }
+                } currentValueLabel: {
+                    Text(verificationStatusLabel(v)).font(.caption2)
                 }
             }
             if case let .error(e) = supervisor.state {
@@ -280,6 +292,15 @@ struct PopupView: View {
             parts.append(String(format: "%.0f/%.0f GB", Double(d.receivedBytes) / 1e9, Double(total) / 1e9))
         }
         if let rate = d.rate { parts.append(rate) }
+        return parts.joined(separator: " · ")
+    }
+
+    private func verificationStatusLabel(_ v: VerificationProgress) -> String {
+        var parts = [String(format: "%.0f%%", v.pct)]
+        if v.totalBytes > 0 {
+            parts.append(
+                String(format: "%.0f/%.0f GB", Double(v.processedBytes) / 1e9, Double(v.totalBytes) / 1e9))
+        }
         return parts.joined(separator: " · ")
     }
 

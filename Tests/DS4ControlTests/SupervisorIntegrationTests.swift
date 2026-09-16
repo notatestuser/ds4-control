@@ -20,6 +20,13 @@ private actor FetchProbe {
     func bump() { calls += 1 }
 }
 
+/// Flips once a fetch for the watched filename begins — lets a test observe that a later part's
+/// download started while an earlier part's digest pass is still running.
+private actor FetchStartedFlag {
+    private(set) var started = false
+    func mark() { started = true }
+}
+
 @MainActor
 final class SupervisorIntegrationTests: XCTestCase {
     /// A fetch that never returns — keeps the download in flight without touching the network.
@@ -798,6 +805,74 @@ final class SupervisorIntegrationTests: XCTestCase {
         XCTAssertFalse(
             FileManager.default.fileExists(atPath: final.path + ".verified"),
             "a cancelled verification must publish no marker")
+    }
+
+    /// The minutes-long digest pass of a marker-less V4.1 final must surface as `verification`
+    /// (label + total bytes) — never a frozen download bar — and cancel must clear it.
+    /// Covers all models: any artifact with a published digest reports progress.
+    func testReverifyPublishesVerificationProgressAndClearsOnCancel() async throws {
+        let dir = URL(fileURLWithPath: NSTemporaryDirectory()).appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let g = dir.appendingPathComponent("gguf")
+        try FileManager.default.createDirectory(at: g, withIntermediateDirectories: true)
+        try stubDs4(dir)
+        let final = g.appendingPathComponent(Quant.q41Q2.ggufFilename)
+        FileManager.default.createFile(atPath: final.path, contents: nil)
+        let handle = try FileHandle(forWritingTo: final)
+        try handle.truncate(atOffset: UInt64(Quant.q41Q2.ggufBytes))
+        try handle.close()
+
+        let s = SupervisorService(ds4Dir: dir, runner: RealProcessRunner())
+        s.resumeInFlightDownloadIfAny(selection: .flash41(.q2))
+        XCTAssertEqual(s.state, .downloading)
+        await until { s.verification != nil }
+        let v = try XCTUnwrap(s.verification)
+        XCTAssertEqual(v.label, "Verifying…")
+        XCTAssertEqual(v.totalBytes, Int64(Quant.q41Q2.ggufBytes))
+        XCTAssertGreaterThanOrEqual(v.pct, 0)
+
+        s.cancelDownload()
+        XCTAssertEqual(s.state, .idle)
+        XCTAssertNil(s.verification, "cancel must clear the verification row")
+    }
+
+    /// Part 2's fetch must start while part 1's digest pass still runs: the hash (CPU/disk-bound,
+    /// minutes for 480 GiB) otherwise serializes in front of the next part's download
+    /// (network-bound), costing the whole verification window on every Q4 download.
+    func testQ4Part2FetchOverlapsPart1Verification() async throws {
+        let dir = URL(fileURLWithPath: NSTemporaryDirectory()).appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let g = dir.appendingPathComponent("gguf")
+        try FileManager.default.createDirectory(at: g, withIntermediateDirectories: true)
+        try stubDs4(dir)
+        let started = FetchStartedFlag()
+        let stub: SupervisorService.FetchFile = { _, file, destDir, _, _, _ in
+            if file.hasSuffix(".part2") {
+                await started.mark()
+                try await Task.sleep(nanoseconds: 600_000_000_000)
+                return
+            }
+            // part1: sparse materialization at the published size so the size check passes and
+            // its (minutes-long) digest pass begins.
+            let url = destDir.appendingPathComponent(file)
+            FileManager.default.createFile(atPath: url.path, contents: nil)
+            let handle = try FileHandle(forWritingTo: url)
+            try handle.truncate(atOffset: UInt64(Quant.q41Q4.downloadParts[0].bytes))
+            try handle.close()
+        }
+        let s = SupervisorService(ds4Dir: dir, runner: RealProcessRunner(), fetchFile: stub)
+        s.download(selection: .flash41(.q4))
+        XCTAssertEqual(s.state, .downloading)
+
+        var sawPart2 = false
+        for _ in 0..<400 {
+            if await started.started { sawPart2 = true; break }
+            try await Task.sleep(nanoseconds: 10_000_000)
+        }
+        XCTAssertTrue(sawPart2, "part2's fetch must start while part1 is being verified")
+        XCTAssertNotNil(s.verification, "part1's hash must still be running when part2 starts")
+        s.cancelDownload()  // also stops the minutes-long hash if the assertion above failed
+        XCTAssertEqual(s.state, .idle)
     }
 
     func testGenerationSpecificKVCachePaths() {

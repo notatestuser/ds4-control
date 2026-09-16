@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased
+- **Verification progress in the popup.** Digest passes (minutes-long on the V4.1 quants) now show as their own row — "Verifying part 1 of 2…" / "Verifying the joined file…" with a percentage that advances as the hash reads — instead of a frozen download bar with no speed. The download row steps aside once all bytes are fetched; quants without a published digest (Flash 0731, Pro) keep their instant size check.
+- **Pipelined Q4 downloads.** Part 1's digest pass now runs concurrently with part 2's fetch (the hash is CPU/disk-bound, the fetch network-bound), saving the whole verification window (~4 minutes on a fast link) on every V4.1 Q4 download. Correctness is unchanged: each part is still fully verified before anything downstream uses it, and the join still re-verifies the assembled 518 GiB result.
+
 ## v1.8.1 — 2026-09-16
 - **Downloads can no longer hang on a stalled first contact.** A network blip at the very start used to park the size probe in `.waitingForConnectivity` forever — a spinner with no speed and no way back. The session now fails fast, the probe retries (3 attempts with backoff) before giving up, a persistent failure surfaces as an error with Retry resuming from the bitmap, and the probe's backoff knob is sanitized so no value can trap. The V4.1 Q4 two-part download is unaffected structurally: `…Q4.gguf.part1`/`.part2` are its transport files, joined in place after per-part SHA-256 verification.
 

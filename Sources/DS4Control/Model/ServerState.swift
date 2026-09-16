@@ -41,6 +41,17 @@ struct DownloadProgress: Equatable {
     }
 }
 
+/// Progress of a digest-verification pass (minutes-long on the V4.1 quants), surfaced in the
+/// popup so a verification never reads as a stalled download.
+struct VerificationProgress: Equatable {
+    /// Phase, e.g. "Verifying part 1 of 2…" or "Verifying the joined file…".
+    let label: String
+    /// 0–100.
+    let pct: Double
+    let processedBytes: Int64
+    let totalBytes: Int64
+}
+
 struct HealthStatus: Equatable {
     let ok: Bool
     let latencyMs: Int

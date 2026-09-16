@@ -14,6 +14,48 @@ final class GGUFJoinerTests: XCTestCase {
         SHA256.hash(data: data).map { String(format: "%02x", $0) }.joined()
     }
 
+    /// The digest pass must report read progress: the UI advances a verification bar with it
+    /// (minutes-long passes on the V4.1 quants otherwise look like a frozen download).
+    func testSha256ReportsReadProgress() throws {
+        let dir = try makeTempDir()
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let url = dir.appendingPathComponent("zeros.bin")
+        let total = Int64(40 * 1024 * 1024)  // three blocks at the production 16 MiB block size
+        FileManager.default.createFile(atPath: url.path, contents: nil)
+        let handle = try FileHandle(forWritingTo: url)
+        try handle.truncate(atOffset: UInt64(total))
+        try handle.close()
+
+        var reported: [Int64] = []
+        _ = try GGUFJoiner.sha256(of: url, onProgress: { reported.append($0) })
+
+        XCTAssertFalse(reported.isEmpty, "the hash pass must report progress")
+        XCTAssertEqual(reported, reported.sorted(), "progress must be monotonic")
+        XCTAssertEqual(reported.last, total, "the final callback must report the whole file")
+    }
+
+    /// `verify` must forward the hash-progress callback; without a published digest it is the
+    /// instant size-only check and reports nothing.
+    func testVerifyForwardsHashProgress() throws {
+        let dir = try makeTempDir()
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let url = dir.appendingPathComponent("blob.bin")
+        let data = Data(repeating: 0x5A, count: 3 * 1024 * 1024)
+        try data.write(to: url)
+
+        var reported: [Int64] = []
+        try GGUFJoiner.verify(
+            url: url, expectedBytes: Int64(data.count), expectedSHA256: sha256Hex(data),
+            onHashProgress: { reported.append($0) })
+        XCTAssertEqual(reported.last, Int64(data.count))
+
+        var none: [Int64] = []
+        try GGUFJoiner.verify(
+            url: url, expectedBytes: Int64(data.count), expectedSHA256: nil,
+            onHashProgress: { none.append($0) })
+        XCTAssertTrue(none.isEmpty, "a digest-less quant verifies by size only")
+    }
+
     func testJoinAppendsSecondPartAndVerifiesDigest() throws {
         let dir = try makeTempDir()
         defer { try? FileManager.default.removeItem(at: dir) }
