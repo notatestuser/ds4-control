@@ -123,10 +123,19 @@ final class RealProcessRunner: ProcessRunner {
             reader.stop()
             onExit(proc.terminationStatus)
         }
-        try processLock.withLock {
-            guard process?.isRunning != true else { throw ProcessRunnerError.alreadyRunning }
-            try p.run()
-            process = p
+        do {
+            try processLock.withLock {
+                guard process?.isRunning != true else { throw ProcessRunnerError.alreadyRunning }
+                try p.run()
+                process = p
+            }
+        } catch {
+            // Neither a refused launch nor a failed `Process.run()` reaches
+            // `terminationHandler` — the only other reader stop — so clear the handler or it
+            // leaks with the pipe's descriptors (reader → FileHandle → readabilityHandler
+            // keeps the cycle alive).
+            reader.stop()
+            throw error
         }
     }
 
