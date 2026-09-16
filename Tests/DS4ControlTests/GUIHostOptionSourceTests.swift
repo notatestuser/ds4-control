@@ -17,11 +17,11 @@ final class GUIHostOptionSourceTests: XCTestCase {
         XCTAssertTrue(settings.contains("Enter 0.0.0.0 to let other devices connect."))
         let bindHost = try XCTUnwrap(settings.range(of: "Text(\"Bind host\")"))
         let bindHelp = try XCTUnwrap(settings.range(of: "The address ds4-server listens on."))
-        let sessions = try XCTUnwrap(settings.range(of: "Text(\"Concurrent sessions\")"))
+        let sessions = try XCTUnwrap(settings.range(of: "Text(\"Parallel chats & agents\")"))
         let gpuPower = try XCTUnwrap(settings.range(of: "Text(\"GPU power duty\")"))
         XCTAssertLessThan(bindHost.lowerBound, bindHelp.lowerBound)
         XCTAssertLessThan(bindHelp.lowerBound, gpuPower.lowerBound)
-        XCTAssertLessThan(sessions.lowerBound, gpuPower.lowerBound)  // slider sits above GPU power duty
+        XCTAssertLessThan(sessions.lowerBound, gpuPower.lowerBound)  // stepper sits above GPU power duty
         XCTAssertTrue(settings.contains("let host = app.normalizeHostForLaunch()"))
         XCTAssertTrue(settings.contains("supervisor.restart("))
         XCTAssertTrue(settings.contains("host: host"))
@@ -29,6 +29,32 @@ final class GUIHostOptionSourceTests: XCTestCase {
         XCTAssertTrue(settings.contains("restart(overrideWiredLimitGate: true)"))
         XCTAssertTrue(settings.contains("overrideWiredLimitGate: overrideWiredLimitGate"))
         XCTAssertTrue(settings.contains("min(Int(digits) ?? app.selectedVariant.ctxCeiling"))
+    }
+
+    /// The sessions widget bounds the stepper to what fits and shows the live memory price
+    /// per slot at the current context; the ds4 flag mapping lives in SupervisorService.
+    func testSettingsSessionsWidgetShowsCostAndFit() throws {
+        let settings = try source("Sources/DS4Control/Views/SettingsView.swift")
+
+        XCTAssertTrue(settings.contains("Text(\"Parallel chats & agents\")"))
+        XCTAssertTrue(settings.contains("Stepper("))
+        XCTAssertTrue(settings.contains("in: 1...Double(stepperMaxSessions)"))
+        XCTAssertTrue(settings.contains("maxFittingSessions("))
+        XCTAssertTrue(settings.contains("sessionsMemoryCaption"))
+        XCTAssertFalse(settings.contains("Slider(value: sessionsBinding"))
+    }
+
+    /// Apply & Restart is enabled only while the running server's recorded launch config
+    /// differs from the live Server-group controls; an adopted server (unknown config) keeps
+    /// it available.
+    func testApplyRestartRequiresUnappliedChanges() throws {
+        let settings = try source("Sources/DS4Control/Views/SettingsView.swift")
+
+        XCTAssertTrue(settings.contains(".disabled(!canApplyChanges)"))
+        XCTAssertTrue(settings.contains("private var canApplyChanges: Bool { isRunning && hasUnappliedChanges }"))
+        XCTAssertTrue(settings.contains("supervisor.activeConfig"))
+        XCTAssertTrue(settings.contains("LaunchConfig("))
+        XCTAssertTrue(settings.contains("No unapplied changes."))
     }
 
     func testModelRowViewNormalizesBeforeStart() throws {
@@ -89,12 +115,53 @@ final class GUIHostOptionSourceTests: XCTestCase {
     func testSettingsOffersV41QuantPickerAndCleanup() throws {
         let settings = try source("Sources/DS4Control/Views/SettingsView.swift")
 
-        XCTAssertTrue(settings.contains("Text(\"V4.1 Flash model\")"))
+        XCTAssertTrue(settings.contains("Picker(\"V4 Flash variant\", selection: $app.selectedFlashQuant)"))
+        XCTAssertTrue(settings.contains("Picker(\"V4.1 Flash variant\", selection: $app.selectedFlash41Quant)"))
         XCTAssertTrue(settings.contains("ForEach(Flash41Quant.allCases)"))
         XCTAssertTrue(settings.contains("flash41QuantFits("))
         XCTAssertTrue(settings.contains("supervisor.cleanupUnusedFlash41Quants(keep: app.selectedFlash41Quant)"))
-        XCTAssertTrue(settings.contains("~189 GiB of Engram tables stream from the SSD"))
-        XCTAssertTrue(settings.contains("Text(\"V4 Flash (0731) model\")"))
+    }
+
+    /// The variant pickers live in the Server group so the Apply & Restart Server button that
+    /// directly follows it is the obvious way to apply a model change while the server runs;
+    /// both cleanups consolidated under Downloads. Anchors respect SwiftUI's trailing-closure
+    /// source order, where a section's rows precede its `} header:` text.
+    func testSettingsVariantPickersSitInServerGroupBeforeApplyRestart() throws {
+        let settings = try source("Sources/DS4Control/Views/SettingsView.swift")
+
+        let server = try XCTUnwrap(settings.range(of: "Text(\"Server\")"))
+        let kvCache = try XCTUnwrap(settings.range(of: "Toggle(\"Disk KV cache\", isOn: $app.kvDiskCache)"))
+        let flash = try XCTUnwrap(
+            settings.range(of: "Picker(\"V4 Flash variant\", selection: $app.selectedFlashQuant)"))
+        let flash41 = try XCTUnwrap(
+            settings.range(of: "Picker(\"V4.1 Flash variant\", selection: $app.selectedFlash41Quant)"))
+        let apply = try XCTUnwrap(
+            settings.range(of: #"Button("Apply & Restart Server") { restart() }"#))
+        XCTAssertLessThan(kvCache.lowerBound, flash.lowerBound)
+        XCTAssertLessThan(flash.lowerBound, flash41.lowerBound)
+        XCTAssertLessThan(flash41.lowerBound, server.lowerBound)
+        XCTAssertLessThan(server.lowerBound, apply.lowerBound)
+
+        let highPerformance = try XCTUnwrap(
+            settings.range(of: "Toggle(\"High performance mode\", isOn: $app.highPerformanceDownload)"))
+        let downloads = try XCTUnwrap(settings.range(of: "Text(\"Downloads\")"))
+        let flashCleanup = try XCTUnwrap(settings.range(of: "Button(\"Clean up V4 Flash downloads…\")"))
+        let flash41Cleanup = try XCTUnwrap(settings.range(of: "Button(\"Clean up V4.1 downloads…\")"))
+        XCTAssertLessThan(apply.lowerBound, highPerformance.lowerBound)
+        XCTAssertLessThan(highPerformance.lowerBound, flashCleanup.lowerBound)
+        XCTAssertLessThan(flashCleanup.lowerBound, flash41Cleanup.lowerBound)
+        XCTAssertLessThan(flash41Cleanup.lowerBound, downloads.lowerBound)
+    }
+
+    /// The popup has no Apply & Restart affordance, so its model picker must lock while the
+    /// server is loading or serving — Stop comes first.
+    func testModelRowLocksVariantPickerWhileServerActive() throws {
+        let modelRow = try source("Sources/DS4Control/Views/ModelRowView.swift")
+
+        XCTAssertTrue(
+            modelRow.contains(
+                ".disabled(supervisor.state == .downloading || supervisor.state.isServerActive)"))
+        XCTAssertTrue(modelRow.contains("Stop the server to change the model."))
     }
 
     /// The Flash cleanup must react to stranded partial artifacts (`.part` + `.part.dl` with no

@@ -61,6 +61,31 @@ final class FeasibilityTests: XCTestCase {
             97_787)
     }
 
+    /// The sessions stepper's ceiling: the largest slot count that passes the wired-limit
+    /// gate without the "Start anyway" override, capped at the 16-session app limit.
+    func testMaxFittingSessionsStopsAtTheWiredLimit() {
+        // 96 GiB Flash q2 @256K: one session needs 93,390 MB, two 97,787 MB; the advisory
+        // limit (94,208 MB) fits exactly one.
+        XCTAssertEqual(
+            maxFittingSessions(
+                ramGiB: 96, selection: .flash(.q2), ctx: 256_000, wiredLimitMB: 94_208), 1)
+        // A limit between the two- and three-session working sets (97,787 / 102,184 MB)
+        // fits exactly two.
+        XCTAssertEqual(
+            maxFittingSessions(
+                ramGiB: 512, selection: .flash(.q2), ctx: 256_000, wiredLimitMB: 100_000), 2)
+        // Raised above any need, the count maxes out at the app ceiling.
+        XCTAssertEqual(
+            maxFittingSessions(
+                ramGiB: 512, selection: .flash(.q2), ctx: 256_000, wiredLimitMB: Int.max),
+            maxConcurrentSessions)
+        // Pro @1M needs 501,637 MB for one session and 529,517 MB for two: even the
+        // advisory limit on 512 GiB (520,192 MB) fits one.
+        XCTAssertEqual(
+            maxFittingSessions(
+                ramGiB: 512, selection: .pro, ctx: 1_000_000, wiredLimitMB: 520_192), 1)
+    }
+
     func testWiredLimitRejectsFractionalKVOverage() {
         // Exact q2 weights round to 82,703 MiB. At 256K, pinned ds4's context,
         // graph, and conservative persistent-scratch allocations total
@@ -374,8 +399,14 @@ final class FeasibilityTests: XCTestCase {
     }
 
     func testFlash41DefaultCtxAndQuant() {
+        // Streaming tiers keep upstream's documented 32,768 default: 41-q2 on 128 GiB, and
+        // 41-q4 through its 256 GiB floor (the 1M window doesn't fit fully resident yet).
         XCTAssertEqual(defaultCtx(ramGiB: 128, selection: .flash41(.q2)), 32_768)
-        XCTAssertEqual(defaultCtx(ramGiB: 512, selection: .flash41(.q4)), 32_768)
+        XCTAssertEqual(defaultCtx(ramGiB: 256, selection: .flash41(.q4)), 32_768)
+        // Tiers that hold the full 1M window resident default to the ceiling instead.
+        XCTAssertEqual(defaultCtx(ramGiB: 256, selection: .flash41(.q2)), 1_048_576)
+        XCTAssertEqual(defaultCtx(ramGiB: 384, selection: .flash41(.q4)), 1_048_576)
+        XCTAssertEqual(defaultCtx(ramGiB: 512, selection: .flash41(.q4)), 1_048_576)
         XCTAssertEqual(defaultFlash41Quant(ramGiB: 128), .q2)
         XCTAssertEqual(defaultFlash41Quant(ramGiB: 512), .q4)
     }

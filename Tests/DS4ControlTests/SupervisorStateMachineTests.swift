@@ -94,6 +94,42 @@ final class SupervisorStateMachineTests: XCTestCase {
             ["DS4_METAL_PREFILL_CHUNK", "DS4_METAL_GRAPH_RAW_CAP"])
     }
 
+    /// Settings' "Apply & Restart" dirty check rides on the published launch config: start
+    /// records it (with the bind host normalized) and an exit clears it.
+    func testActiveConfigTracksLaunchAndClearsOnExit() throws {
+        let r = FakeRunner(); let s = try makeSupervisor(r)
+        XCTAssertNil(s.activeConfig)
+        s.start(selection: .flash(.q2q4), ctx: 250_000, host: "  0.0.0.0 ", port: 8000, power: 70)
+        XCTAssertEqual(
+            s.activeConfig,
+            LaunchConfig(
+                selection: .flash(.q2q4), ctx: 250_000, host: "0.0.0.0", port: 8000, power: 70,
+                sessions: 1, kvDiskCache: false))
+        r.emit("ds4-server: listening on http://127.0.0.1:8000")
+        XCTAssertEqual(s.state, .ready)
+        s.stop()
+        XCTAssertEqual(s.state, .idle)
+        XCTAssertNil(s.activeConfig)
+    }
+
+    /// V4.1 always launches at full power (`memoryArgs`), so its launch config normalizes the
+    /// power slider away — moving it must not read as an unapplied change there.
+    func testActiveConfigNormalizesV41Power() throws {
+        let r = FakeRunner(); let s = try makeSupervisor(r, quant: .q41Q2)
+        s.start(selection: .flash41(.q2), ctx: 32_768, host: "127.0.0.1", port: 8000, power: 70)
+        XCTAssertEqual(s.activeConfig?.power, 100)
+        XCTAssertEqual(
+            s.activeConfig,
+            LaunchConfig(
+                selection: .flash41(.q2), ctx: 32_768, host: "127.0.0.1", port: 8000, power: 99,
+                sessions: 1, kvDiskCache: false))
+        // Unset power equals ds4's 100 default, so the same launch compares equal either way.
+        let unsetPower = LaunchConfig(
+            selection: .flash(.q2q4), ctx: 32_768, host: "127.0.0.1", port: 8000,
+            power: nil, sessions: 1, kvDiskCache: false)
+        XCTAssertEqual(unsetPower.power, 100)
+    }
+
     func testFlash41LaunchMemoryArgs() {
         // 128 GiB-class: resident fixed set (~165.5 GiB) exceeds min(7/8 RAM, recommended),
         // so the app streams; V4.1 always forces full power duty.

@@ -212,12 +212,12 @@ enum Flash41Quant: String, CaseIterable, Identifiable, Codable {
         case .q4: return .q41Q4
         }
     }
-    /// Picker label: generation + internal key + resident size, e.g.
-    /// "41-q2 · ~152 GiB resident (341 GiB on disk)".
+    /// Picker label: weights key + resident main weights + file size on disk (the file also
+    /// carries ~189 GiB of disk-only Engram tables), e.g. "41-q2 · ~152 GiB (341 GiB on disk)".
     var label: String {
         switch self {
-        case .q2: return "41-q2 · ~152 GiB resident (341 GiB on disk)"
-        case .q4: return "41-q4 · ~294 GiB resident (483 GiB on disk)"
+        case .q2: return "41-q2 · ~152 GiB (341 GiB on disk)"
+        case .q4: return "41-q4 · ~294 GiB (483 GiB on disk)"
         }
     }
 }

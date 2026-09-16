@@ -20,10 +20,42 @@ enum ListeningPIDResult: Equatable {
     case failure
 }
 
+/// The Server-group settings a launch was started with. Published by `SupervisorService` so
+/// Settings can enable "Apply & Restart Server" only while its controls differ from the
+/// running server. `nil` for a server adopted from a previous app run — its launch flags
+/// aren't knowable — in which case Apply stays available.
+struct LaunchConfig: Equatable {
+    var selection: QuantSelection
+    var ctx: Int
+    var host: String
+    var port: Int
+    /// Effective GPU power duty. ds4 defaults to 100 and V4.1 always forces full power
+    /// (`SupervisorService.memoryArgs`), so unset and explicit 100 compare equal.
+    var power: Int
+    var sessions: Int
+    var kvDiskCache: Bool
+
+    init(
+        selection: QuantSelection, ctx: Int, host: String, port: Int, power: Int?,
+        sessions: Int, kvDiskCache: Bool
+    ) {
+        self.selection = selection
+        self.ctx = ctx
+        self.host = host
+        self.port = port
+        self.power = selection.variant == .flash41 ? 100 : (power ?? 100)
+        self.sessions = sessions
+        self.kvDiskCache = kvDiskCache
+    }
+}
+
 @MainActor
 final class SupervisorService: ObservableObject {
     @Published private(set) var state: ServerState = .idle
     @Published private(set) var activeModel: String?
+    /// The launch config of the ds4-server this supervisor started (nil while idle/error,
+    /// and for a server adopted from a previous app run). Drives Settings' dirty check.
+    @Published private(set) var activeConfig: LaunchConfig?
     @Published private(set) var port: Int = 8000
     @Published private(set) var ctx: Int = 393_216
     @Published private(set) var health: HealthStatus?
@@ -194,7 +226,7 @@ final class SupervisorService: ObservableObject {
         "DS4_METAL_GRAPH_RAW_CAP",
     ]
 
-    private static func normalizedBindHost(_ host: String) -> String {
+    static func normalizedBindHost(_ host: String) -> String {
         let trimmed = host.trimmingCharacters(in: .whitespacesAndNewlines)
         return trimmed.isEmpty ? "127.0.0.1" : trimmed
     }
@@ -233,6 +265,9 @@ final class SupervisorService: ObservableObject {
             state = .error(.modelMissing(filename: gguf.lastPathComponent)); return
         }
         self.port = port; self.ctx = ctx; self.activeModel = selection.variant.modelId
+        activeConfig = LaunchConfig(
+            selection: selection, ctx: ctx, host: Self.normalizedBindHost(host), port: port,
+            power: power, sessions: sessions, kvDiskCache: kvDiskDir != nil)
         stderrTail = []; expectingExit = false; serverAttached = false
         var args = [
             "-m", gguf.path,
@@ -293,6 +328,7 @@ final class SupervisorService: ObservableObject {
     private func handleExit(_ code: Int32, generation: Int) {
         guard activeServerGeneration == generation else { return }
         activeServerGeneration = nil
+        activeConfig = nil
         ownedStopWatchdog?.cancel(); ownedStopWatchdog = nil
         healthTimer?.invalidate(); healthTimer = nil; startupTimer?.invalidate(); startupTimer = nil
         if expectingExit {
@@ -388,6 +424,7 @@ final class SupervisorService: ObservableObject {
     private func completeStop() {
         ownedStopWatchdog?.cancel(); ownedStopWatchdog = nil
         activeServerGeneration = nil
+        activeConfig = nil
         expectingExit = false
         state = .idle
         let completions = pendingStopCompletions
