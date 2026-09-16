@@ -89,8 +89,8 @@ final class SupervisorService: ObservableObject {
     /// can't happen until it has fully exited (port freed). `handleExit` runs this.
     private var pendingRestart: (() -> Void)?
     /// When set, the in-flight owned teardown settles in `.error(this)` through
-    /// `completeStop` instead of `.idle` — the startup timeout, whose failure (and the Retry
-    /// button that follows) must not be published while the timed-out loader is still alive.
+    /// `completeStop` instead of `.idle`. Runtime failures must not be published (and Retry
+    /// enabled) while the process that caused them is still alive.
     private var pendingStopError: ServerError?
     /// Identifies the runner callback belonging to the current owned server. A runner can
     /// deliver an old process's exit or stderr readiness after a replacement launch has
@@ -252,6 +252,7 @@ final class SupervisorService: ObservableObject {
         overrideWiredLimitGate: Bool = false
     ) {
         guard state == .idle || isErrorState else { emitBadState("start"); return }
+        guard !runner.isRunning else { emitBadState("start"); return }
         if let e = validateDs4Dir() { state = .error(e); return }
         if let reason = launchBoundsError(variant: selection.variant, ctx: ctx, sessions: sessions) {
             state = .error(.configurationBlocked(reason: reason))
@@ -484,12 +485,12 @@ final class SupervisorService: ObservableObject {
             completeStop()
             return
         }
-        // A timed-out loader that even SIGKILL didn't settle: publishing `.error` here would
-        // expose Retry, whose start() would race the live loader for the port and the GPU
-        // working set. Keep the teardown pending, kill again, and re-arm the watchdog; a
-        // late exit still settles the failure through handleExit.
+        // A failed server that even SIGKILL didn't settle must not expose Retry, whose
+        // start() would race the live process for the port and the GPU working set. Keep
+        // the teardown pending, kill again, and re-arm the watchdog; a late exit still
+        // settles the failure through handleExit.
         if pendingStopError != nil {
-            recentLog.append("Timed-out ds4-server still running; retrying teardown")
+            recentLog.append("Failed ds4-server still running; retrying teardown")
             startOwnedStopWatchdog()
             runner.terminate(graceSeconds: 30)
             let completions = pendingStopCompletions
@@ -1252,10 +1253,16 @@ final class SupervisorService: ObservableObject {
         }
     }
     private var isErrorState: Bool { if case .error = state { return true }; return false }
-    /// The single runtime error transition (health failure). Exposed to tests so the
-    /// nil-`activeConfig`-on-error contract can be pinned, like `memoryArgs`.
+    /// The single runtime error transition (health failure). A live owned server is first
+    /// stopped; `completeStop` clears its config and publishes the failure only after exit.
+    /// Exposed to tests so the lifecycle contract can be pinned, like `memoryArgs`.
     func fail(_ e: ServerError) {
         healthTimer?.invalidate(); healthTimer = nil; startupTimer?.invalidate(); startupTimer = nil
+        if runner.isRunning, state == .ready || state == .starting {
+            pendingStopError = e
+            stop()
+            return
+        }
         // The config describes a live server, and `.error` has none: clear before publishing
         // so Settings' dirty check never reads a stale launch.
         activeConfig = nil

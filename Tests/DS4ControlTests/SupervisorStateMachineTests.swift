@@ -390,10 +390,11 @@ final class SupervisorStateMachineTests: XCTestCase {
         XCTAssertNil(s.activeConfig)
     }
 
-    /// The published launch config describes a running server only: every transition into
-    /// `.error` — including the health poll's `.unhealthy` — clears it.
-    func testRuntimeErrorClearsActiveConfig() throws {
-        let r = FakeRunner(); let s = try makeSupervisor(r)
+    /// A health failure must retain the running config and withhold Retry until the process
+    /// exits; only then may it publish `.error`, clear the config, and launch a replacement.
+    func testRuntimeErrorStopsServerBeforePublishingErrorAndAllowsRetry() throws {
+        let r = FakeRunner(); r.exitsOnTerminate = false
+        let s = try makeSupervisor(r)
         s.start(selection: .flash(.q2q4), ctx: 250_000, host: "127.0.0.1", port: 8000, power: nil)
         r.emit("ds4-server: listening on http://127.0.0.1:8000")
         XCTAssertEqual(s.state, .ready)
@@ -401,8 +402,46 @@ final class SupervisorStateMachineTests: XCTestCase {
 
         s.fail(.unhealthy)
 
+        XCTAssertEqual(s.state, .stopping)
+        XCTAssertNotNil(s.activeConfig)
+        XCTAssertEqual(r.terminateCallCount, 1)
+        s.start(selection: .flash(.q2q4), ctx: 250_000, host: "127.0.0.1", port: 8000, power: nil)
+        XCTAssertEqual(r.launchCallCount, 1, "Retry must not launch while the unhealthy server exits")
+
+        r.finishTermination()
         XCTAssertEqual(s.state, .error(.unhealthy))
         XCTAssertNil(s.activeConfig)
+
+        s.start(selection: .flash(.q2q4), ctx: 250_000, host: "127.0.0.1", port: 8000, power: nil)
+        XCTAssertEqual(r.launchCallCount, 2, "Retry launches after the unhealthy server has exited")
+        XCTAssertEqual(s.state, .starting)
+    }
+
+    func testRealProcessRunnerRejectsReplacementWhileProcessIsRunning() throws {
+        let r = RealProcessRunner()
+        let firstExit = expectation(description: "first process exited")
+        try r.launch(
+            executable: URL(fileURLWithPath: "/bin/sleep"), args: ["30"],
+            cwd: URL(fileURLWithPath: "/tmp"), env: [:], removingEnvironmentKeys: [],
+            onStderrLine: { _ in }, onExit: { _ in firstExit.fulfill() })
+
+        XCTAssertThrowsError(
+            try r.launch(
+                executable: URL(fileURLWithPath: "/usr/bin/true"), args: [],
+                cwd: URL(fileURLWithPath: "/tmp"), env: [:], removingEnvironmentKeys: [],
+                onStderrLine: { _ in }, onExit: { _ in })
+        ) { error in
+            XCTAssertEqual(error as? ProcessRunnerError, .alreadyRunning)
+        }
+
+        r.terminate(graceSeconds: 0)
+        wait(for: [firstExit], timeout: 5)
+
+        XCTAssertNoThrow(
+            try r.launch(
+                executable: URL(fileURLWithPath: "/usr/bin/true"), args: [],
+                cwd: URL(fileURLWithPath: "/tmp"), env: [:], removingEnvironmentKeys: [],
+                onStderrLine: { _ in }, onExit: { _ in }))
     }
 
     func testStop() throws {
