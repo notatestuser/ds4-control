@@ -21,6 +21,10 @@ final class HFDownloader: NSObject, @unchecked Sendable {
     private let endpoint: String
     private let revision: String
     private let maxRetries: Int
+    /// Injected by tests to route through a mock `URLProtocol`; production uses `.default`.
+    private let sessionConfiguration: URLSessionConfiguration?
+    /// Backoff base between probe attempts (tests shrink it).
+    private let probeRetryBackoff: TimeInterval
 
     /// Coalesce progress callbacks so the UI isn't spammed (~8 MB granularity).
     private static let progressStep: Int64 = 8 * 1024 * 1024
@@ -35,11 +39,14 @@ final class HFDownloader: NSObject, @unchecked Sendable {
     /// Performance (still under the 256 fd soft-limit, with headroom for HF 429).
     static func workerCount(highPerformance: Bool) -> Int { highPerformance ? 64 : 8 }
 
-    init(repo: String, endpoint: String = "https://huggingface.co", revision: String = "main", maxRetries: Int = 8) {
+    init(repo: String, endpoint: String = "https://huggingface.co", revision: String = "main", maxRetries: Int = 8,
+         sessionConfiguration: URLSessionConfiguration? = nil, probeRetryBackoff: TimeInterval = 1.0) {
         self.repo = repo
         self.endpoint = endpoint
         self.revision = revision
         self.maxRetries = maxRetries
+        self.sessionConfiguration = sessionConfiguration
+        self.probeRetryBackoff = probeRetryBackoff
         super.init()
     }
 
@@ -157,9 +164,14 @@ final class HFDownloader: NSObject, @unchecked Sendable {
         // ONE shared session for all workers. CRITICAL: httpMaximumConnectionsPerHost defaults to 6,
         // which would silently cap parallelism — raise it to the worker count. With per-task delegates
         // (set inside each ChunkFetcher) the session needs no session-wide delegate.
-        let cfg = URLSessionConfiguration.default
+        let cfg = sessionConfiguration ?? URLSessionConfiguration.default
         cfg.timeoutIntervalForRequest = 60
-        cfg.waitsForConnectivity = true
+        // Fail fast instead of parking in `.waitingForConnectivity`: that wait is unbounded, so a
+        // first-contact network blip froze the whole download on a spinner with no speed (the
+        // probe never returned and no worker ever started). Transient failures are absorbed by the
+        // probe retry below and the workers' per-chunk backoff; a persistent outage surfaces as an
+        // error banner, and Retry resumes from the bitmap.
+        cfg.waitsForConnectivity = false
         cfg.httpMaximumConnectionsPerHost = workers
         let session = URLSession(configuration: cfg)
         defer { session.invalidateAndCancel() }
@@ -168,9 +180,27 @@ final class HFDownloader: NSObject, @unchecked Sendable {
         // .part — chunk 0's real fetch writes offset 0). ChunkFetcher returns the file's total size.
         let devNull = try FileHandle(forWritingTo: URL(fileURLWithPath: "/dev/null"))
         defer { try? devNull.close() }
+        // Size probe, retried: it is the FIRST network contact (cold DNS/route, VPN churn), and the
+        // workers' resilient path doesn't start until it returns. Capped at 3 attempts so a
+        // persistently unreachable server fails the download instead of spinning forever.
         let probe = ChunkFetcher(session: session)
-        let total = try await probe.fetch(
-            url: url, offset: 0, end: 0, token: token, fileHandle: devNull, onBytes: { _ in })
+        var probeTotal: Int64 = -1
+        var probeAttempt = 0
+        while true {
+            do {
+                probeTotal = try await probe.fetch(
+                    url: url, offset: 0, end: 0, token: token, fileHandle: devNull, onBytes: { _ in })
+                break
+            } catch is CancellationError {
+                throw CancellationError()
+            } catch {
+                probeAttempt += 1
+                if probeAttempt >= 3 { throw error }
+                try await Task.sleep(
+                    nanoseconds: UInt64(Double(probeAttempt) * probeRetryBackoff * 1_000_000_000))
+            }
+        }
+        let total = probeTotal  // immutable from here so the worker closures capture a let
         guard total > 0 else { throw Failure.http(-1) }
 
         // Migration: a legacy *sequential* `.part` (contiguous, no sidecar) has its leading whole

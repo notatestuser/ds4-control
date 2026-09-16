@@ -169,4 +169,127 @@ final class HFDownloaderTests: XCTestCase {
         XCTAssertFalse(FileManager.default.fileExists(atPath: sidecar.path), "sidecar dropped on completion")
         XCTAssertFalse(FileManager.default.fileExists(atPath: part.path), ".part renamed away on completion")
     }
+
+    /// A first-contact network blip must not freeze the download (spinner, 0%, no speed): the probe
+    /// retries transient failures, then the chunk fetch proceeds normally.
+    func testProbeRetriesTransientFailureThenCompletes() async throws {
+        MockHFProtocol.state.reset(failFirst: true, alwaysFail: false)
+        let dir = URL(fileURLWithPath: NSTemporaryDirectory()).appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let cfg = URLSessionConfiguration.ephemeral
+        cfg.protocolClasses = [MockHFProtocol.self]
+        let dl = HFDownloader(repo: "test/repo", sessionConfiguration: cfg, probeRetryBackoff: 0.01)
+
+        try await dl.download(file: "tiny.gguf", into: dir, token: nil, highPerformance: false) { _, _ in }
+
+        XCTAssertEqual(
+            try Data(contentsOf: dir.appendingPathComponent("tiny.gguf")), MockHFProtocol.body)
+        XCTAssertEqual(
+            MockHFProtocol.state.requestCount, 3,
+            "one failed probe + the retried probe + one chunk fetch")
+    }
+
+    /// A persistently failing server must surface as a bounded error (banner + Retry), never as an
+    /// eternal spinner: the probe's attempts are capped.
+    func testProbeExhaustionFailsInsteadOfHanging() async throws {
+        MockHFProtocol.state.reset(failFirst: false, alwaysFail: true)
+        let dir = URL(fileURLWithPath: NSTemporaryDirectory()).appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let cfg = URLSessionConfiguration.ephemeral
+        cfg.protocolClasses = [MockHFProtocol.self]
+        let dl = HFDownloader(repo: "test/repo", sessionConfiguration: cfg, probeRetryBackoff: 0.01)
+
+        do {
+            try await dl.download(file: "tiny.gguf", into: dir, token: nil, highPerformance: false) { _, _ in }
+            XCTFail("an all-503 server must fail the download")
+        } catch let e as HFDownloader.Failure {
+            XCTAssertEqual(e, .http(503))
+        }
+        XCTAssertEqual(
+            MockHFProtocol.state.requestCount, 3, "probe attempts must be bounded, not unlimited")
+    }
+
+    /// The session must fail fast instead of parking in `.waitingForConnectivity`: that wait is
+    /// unbounded for the probe (no progress callbacks → spinner with no speed) and for the workers
+    /// (their per-chunk backoff is the designed transient-recovery path).
+    func testDownloadSessionFailsFastInsteadOfWaitingForConnectivity() throws {
+        let repoRoot = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+        let source = try String(
+            contentsOf: repoRoot.appendingPathComponent("Sources/DS4Control/Services/HFDownloader.swift"),
+            encoding: .utf8)
+        XCTAssertTrue(source.contains("waitsForConnectivity = false"))
+    }
+}
+
+/// Offline `URLProtocol` answering HF-style closed-Range requests for a 4-byte file. Configured
+/// statically (reset per test) to fail the first request or every request, so the probe's retry
+/// path is exercised without network.
+final class MockHFProtocol: URLProtocol {
+    final class State: @unchecked Sendable {
+        private let lock = NSLock()
+        private var failFirst = false
+        private var alwaysFail = false
+        private var count = 0
+
+        func reset(failFirst: Bool, alwaysFail: Bool) {
+            lock.lock()
+            defer { lock.unlock() }
+            self.failFirst = failFirst
+            self.alwaysFail = alwaysFail
+            count = 0
+        }
+
+        /// Record the request and decide whether it should fail.
+        func began() -> Bool {
+            lock.lock()
+            defer { lock.unlock() }
+            count += 1
+            return alwaysFail || (failFirst && count == 1)
+        }
+
+        var requestCount: Int {
+            lock.lock()
+            defer { lock.unlock() }
+            return count
+        }
+    }
+
+    static let state = State()
+    static let total: Int64 = 4
+    static let body = Data("GGUF".utf8)
+
+    override class func canInit(with request: URLRequest) -> Bool { true }
+    override class func canonicalRequest(for request: URLRequest) -> URLRequest { request }
+    override func stopLoading() {}
+
+    override func startLoading() {
+        if Self.state.began() {
+            let resp = HTTPURLResponse(
+                url: request.url!, statusCode: 503, httpVersion: "HTTP/1.1", headerFields: nil)!
+            client?.urlProtocol(self, didReceive: resp, cacheStoragePolicy: .notAllowed)
+            client?.urlProtocolDidFinishLoading(self)
+            return
+        }
+        // Closed Range "bytes=a-b": the probe asks bytes=0-0, the chunk asks 0-(total-1).
+        let bounds =
+            (request.value(forHTTPHeaderField: "Range") ?? "bytes=0-\(Self.total - 1)")
+            .replacingOccurrences(of: "bytes=", with: "")
+            .split(separator: "-")
+            .compactMap { Int64($0) }
+        let start = bounds.first ?? 0
+        let end = bounds.count > 1 ? bounds[1] : Self.total - 1
+        let payload = Self.body[Int(start)...Int(end)]
+        let resp = HTTPURLResponse(
+            url: request.url!, statusCode: 206, httpVersion: "HTTP/1.1",
+            headerFields: [
+                "Content-Range": "bytes \(start)-\(end)/\(Self.total)",
+                "Content-Length": "\(payload.count)",
+            ])!
+        client?.urlProtocol(self, didReceive: resp, cacheStoragePolicy: .notAllowed)
+        client?.urlProtocol(self, didLoad: payload)
+        client?.urlProtocolDidFinishLoading(self)
+    }
 }
