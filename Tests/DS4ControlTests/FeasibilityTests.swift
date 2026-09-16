@@ -282,6 +282,104 @@ final class FeasibilityTests: XCTestCase {
         XCTAssertTrue(thinkMax(ctx: 393_216))
         XCTAssertFalse(thinkMax(ctx: 392_000))
     }
+
+    // MARK: - DeepSeek V4.1 Flash
+
+    func testDS41GraphBytesMatchPinnedDS4Estimator() {
+        // Fixed values from a transcription of ds4@bd66c40 `ds41_graph_bytes`
+        // (external/ds4/ds4.c:39227) verified with an independent dev-time calculation.
+        // Keep them independent of the Swift formula so drift fails loudly.
+        XCTAssertEqual(ds41GraphBytes(ctx: 4_096), 1_921_216_616)
+        XCTAssertEqual(ds41GraphBytes(ctx: 32_768), 8_465_702_760)
+        XCTAssertEqual(ds41GraphBytes(ctx: 131_072), 9_610_852_200)
+        XCTAssertEqual(ds41GraphBytes(ctx: 393_216), 12_664_584_040)
+        XCTAssertEqual(ds41GraphBytes(ctx: 1_048_576), 20_298_913_640)
+        XCTAssertNil(ds41GraphBytes(ctx: 0))
+        XCTAssertNil(ds41GraphBytes(ctx: 1_048_577))  // above max_position_embeddings
+    }
+
+    func testV41FixedWiredMatchesPinnedValues() {
+        // fixed = resident (or streamed) weights + graph × sessions + 2 GiB
+        // (+ the 2-layer streaming prefill headroom), rounded up to MiB. Values mirror
+        // ds41_memory_admit_for_host and the GGUF byte constants.
+        XCTAssertEqual(
+            v41FixedWiredMB(quant: .q41Q2, ctx: 32_768, sessions: 1, streaming: true), 27_007)
+        XCTAssertEqual(
+            v41FixedWiredMB(quant: .q41Q2, ctx: 32_768, sessions: 1, streaming: false), 165_510)
+        XCTAssertEqual(
+            v41FixedWiredMB(quant: .q41Q4, ctx: 32_768, sessions: 1, streaming: true), 34_297)
+        XCTAssertEqual(
+            v41FixedWiredMB(quant: .q41Q4, ctx: 32_768, sessions: 1, streaming: false), 311_310)
+        XCTAssertEqual(
+            v41FixedWiredMB(quant: .q41Q2, ctx: 1_048_576, sessions: 1, streaming: true), 38_292)
+    }
+
+    func testFlash41StreamingDecisionMirrorsBudget() {
+        // budget = min(ram × 7/8, recommended working set); recommended ≈ 75% of RAM here.
+        XCTAssertTrue(
+            flash41UsesSSDStreaming(
+                ramGiB: 128, wiredLimitMB: 98_304, quant: .q41Q2, ctx: 32_768, sessions: 1))
+        XCTAssertFalse(
+            flash41UsesSSDStreaming(
+                ramGiB: 512, wiredLimitMB: 393_216, quant: .q41Q2, ctx: 32_768, sessions: 1))
+        XCTAssertFalse(
+            flash41UsesSSDStreaming(
+                ramGiB: 256, wiredLimitMB: 196_608, quant: .q41Q2, ctx: 32_768, sessions: 1))
+        XCTAssertTrue(
+            flash41UsesSSDStreaming(
+                ramGiB: 256, wiredLimitMB: 196_608, quant: .q41Q4, ctx: 32_768, sessions: 1))
+        XCTAssertFalse(
+            flash41UsesSSDStreaming(
+                ramGiB: 512, wiredLimitMB: 393_216, quant: .q41Q4, ctx: 32_768, sessions: 1))
+    }
+
+    func testFlash41FloorsAndGates() {
+        if case let .blocked(reason) = feasibility(
+            ramGiB: 96, selection: .flash41(.q2), ctx: 32_768, wiredLimitMB: 86_016)
+        {
+            XCTAssertTrue(reason.contains("128 GiB"))
+        } else {
+            XCTFail("V4.1 below 128 GiB must block")
+        }
+        if case .standard = feasibility(
+            ramGiB: 128, selection: .flash41(.q2), ctx: 32_768, wiredLimitMB: 98_304)
+        {
+        } else {
+            XCTFail("V4.1 q2 on 128 GiB with streaming must pass")
+        }
+        if case let .blocked(reason) = feasibility(
+            ramGiB: 128, selection: .flash41(.q4), ctx: 32_768, wiredLimitMB: Int.max)
+        {
+            XCTAssertTrue(reason.contains("256 GiB"))
+        } else {
+            XCTFail("V4.1 41-q4 below 256 GiB must block (documented tier table)")
+        }
+        if case .standard = feasibility(
+            ramGiB: 256, selection: .flash41(.q4), ctx: 32_768, wiredLimitMB: 196_608)
+        {
+        } else {
+            XCTFail("V4.1 q4 on 256 GiB with streaming must pass")
+        }
+    }
+
+    func testFlash41QuantFitFloors() {
+        XCTAssertFalse(flash41QuantFits(.q2, ramGiB: 96, wiredLimitMB: Int.max))
+        XCTAssertFalse(flash41QuantFits(.q4, ramGiB: 96, wiredLimitMB: Int.max))
+        XCTAssertTrue(flash41QuantFits(.q2, ramGiB: 128, wiredLimitMB: 98_304))
+        // 41-q4's documented floor is 256 GiB (README tier table): the 128 GiB class streams
+        // essentially every routed expert, which the supported tiers do not offer.
+        XCTAssertFalse(flash41QuantFits(.q4, ramGiB: 128, wiredLimitMB: Int.max))
+        XCTAssertFalse(flash41QuantFits(.q4, ramGiB: 255, wiredLimitMB: Int.max))
+        XCTAssertTrue(flash41QuantFits(.q4, ramGiB: 256, wiredLimitMB: 196_608))
+    }
+
+    func testFlash41DefaultCtxAndQuant() {
+        XCTAssertEqual(defaultCtx(ramGiB: 128, selection: .flash41(.q2)), 32_768)
+        XCTAssertEqual(defaultCtx(ramGiB: 512, selection: .flash41(.q4)), 32_768)
+        XCTAssertEqual(defaultFlash41Quant(ramGiB: 128), .q2)
+        XCTAssertEqual(defaultFlash41Quant(ramGiB: 512), .q4)
+    }
+
     func testSystemRam() { XCTAssertGreaterThan(systemRamGiB(), 0) }
     func testWiredLimitReadable() { XCTAssertGreaterThanOrEqual(currentWiredLimitMB(), 0) }
 }

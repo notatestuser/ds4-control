@@ -60,11 +60,12 @@ struct DS4ControlApp: App {
         guard !menuBarStartup.started else { return }
         menuBarStartup.started = true
         DispatchQueue.main.async {
-            metrics.start()
+            // Metrics collection is visibility-driven: PopupView's onAppear/onDisappear call
+            // metrics.setActive(_:) — visible samples at the fast cadence, hidden drops to the
+            // slow background cadence (the graphs must not gap while the popup is closed).
             supervisor.resumeRunningServerIfAny(port: app.port)
             supervisor.resumeInFlightDownloadIfAny(
-                variant: app.selectedVariant, flashQuant: app.selectedFlashQuant,
-                highPerformance: app.highPerformanceDownload)
+                selection: app.quantSelection, highPerformance: app.highPerformanceDownload)
         }
     }
 }

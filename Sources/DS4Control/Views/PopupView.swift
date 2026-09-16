@@ -39,6 +39,8 @@ struct PopupView: View {
         }
         .padding(16)
         .frame(width: 320)
+        .onAppear { metrics.setActive(true) }
+        .onDisappear { metrics.setActive(false) }
     }
 
     private var header: some View {

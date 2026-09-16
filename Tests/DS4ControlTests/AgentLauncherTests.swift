@@ -6,6 +6,8 @@ final class AgentLauncherTests: XCTestCase {
     func testModelIdPrefersRunningModel() {
         XCTAssertEqual(AgentLauncher.modelId(for: "deepseek-v4-pro", fallback: .flash), "deepseek-v4-pro")
         XCTAssertEqual(AgentLauncher.modelId(for: "deepseek-v4-flash", fallback: .pro), "deepseek-v4-flash")
+        XCTAssertEqual(
+            AgentLauncher.modelId(for: "deepseek-v4.1-flash", fallback: .pro), "deepseek-v4.1-flash")
     }
 
     func testModelIdFallsBackWhenNilOrUnknown() {
@@ -22,8 +24,24 @@ final class AgentLauncherTests: XCTestCase {
         XCTAssertTrue(s.contains("openai-completions"))
         XCTAssertTrue(s.contains("deepseek-v4-pro"))
         XCTAssertTrue(s.contains("deepseek-v4-flash"))
+        XCTAssertTrue(s.contains("deepseek-v4.1-flash"))
         XCTAssertTrue(s.contains("thinkingLevelMap"))
         XCTAssertTrue(s.contains("\"xhigh\": \"max\""))  // Max mode (pi xhigh) → ds4 reasoning_effort "max"
+    }
+
+    func testPiModelsJSONListsAllThreeLocalModels() throws {
+        let s = AgentLauncher.piModelsJSON(port: 8137, contextWindow: 1_000_000)
+        let root = try XCTUnwrap(
+            try JSONSerialization.jsonObject(with: Data(s.utf8)) as? [String: Any])
+        let providers = try XCTUnwrap(root["providers"] as? [String: Any])
+        let ds4 = try XCTUnwrap(providers["ds4"] as? [String: Any])
+        let models = try XCTUnwrap(ds4["models"] as? [[String: Any]])
+        XCTAssertEqual(models.count, 3)
+        XCTAssertEqual(
+            Set(models.compactMap { $0["id"] as? String }),
+            ["deepseek-v4-pro", "deepseek-v4-flash", "deepseek-v4.1-flash"])
+        let flash41 = try XCTUnwrap(models.first { ($0["id"] as? String) == "deepseek-v4.1-flash" })
+        XCTAssertEqual(flash41["maxTokens"] as? Int, 1_048_576)
     }
 
     func testWrapperScriptBranchesForBothAgents() {
