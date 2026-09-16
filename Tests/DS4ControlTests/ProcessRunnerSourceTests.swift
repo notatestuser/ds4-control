@@ -21,5 +21,12 @@ final class ProcessRunnerSourceTests: XCTestCase {
         XCTAssertNotNil(
             src.range(of: "reader.stop()", range: catchBlock.upperBound..<src.endIndex),
             "the launch failure path must stop the stderr reader before propagating")
+        // The refused-launch guard must sit inside the same do/catch: its throw skips
+        // `terminationHandler` too, so the reader would leak with it.
+        let doStart = try XCTUnwrap(
+            src.range(of: "do {", options: .backwards, range: src.startIndex..<runCall.lowerBound))
+        let guardThrow = try XCTUnwrap(src.range(of: "ProcessRunnerError.alreadyRunning"))
+        XCTAssertLessThan(doStart.lowerBound, guardThrow.lowerBound, "the guard must be inside the do")
+        XCTAssertLessThan(guardThrow.lowerBound, catchBlock.lowerBound, "the guard's throw must be caught")
     }
 }
