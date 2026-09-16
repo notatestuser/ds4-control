@@ -5,24 +5,26 @@ import Combine
 private final class FakeRunner: ProcessRunner {
     var isRunning = false
     var exitsOnTerminate = true
+    var launchError: Error?
     var launchCallCount = 0
     var terminateCallCount = 0
     var lastArgs: [String] = []
     var lastEnv: [String: String] = [:]
     var lastRemovedEnvironmentKeys: Set<String> = []
-    private var stderr: (@Sendable (String) -> Void)?
+    private var stderrs: [@Sendable (String) -> Void] = []
     private var exits: [@Sendable (Int32) -> Void] = []
     func launch(
         executable: URL, args: [String], cwd: URL, env: [String: String],
         removingEnvironmentKeys: Set<String>,
         onStderrLine: @escaping @Sendable (String) -> Void, onExit: @escaping @Sendable (Int32) -> Void
     ) throws {
+        if let launchError { throw launchError }
         launchCallCount += 1
         lastArgs = args
         lastEnv = env
         lastRemovedEnvironmentKeys = removingEnvironmentKeys
         isRunning = true
-        stderr = onStderrLine
+        stderrs.append(onStderrLine)
         exits.append(onExit)
     }
     func terminate(graceSeconds: Double) {
@@ -30,7 +32,8 @@ private final class FakeRunner: ProcessRunner {
         guard exitsOnTerminate else { return }
         finishTermination()
     }
-    func emit(_ line: String) { stderr?(line) }
+    func emit(_ line: String) { stderrs.last?(line) }
+    func emit(forLaunch index: Int, _ line: String) { stderrs[index](line) }
     func crash(_ code: Int32) { isRunning = false; exits.last?(code) }
     func finishTermination() { isRunning = false; exits.last?(0) }
     func emitExit(forLaunch index: Int, code: Int32 = 0) { exits[index](code) }
@@ -56,6 +59,7 @@ final class SupervisorStateMachineTests: XCTestCase {
         _ runner: FakeRunner, probe: @escaping (Int) async -> Data? = { _ in nil },
         wiredLimitGate: @escaping SupervisorService.WiredLimitGate = { _, _, _ in .standard },
         ownedStopWatchdogDelay: TimeInterval = 35,
+        startupTimeout: TimeInterval = 600,
         listeningPIDLookup: SupervisorService.ListeningPIDLookup? = nil,
         quant: Quant = .q2q4Imatrix
     ) throws -> SupervisorService {
@@ -74,6 +78,7 @@ final class SupervisorStateMachineTests: XCTestCase {
             ds4Dir: dir, runner: runner, serverProbe: probe,
             wiredLimitGate: wiredLimitGate,
             ownedStopWatchdogDelay: ownedStopWatchdogDelay,
+            startupTimeout: startupTimeout,
             listeningPIDLookup: listeningPIDLookup
         )  // tests are host-independent: skip the RAM/sysctl gate
     }
@@ -304,6 +309,87 @@ final class SupervisorStateMachineTests: XCTestCase {
         XCTAssertEqual(s.activeModel, "DeepSeek V4 Flash")
         XCTAssertEqual(s.ctx, 1_000_000)  // adopted server's context, not the start-time 250_000
     }
+    /// A loader that never becomes ready is terminated at the deadline, and the failure is
+    /// published only once its exit is confirmed: Retry must not launch a replacement while
+    /// the timed-out loader still owns the port.
+    func testStartupTimeoutTerminatesLoaderBeforePublishingError() async throws {
+        let r = FakeRunner(); r.exitsOnTerminate = false
+        let s = try makeSupervisor(r, startupTimeout: 0.01)
+        s.start(selection: .flash(.q2q4), ctx: 250_000, host: "127.0.0.1", port: 8000, power: nil)
+        XCTAssertEqual(s.state, .starting)
+
+        let teardown = expectation(description: "startup timeout teardown")
+        let token = s.$state.dropFirst().sink { if $0 == .stopping { teardown.fulfill() } }
+        await fulfillment(of: [teardown], timeout: 1)
+        token.cancel()
+
+        XCTAssertEqual(r.terminateCallCount, 1)
+        s.start(selection: .flash(.q2q4), ctx: 250_000, host: "127.0.0.1", port: 8000, power: nil)
+        XCTAssertEqual(r.launchCallCount, 1, "Retry must be refused while the timed-out loader exits")
+
+        r.finishTermination()
+        XCTAssertEqual(s.state, .error(.startupTimeout))
+
+        s.start(selection: .flash(.q2q4), ctx: 250_000, host: "127.0.0.1", port: 8000, power: nil)
+        XCTAssertEqual(r.launchCallCount, 2, "Retry launches once the loader's exit is confirmed")
+        XCTAssertEqual(s.state, .starting)
+    }
+
+    /// The dead loader's late readiness line must not certify the replacement launched by
+    /// Retry: only stderr from the active generation can move `.starting` to `.ready`.
+    func testStaleStderrReadinessDoesNotCertifyNewerAttempt() async throws {
+        let r = FakeRunner()
+        let s = try makeSupervisor(r, startupTimeout: 0.01)
+        s.start(selection: .flash(.q2q4), ctx: 250_000, host: "127.0.0.1", port: 8000, power: nil)
+
+        let timedOut = expectation(description: "startup timeout")
+        let token = s.$state.dropFirst().sink { if $0 == .error(.startupTimeout) { timedOut.fulfill() } }
+        await fulfillment(of: [timedOut], timeout: 1)
+        token.cancel()
+
+        s.start(selection: .flash(.q2q4), ctx: 250_000, host: "127.0.0.1", port: 8000, power: nil)
+        XCTAssertEqual(s.state, .starting)
+        r.emit(forLaunch: 0, "ds4-server: listening on http://127.0.0.1:8000")
+        XCTAssertEqual(s.state, .starting, "the dead loader's readiness must not certify the retry")
+        r.emit(forLaunch: 1, "ds4-server: listening on http://127.0.0.1:8000")
+        XCTAssertEqual(s.state, .ready)
+    }
+
+    /// If the timed-out loader survives even SIGKILL, the supervisor stays in the teardown —
+    /// never publishing a Retry-able `.error` — and retries the kill; a Retry attempt during
+    /// that window must not launch a second server.
+    func testTimedOutLoaderStillRunningRetriesTeardownAndBlocksRetry() async throws {
+        let r = FakeRunner(); r.exitsOnTerminate = false
+        let s = try makeSupervisor(r, ownedStopWatchdogDelay: 0.02, startupTimeout: 0.01)
+        s.start(selection: .flash(.q2q4), ctx: 250_000, host: "127.0.0.1", port: 8000, power: nil)
+
+        // Two terminate calls: the timeout teardown plus the watchdog's retry.
+        var spins = 0
+        while r.terminateCallCount < 2 && spins < 200 {
+            try await Task.sleep(nanoseconds: 5_000_000)
+            spins += 1
+        }
+        XCTAssertGreaterThanOrEqual(r.terminateCallCount, 2)
+        XCTAssertEqual(s.state, .stopping, "the failure must not be published while the loader runs")
+
+        s.start(selection: .flash(.q2q4), ctx: 250_000, host: "127.0.0.1", port: 8000, power: nil)
+        XCTAssertEqual(r.launchCallCount, 1, "Retry must not start a second server while the loader is alive")
+
+        r.finishTermination()
+        XCTAssertEqual(s.state, .error(.startupTimeout))
+    }
+
+    /// A launch that throws must not leave `activeConfig` pointing at a server that never
+    /// started: Settings reads a non-nil config as the running server's flags.
+    func testFailedLaunchClearsActiveConfig() throws {
+        let r = FakeRunner()
+        r.launchError = NSError(domain: "test", code: 1)
+        let s = try makeSupervisor(r)
+        s.start(selection: .flash(.q2q4), ctx: 250_000, host: "127.0.0.1", port: 8000, power: nil)
+        if case .error(.crashed) = s.state {} else { XCTFail("expected crashed, got \(s.state)") }
+        XCTAssertNil(s.activeConfig)
+    }
+
     func testStop() throws {
         let r = FakeRunner(); let s = try makeSupervisor(r)
         s.start(selection: .flash(.q2q4), ctx: 250_000, host: "127.0.0.1", port: 8000, power: nil)
