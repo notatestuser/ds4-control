@@ -793,12 +793,20 @@ final class SupervisorService: ObservableObject {
             return !FileManager.default.fileExists(atPath: partURL.path)
                 || resumableBytes(ggufDir: baseDir, filename: part.filename) > 0
         }
+        // A joined final awaiting its marker only needs verification, even when its transport
+        // parts are gone: mirror the fetch loop's early-return condition so a verification-only
+        // resume never reports downloader connections.
+        let joinedFinalOnlyNeedsVerification =
+            parts.count > 1
+            && FileManager.default.fileExists(atPath: baseDir.appendingPathComponent(finalName).path)
+            && !FileManager.default.fileExists(atPath: assemblingURL.path)
         download = DownloadProgress(
             pct: 0, file: firstPending?.filename ?? finalName, receivedBytes: 0,
             totalBytes: expectedBytes,
-            // Every download starts at the CGNAT-safe base; High Performance ramps up from there
-            // (live updates arrive with the downloader's progress ticks).
-            connections: HFDownloader.workerCount(highPerformance: false))
+            // Claim the CGNAT-safe base only when a fetch will actually run; High Performance
+            // ramps up from there (live counts arrive with the downloader's progress ticks).
+            connections: firstPending != nil && !joinedFinalOnlyNeedsVerification
+                ? HFDownloader.workerCount(highPerformance: false) : nil)
         state = .downloading
         lastDownloadSample = nil
         activeDownloadSelection = selection

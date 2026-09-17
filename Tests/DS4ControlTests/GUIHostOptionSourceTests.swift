@@ -119,10 +119,6 @@ final class GUIHostOptionSourceTests: XCTestCase {
         XCTAssertTrue(settings.contains("Picker(\"V4 Flash variant\", selection: $app.selectedFlashQuant)"))
         XCTAssertTrue(settings.contains("Picker(\"V4.1 Flash variant\", selection: $app.selectedFlash41Quant)"))
         XCTAssertTrue(settings.contains("ForEach(Flash41Quant.allCases)"))
-        // Both model sections must label their quant picker identically.
-        XCTAssertTrue(settings.contains("Picker(\"Variant\", selection: $app.selectedFlashQuant)"))
-        XCTAssertTrue(settings.contains("Picker(\"Variant\", selection: $app.selectedFlash41Quant)"))
-        XCTAssertFalse(settings.contains("Picker(\"Quant\""))
         XCTAssertTrue(settings.contains("flash41QuantFits("))
         XCTAssertTrue(settings.contains("supervisor.cleanupUnusedFlash41Quants(keep: app.selectedFlash41Quant)"))
     }

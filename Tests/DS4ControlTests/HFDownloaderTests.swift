@@ -386,7 +386,8 @@ final class HFDownloaderTests: XCTestCase {
             "the backed-off pool must be reported after the first non-improving window")
     }
 
-    /// Without High Performance the pool is fixed: every reported count is the base.
+    /// Without High Performance the pool is fixed at the base: the baseline reports it, and the
+    /// live ticks never exceed it (the count decays as workers run out of chunks and exit).
     func testProgressReportsBaseConnectionsWithoutHighPerformance() async throws {
         MockHFProtocol.state.reset(failFirst: false, alwaysFail: false)
         let dir = URL(fileURLWithPath: NSTemporaryDirectory()).appendingPathComponent(UUID().uuidString)
@@ -401,7 +402,10 @@ final class HFDownloaderTests: XCTestCase {
             conns.add(connections)
         }
 
-        XCTAssertEqual(Set(conns.all), [8], "a fixed pool always reports the base count")
+        XCTAssertEqual(conns.all.first, 8, "the baseline reports the base pool")
+        XCTAssertTrue(
+            conns.all.allSatisfy { (1...8).contains($0) },
+            "a fixed pool never reports more than the base count: \(conns.all)")
     }
 
     /// The session must fail fast instead of parking in `.waitingForConnectivity`: that wait is

@@ -761,6 +761,9 @@ final class SupervisorIntegrationTests: XCTestCase {
         let s = SupervisorService(ds4Dir: dir, runner: RealProcessRunner())
         s.resumeInFlightDownloadIfAny(selection: .flash(.q2))
         XCTAssertEqual(s.state, .downloading, "a marker-less final re-verifies in place")
+        XCTAssertNil(
+            s.download?.connections,
+            "a re-verification with no fetch must not report downloader connections")
         s.cancelDownload()
         XCTAssertEqual(s.state, .idle)
         XCTAssertTrue(
@@ -794,6 +797,9 @@ final class SupervisorIntegrationTests: XCTestCase {
             fetchFile: { _, _, _, _, _, _ in await probe.bump() })
         s.resumeInFlightDownloadIfAny(selection: .flash41(.q4))
         XCTAssertEqual(s.state, .downloading)
+        XCTAssertNil(
+            s.download?.connections,
+            "a marker-less joined final must not report downloader connections")
         try await Task.sleep(nanoseconds: 300_000_000)  // let the task pick verify-vs-fetch
         let calls = await probe.calls
         XCTAssertEqual(calls, 0, "a marker-less joined final must not refetch the consumed parts")

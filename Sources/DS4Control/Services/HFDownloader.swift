@@ -206,6 +206,14 @@ final class HFDownloader: NSObject, @unchecked Sendable {
             defer { lock.unlock() }
             return firstFailure != nil
         }
+
+        /// Live worker-task count (reserved and running) — the pool occupancy progress ticks
+        /// should report, as opposed to the ramp's target allowance.
+        var liveCount: Int {
+            lock.lock()
+            defer { lock.unlock() }
+            return live.count
+        }
     }
 
     /// Length of one ramp measurement window: long enough for ~2 chunks at the current rate so a
@@ -327,7 +335,8 @@ final class HFDownloader: NSObject, @unchecked Sendable {
                                     worker: worker, url: url, token: token, part: part,
                                     chunkSize: chunkSize, total: total, session: session,
                                     bitmap: bitmap, generator: generator, ramp: ramp,
-                                    progress: progress, onProgress: onProgress)
+                                    workerPool: workerPool, progress: progress,
+                                    onProgress: onProgress)
                                 workerPool.finish(worker)
                             } catch {
                                 workerPool.finish(worker, failure: error)
@@ -410,7 +419,7 @@ final class HFDownloader: NSObject, @unchecked Sendable {
     private func runWorker(
         worker: Int, url: URL, token: String?, part: URL, chunkSize: Int64, total: Int64,
         session: URLSession, bitmap: ChunkBitmap, generator: ChunkIndexGenerator,
-        ramp: WorkerRamp, progress: Progress,
+        ramp: WorkerRamp, workerPool: WorkerPoolState, progress: Progress,
         onProgress: @escaping @Sendable (Int64, Int64, Int) -> Void
     ) async throws {
         let fetcher = ChunkFetcher(session: session)
@@ -434,7 +443,7 @@ final class HFDownloader: NSObject, @unchecked Sendable {
                         url: url, offset: offset, end: end, token: token, fileHandle: fh,
                         onBytes: { n in
                             if let received = progress.addInflight(worker, n) {
-                                onProgress(received, total, ramp.allowed)
+                                onProgress(received, total, workerPool.liveCount)
                             }
                         })
                     break  // chunk delivered fully (ChunkFetcher rejects short reads).
@@ -456,7 +465,7 @@ final class HFDownloader: NSObject, @unchecked Sendable {
             // this chunk's bytes from in-flight to completed and report.
             try fh.synchronize()
             try bitmap.markComplete(idx)
-            onProgress(progress.commit(worker), total, ramp.allowed)
+            onProgress(progress.commit(worker), total, workerPool.liveCount)
         }
     }
 
