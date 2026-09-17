@@ -1,5 +1,11 @@
 # Changelog
 
+## v1.8.2 — 2026-09-17
+- **Model switching locks while the server runs.** The popup's Pro/Flash/V4.1 picker is disabled while ds4-server is loading or serving — stop it first — with a tooltip saying so.
+- **Settings' Server group reworked.** The V4 Flash and V4.1 Flash "variant" pickers moved into the Server group just above **Apply & Restart Server**, which now enables only while the live controls differ from the running server's published launch config (Start clears it too); cleanup consolidated under Downloads and the explanatory prose trimmed. "Concurrent sessions" became a fits-bounded **Parallel chats & agents** stepper with a live per-slot memory/fit caption, and the pane matches the wired-limit help window's 600-wide frame.
+- **V4.1 Flash defaults to the 1M context when it fits fully resident** (41-q2 from 256 GiB, 41-q4 from 384 GiB); streaming tiers keep upstream's documented 32,768.
+- **41-q2 now runs on 96 GiB Macs.** The floor drops from 128 to 96 GiB, verified against ds4's own admission with the real Q2 weights (a 96 GiB host with the ~72 GiB Metal recommended set admits the streaming config: 4,827 cached experts at 32K ctx, 3,638 at 1M). Fresh installs at 96 GiB select V4.1 Flash (q2, 32,768 ctx); 41-q4 keeps its 256 GiB floor and Max Think its 128 GiB floor.
+
 ## v1.8.1 — 2026-09-16
 - **Downloads can no longer hang on a stalled first contact.** A network blip at the very start used to park the size probe in `.waitingForConnectivity` forever — a spinner with no speed and no way back. The session now fails fast, the probe retries (3 attempts with backoff) before giving up, a persistent failure surfaces as an error with Retry resuming from the bitmap, and the probe's backoff knob is sanitized so no value can trap. The V4.1 Q4 two-part download is unaffected structurally: `…Q4.gguf.part1`/`.part2` are its transport files, joined in place after per-part SHA-256 verification.
 
