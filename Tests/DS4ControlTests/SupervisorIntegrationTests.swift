@@ -837,6 +837,12 @@ final class SupervisorIntegrationTests: XCTestCase {
         XCTAssertEqual(v.totalBytes, Int64(Quant.q41Q2.ggufBytes))
         XCTAssertGreaterThanOrEqual(v.pct, 0)
 
+        s.retryDownload(selection: .flash41(.q2))
+        XCTAssertEqual(s.state, .downloading)
+        XCTAssertNil(s.verification, "retry must clear the previous verification row immediately")
+        await until { s.verification != nil }
+        XCTAssertNotNil(s.verification, "the replacement download must publish its own verification")
+
         s.cancelDownload()
         XCTAssertEqual(s.state, .idle)
         XCTAssertNil(s.verification, "cancel must clear the verification row")

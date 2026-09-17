@@ -1093,6 +1093,8 @@ final class SupervisorService: ObservableObject {
     /// stuck/stalled or errored progress bar. The native downloader cancels through the cancelled
     /// task; `download` re-resumes from the on-disk bitmap.
     func retryDownload(selection: QuantSelection, highPerformance: Bool = false) {
+        verificationGeneration += 1
+        verification = nil
         downloadTask?.cancel()
         downloadTask = nil
         lastDownloadSample = nil
