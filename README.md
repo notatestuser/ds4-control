@@ -116,6 +116,10 @@ Measured single-stream generation throughput on a **Mac Studio M3 Ultra** (512 G
 
 Varies with context length, prompt, and the Metal wired limit.
 
+## Coding Agents
+
+It’s suggested to follow the ds4 [coding agent setup guide](https://github.com/antirez/ds4/blob/main/docs/CLIENTS.md) to configure your OpenCode/Claude/Codex/Pi as you prefer.
+
 ## Build & Run
 
 For development:
