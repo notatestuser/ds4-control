@@ -157,23 +157,9 @@ DS4 Control is a single Swift binary — no embedded inference and no second pro
 
 The pieces with real logic — the feasibility/context math, the readiness parser, the resumable chunk/bitmap downloader, and the supervisor state machine — are pure and covered by tests. The supervisor is exercised end-to-end against a fake `ds4-server` and an injected download, so the full lifecycle is tested without downloading a multi-hundred-gigabyte model.
 
-## Testing / QA
-
-```sh
-swift test
-```
-
-Tests cover the pure logic (variant/feasibility/context math, readiness parser, chunk-bitmap resume) plus model-free integration of the supervisor via a fake `ds4-server` and an injected download. No real model is needed.
-
-CI (GitHub Actions, `macos-26`) runs, on every pull request:
-
-- `swift format` lint (strict),
-- a release build with warnings treated as errors,
-- the test suite,
-- a bundle smoke build (`build.sh`, ad-hoc signed in CI).
-
 ## Attribution
 
+- A big thanks of course to @antirez for antirez/ds4, llama.c and GGML for instrumental foundational work.
 - The resource collectors and widgets are adapted from **mac-resource-monitor**, which in turn credits **[macmon](https://github.com/vladkens/macmon)** (MIT) for the IOReport power-sampling approach.
 - The server-supervision pattern is built on the lineage of **mlx-serve**.
 
