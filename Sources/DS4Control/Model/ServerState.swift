@@ -60,6 +60,13 @@ struct VerificationProgress: Equatable {
     let pct: Double
     let processedBytes: Int64
     let totalBytes: Int64
+
+    init(label: String, pct: Double, processedBytes: Int64, totalBytes: Int64) {
+        self.label = label
+        self.pct = min(max(pct, 0), 100)
+        self.processedBytes = processedBytes
+        self.totalBytes = totalBytes
+    }
 }
 
 struct HealthStatus: Equatable {
