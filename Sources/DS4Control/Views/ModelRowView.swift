@@ -6,9 +6,10 @@ struct ModelRowView: View {
     @Environment(\.openWindow) private var openWindow
     let ramGiB: Double
 
+    /// Model variants offered by the popup for the machine's unified-memory tier.
     private var variants: [Variant] {
         if ramGiB >= 512 { return [.pro, .flash, .flash41] }
-        if ramGiB >= 128 { return [.flash, .flash41] }
+        if ramGiB >= 96 { return [.flash, .flash41] }
         return [.flash]
     }
 

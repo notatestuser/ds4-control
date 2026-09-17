@@ -77,7 +77,7 @@ DeepSeek V4 is memory-hungry so DS4 Control gates feasibility before launching.
 | Variant | Quant | RAM | Notes |
 | --- | --- | --- | --- |
 | V4 Pro (0813) | pro-imatrix | **≥ 512 GiB required** | Anything below is blocked. |
-| V4.1 Flash | 41-q2 | ≥ 128 GiB | 341 GiB on disk, ~152 GiB resident main weights + ~189 GiB disk-only Engram. SSD streaming engages automatically on 128–255 GiB; full residency on ≥ 256 GiB. |
+| V4.1 Flash | 41-q2 | ≥ 96 GiB | 341 GiB on disk, ~152 GiB resident main weights + ~189 GiB disk-only Engram. SSD streaming engages automatically on 96–255 GiB (slow: nearly every routed expert streams from disk); full residency on ≥ 256 GiB. |
 | V4.1 Flash | 41-q4 | ≥ 256 GiB | 483 GiB on disk, ~294 GiB resident main weights. SSD streaming on 256–511 GiB; full residency on ≥ 512 GiB. |
 | V4 Flash (0731) | q4-imatrix | ≥ 256 GiB | Standard. |
 | V4 Flash (0731) | q2-imatrix | 96 GiB minimum | 96–127 GiB requires raising the Metal wired limit (see below). |

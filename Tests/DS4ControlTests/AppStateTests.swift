@@ -122,6 +122,7 @@ final class AppStateTests: XCTestCase {
         XCTAssertEqual(AppState(defaults: off, ramGiB: 96).thinkingMode, .off)
     }
 
+    /// Max Think is downgraded safely while each 96 GiB model keeps its own default context.
     func testMaxThinkingModeDowngradesBelow128GiB() {
         let defaults = UserDefaults(suiteName: "test.\(UUID().uuidString)")!
         defaults.set(ThinkingMode.max.rawValue, forKey: "thinkingMode")
@@ -131,6 +132,10 @@ final class AppStateTests: XCTestCase {
 
         XCTAssertEqual(app.thinkingMode, .standard)
         XCTAssertEqual(app.ctxOverride, 0)
+        // 96 GiB now defaults to V4.1 Flash (streaming → 32,768); the 0731 tier still
+        // defaults to 256,000 there.
+        XCTAssertEqual(app.effectiveCtx(ramGiB: 96), 32_768)
+        app.selectedVariant = .flash
         XCTAssertEqual(app.effectiveCtx(ramGiB: 96), 256_000)
         XCTAssertEqual(defaults.string(forKey: "thinkingMode"), ThinkingMode.standard.rawValue)
         XCTAssertEqual(defaults.integer(forKey: "ctxOverride"), 0)
@@ -169,13 +174,17 @@ final class AppStateTests: XCTestCase {
         XCTAssertEqual(app2.thinkingMode, .max)
     }
 
-    func testFreshInstallDefaultsFlash41On128GiB() {
+    /// Fresh installs select the expected model at each supported unified-memory tier.
+    func testFreshInstallDefaultsFlash41From96GiB() {
+        let a96 = AppState(
+            defaults: UserDefaults(suiteName: "test.\(UUID().uuidString)")!, ramGiB: 96)
+        XCTAssertEqual(a96.selectedVariant, .flash41)
         let a128 = AppState(
             defaults: UserDefaults(suiteName: "test.\(UUID().uuidString)")!, ramGiB: 128)
         XCTAssertEqual(a128.selectedVariant, .flash41)
-        let a96 = AppState(
-            defaults: UserDefaults(suiteName: "test.\(UUID().uuidString)")!, ramGiB: 96)
-        XCTAssertEqual(a96.selectedVariant, .flash)
+        let a64 = AppState(
+            defaults: UserDefaults(suiteName: "test.\(UUID().uuidString)")!, ramGiB: 64)
+        XCTAssertEqual(a64.selectedVariant, .flash)
         let a512 = AppState(
             defaults: UserDefaults(suiteName: "test.\(UUID().uuidString)")!, ramGiB: 512)
         XCTAssertEqual(a512.selectedVariant, .pro)

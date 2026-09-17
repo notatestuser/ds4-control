@@ -67,6 +67,7 @@ final class AppState: ObservableObject {
         }
     }
 
+    /// Restores persisted preferences and chooses memory-appropriate defaults for a fresh install.
     init(defaults: UserDefaults = .standard, ramGiB: Double = systemRamGiB()) {
         self.d = defaults
         port = d.object(forKey: "port") as? Int ?? 8000
@@ -109,9 +110,9 @@ final class AppState: ObservableObject {
         }
         legacyStoragePromptDismissed = d.bool(forKey: "legacyStoragePromptDismissed0813")
         let stored = d.string(forKey: "selectedVariant").flatMap(Variant.init(rawValue:))
-        // Default Pro on ≥512 GiB, V4.1 Flash on ≥128 GiB, V4 Flash (0731) below that.
+        // Default Pro on ≥512 GiB, V4.1 Flash on ≥96 GiB, V4 Flash (0731) below that.
         // Stored selections are never auto-migrated: an existing 0731 user keeps 0731.
-        selectedVariant = stored ?? (ramGiB >= 512 ? .pro : ramGiB >= 128 ? .flash41 : .flash)
+        selectedVariant = stored ?? (ramGiB >= 512 ? .pro : ramGiB >= 96 ? .flash41 : .flash)
         let storedQuant = d.string(forKey: "selectedFlashQuant").flatMap(FlashQuant.init(rawValue:))
         selectedFlashQuant = storedQuant ?? defaultFlashQuant(ramGiB: ramGiB)  // default q2-q4-imatrix
         let storedQuant41 = d.string(forKey: "selectedFlash41Quant").flatMap(Flash41Quant.init(rawValue:))

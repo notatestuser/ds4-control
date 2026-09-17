@@ -563,10 +563,12 @@ func flash41UsesSSDStreaming(
     return resident > flash41BudgetMB(ramGiB: ramGiB, wiredLimitMB: wiredLimitMB)
 }
 
-/// Documented RAM floor per V4.1 quant (README tier table): 41-q2 runs from 128 GiB via SSD
-/// streaming; 41-q4 requires ≥ 256 GiB — the 128 GiB class would have to stream essentially
-/// every routed expert, which the supported tiers do not offer.
-func flash41MinRamGiB(_ q: Flash41Quant) -> Double { q == .q4 ? 256 : 128 }
+/// Documented RAM floor per V4.1 quant (README tier table): 41-q2 runs from 96 GiB via SSD
+/// streaming — verified against the pinned ds4 admission with the real Q2 weights, which
+/// admits a 96 GiB host (3,638 cached experts at a 72 GiB Metal recommended set and 1M ctx)
+/// — and 41-q4 requires ≥ 256 GiB: below that it would have to stream essentially every
+/// routed expert, which the supported tiers do not offer.
+func flash41MinRamGiB(_ q: Flash41Quant) -> Double { q == .q4 ? 256 : 96 }
 
 /// Whether a V4.1 quant's default launch fits this machine. Drives which options the
 /// Settings quant picker offers; the RAM floor is the documented tier, then the launch's
@@ -717,7 +719,7 @@ func feasibility(
             return .blocked(
                 reason: q == .q4
                     ? "V4.1 Flash 41-q4 needs ≥ 256 GiB unified memory. Its 294 GiB of main weights would stream essentially every routed expert below that tier, which is not supported."
-                    : "V4.1 Flash needs ≥ 128 GiB unified memory. Its 152 GiB of resident main weights, plus disk-only Engram streaming, cannot run safely below that."
+                    : "V4.1 Flash needs ≥ 96 GiB unified memory. Below that, even the SSD-streaming fixed set (non-routed weights, graph, and prefill headroom) plus a routed expert cannot be admitted."
             )
         }
     }

@@ -1,6 +1,7 @@
 #!/bin/sh
 # flash41-mem-harness.sh — measure V4.1 Flash (Q2) resident memory across context sizes on a
-# 128 GiB+ Mac. Spins up the REAL ds4-server with --ssd-streaming, warms the model, prefills to
+# 96 GiB+ Mac (96 GiB is the app's lowest SSD-streaming tier for 41-q2). Spins up the REAL
+# ds4-server with --ssd-streaming, warms the model, prefills to
 # the configured context frontier, and records peak RSS plus ds4's own memory plan.
 #
 # The GGUF carries ~189 GiB of disk-only Engram tables that never become resident; only the
