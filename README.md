@@ -6,7 +6,7 @@ A macOS menu bar pane for **DeepSeek V4** and **V4.1** via [`dwarfstar`](https:/
 
 It launches, supervises, and monitors a local ds4 server, lets you pick **V4.1 Flash**, **V4 Pro (0813)**, or **V4 Flash (0731)** with up to **1M** context, and shows resource use.
 
-**Launch Pi, Claude Code or BYOC (Bring Your Own CLI) for local agentic coding.**
+**Launch Pi, Claude Code or [BYOC](https://github.com/antirez/ds4/blob/main/docs/CLIENTS.md) (Bring Your Own CLI) for local agentic coding.**
 
 <br>
 
