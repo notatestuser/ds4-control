@@ -168,6 +168,46 @@ final class HFDownloader: NSObject, @unchecked Sendable {
         }
     }
 
+    /// Lock-guarded task state shared by the ramp controller and workers. Worker slots are reused
+    /// after a backed-off task exits so their indices always remain valid `Progress` slots. Workers
+    /// only report completion/failure here; the controller remains the sole task-group mutator.
+    private final class WorkerPoolState: @unchecked Sendable {
+        private let lock = NSLock()
+        private let cap: Int
+        private var live: Set<Int> = []
+        private var firstFailure: (any Error)?
+
+        init(cap: Int) {
+            self.cap = max(cap, 1)
+        }
+
+        /// Atomically reserve every vacant slot below `desired` before the controller spawns it.
+        func reserve(upTo desired: Int) -> [Int] {
+            lock.lock()
+            defer { lock.unlock() }
+            guard firstFailure == nil else { return [] }
+            let limit = min(max(desired, 0), cap)
+            let workers = (0..<limit).filter { !live.contains($0) }
+            live.formUnion(workers)
+            return workers
+        }
+
+        func finish(_ worker: Int, failure: (any Error)? = nil) {
+            lock.lock()
+            defer { lock.unlock() }
+            live.remove(worker)
+            if firstFailure == nil, let failure {
+                firstFailure = failure
+            }
+        }
+
+        var hasFailure: Bool {
+            lock.lock()
+            defer { lock.unlock() }
+            return firstFailure != nil
+        }
+    }
+
     /// Length of one ramp measurement window: long enough for ~2 chunks at the current rate so a
     /// window's rate isn't dominated by chunk-boundary quantization, floored at `minWindow` (8 s
     /// production; tests lower it for small files) and capped so a slow path can't stall the ramp.
@@ -273,26 +313,30 @@ final class HFDownloader: NSObject, @unchecked Sendable {
         let capWorkers = workers
         let baseWorkers = min(workers, HFDownloader.workerCount(highPerformance: false))
         let ramp = WorkerRamp(start: baseWorkers, cap: capWorkers)
+        let workerPool = WorkerPoolState(cap: capWorkers)
         // Emit the resume baseline immediately so the UI jumps to the already-downloaded fraction.
         onProgress(progress.received(), total, ramp.allowed)
         let initial = min(ramp.allowed, generator.remaining)
         if initial > 0 {
             try await withThrowingTaskGroup(of: Void.self) { group in
-                var added = 0
-                func addWorkers(_ count: Int) {
-                    for _ in 0..<count {
-                        let worker = added
-                        added += 1
-                        group.addTask { [weak self] in
-                            guard let self else { return }
-                            try await self.runWorker(
-                                worker: worker, url: url, token: token, part: part, chunkSize: chunkSize,
-                                total: total, session: session, bitmap: bitmap, generator: generator,
-                                ramp: ramp, progress: progress, onProgress: onProgress)
+                func addWorkers(upTo desired: Int) {
+                    for worker in workerPool.reserve(upTo: desired) {
+                        group.addTask {
+                            do {
+                                try await self.runWorker(
+                                    worker: worker, url: url, token: token, part: part,
+                                    chunkSize: chunkSize, total: total, session: session,
+                                    bitmap: bitmap, generator: generator, ramp: ramp,
+                                    progress: progress, onProgress: onProgress)
+                                workerPool.finish(worker)
+                            } catch {
+                                workerPool.finish(worker, failure: error)
+                                throw error
+                            }
                         }
                     }
                 }
-                addWorkers(initial)
+                addWorkers(upTo: initial)
                 if capWorkers > baseWorkers {
                     // Adaptive ramp: sample durable bytes per window and grow the pool only while
                     // the rate improves; the first window that doesn't settles back at the best
@@ -303,6 +347,7 @@ final class HFDownloader: NSObject, @unchecked Sendable {
                     var lastSample = Date()
                     var nextProbeAt: Date? = nil
                     while !generator.allHandedOut {
+                        if workerPool.hasFailure { break }
                         let now = Date()
                         let completed = bitmap.completedBytes()
                         let elapsed = max(now.timeIntervalSince(lastSample), 0.001)
@@ -323,7 +368,7 @@ final class HFDownloader: NSObject, @unchecked Sendable {
                             }
                             let before = ramp.allowed
                             let next = ramp.startProbe()
-                            if next > added { addWorkers(next - added) }
+                            addWorkers(upTo: next)
                             if next != before { onProgress(progress.received(), total, next) }
                             nextProbeAt =
                                 next < ramp.cap
@@ -331,7 +376,7 @@ final class HFDownloader: NSObject, @unchecked Sendable {
                         } else {
                             let before = ramp.allowed
                             let next = ramp.observe(rate: rate)
-                            if next > added { addWorkers(next - added) }
+                            addWorkers(upTo: next)
                             if next != before { onProgress(progress.received(), total, next) }
                             if ramp.settled {
                                 nextProbeAt =

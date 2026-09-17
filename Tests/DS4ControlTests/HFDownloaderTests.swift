@@ -3,6 +3,8 @@ import XCTest
 @testable import DS4Control
 
 final class HFDownloaderTests: XCTestCase {
+    private enum TestTimeout: Error { case elapsed }
+
     func testWorkerCountTiers() {
         XCTAssertEqual(HFDownloader.workerCount(highPerformance: false), 8)  // CGNAT-safe default
         XCTAssertEqual(HFDownloader.workerCount(highPerformance: true), 64)  // opt-in aggressive cap
@@ -308,6 +310,42 @@ final class HFDownloaderTests: XCTestCase {
             MockHFProtocol.state.requestCount, 3, "probe attempts must be bounded, not unlimited")
     }
 
+    /// A worker can fail before all chunks have been handed out. The ramp controller must notice
+    /// that failure instead of polling an unreachable generator state forever.
+    func testWorkerFailureStopsRampControllerAndPropagates() async throws {
+        MockHFProtocol.state.reset(failFirst: false, alwaysFail: false, failChunks: true)
+        let total = 128 * 4_096
+        MockHFProtocol.state.configure(total: Int64(total), body: Data(repeating: 0, count: total))
+        let dir = URL(fileURLWithPath: NSTemporaryDirectory()).appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let cfg = URLSessionConfiguration.ephemeral
+        cfg.protocolClasses = [MockHFProtocol.self]
+        let dl = HFDownloader(
+            repo: "test/repo", maxRetries: 0, sessionConfiguration: cfg, minRampWindow: 0.05)
+
+        do {
+            try await withThrowingTaskGroup(of: Void.self) { group in
+                group.addTask {
+                    try await dl.download(
+                        file: "worker-failure.gguf", into: dir, token: nil,
+                        highPerformance: true, chunkSize: 4_096
+                    ) { _, _, _ in }
+                }
+                group.addTask {
+                    try await Task.sleep(nanoseconds: 2_000_000_000)
+                    throw TestTimeout.elapsed
+                }
+                defer { group.cancelAll() }
+                _ = try await group.next()
+            }
+            XCTFail("a chunk failure must propagate from the worker pool")
+        } catch let failure as HFDownloader.Failure {
+            XCTAssertEqual(failure, .incompleteAfterRetries)
+        } catch {
+            XCTFail("worker failure did not propagate before the timeout: \(error)")
+        }
+    }
+
     /// A persist-per-chunk delay of `base × active²` makes aggregate throughput FALL as
     /// connections multiply — the lossy-tunnel regime where 64 workers froze a real download at
     /// ~0 MB/s. The ramp must back off instead of racing to the cap, and no chunk may be lost
@@ -428,6 +466,7 @@ final class MockHFProtocol: URLProtocol {
         private let lock = NSLock()
         private var failFirst = false
         private var alwaysFail = false
+        private var failChunks = false
         private var count = 0
         private var active = 0
         private var maxSeen = 0
@@ -435,11 +474,12 @@ final class MockHFProtocol: URLProtocol {
         private var fileTotal: Int64 = 4
         private var fileBody = Data("GGUF".utf8)
 
-        func reset(failFirst: Bool, alwaysFail: Bool) {
+        func reset(failFirst: Bool, alwaysFail: Bool, failChunks: Bool = false) {
             lock.lock()
             defer { lock.unlock() }
             self.failFirst = failFirst
             self.alwaysFail = alwaysFail
+            self.failChunks = failChunks
             count = 0
             active = 0
             maxSeen = 0
@@ -481,6 +521,12 @@ final class MockHFProtocol: URLProtocol {
             lock.lock()
             defer { lock.unlock() }
             return delayBase
+        }
+
+        func shouldFailChunk(_ range: String?) -> Bool {
+            lock.lock()
+            defer { lock.unlock() }
+            return failChunks && range != "bytes=0-0"
         }
 
         var total: Int64 {
@@ -528,7 +574,7 @@ final class MockHFProtocol: URLProtocol {
 
     override func startLoading() {
         let entry = Self.state.enter()
-        if entry.fail {
+        if entry.fail || Self.state.shouldFailChunk(request.value(forHTTPHeaderField: "Range")) {
             let resp = HTTPURLResponse(
                 url: request.url!, statusCode: 503, httpVersion: "HTTP/1.1", headerFields: nil)!
             client?.urlProtocol(self, didReceive: resp, cacheStoragePolicy: .notAllowed)
