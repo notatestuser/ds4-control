@@ -92,19 +92,6 @@ and a "Metal wired limit help…" window walks through it step by step — inclu
 
 **Default context** is `1,000,000` for Pro and for Flash on ≥ 128 GiB; Flash on 96–127 GiB defaults to `256,000`; **V4.1 Flash defaults to `1,048,576` when the 1M window fits fully resident at your RAM tier (41-q2 from 256 GiB, 41-q4 from 384 GiB), else to `32,768`** (upstream's documented SSD-streaming configuration — raise it in Settings when memory allows, up to its 1,048,576 ceiling). Max Think is unavailable below 128 GiB, including in the built-in chat and coding-agent launcher. For V4.1 Flash, `--ssd-streaming` is passed automatically when full residency doesn't fit and full GPU power is always used; Engram rows stream from the SSD in every mode, so keep the GGUF on a fast local disk. You can otherwise override the context in Settings, subject to the physical-memory and wired-limit checks above.
 
-## Thinking
-
-Flash 0731 and Pro 0813 share DeepSeek's three-tier encoder; V4.1 Flash uses numeric reasoning effort with the same three app rungs. DS4 Control exposes three rungs and skips official **high**:
-
-| Official `reasoning_effort` | Prompt prefix | DS4 Control |
-| --- | --- | --- |
-| *(thinking off)* | none | **Instant** |
-| `low` (default) | none | **Standard** |
-| `high` | `Absolute maximum…` | not offered |
-| `max` | `Beyond maximum — …` | **Max Think** |
-
-Unpatched [antirez/ds4](https://github.com/antirez/ds4) maps `reasoning_effort: max` to official **high**. This app patches THINK_MAX (`patches/ds4-think-max.patch`) so Max Think is official **max**. Every other effort name (`low` / `medium` / `high` / `xhigh`) stays official **low**. Max Think also needs `--ctx` ≥ 393,216 — below that, ds4 silently drops to Standard; the app prompts to bump context. The bundled pi `models.json` maps `xhigh` → `max`; Claude Max Think sets `CLAUDE_CODE_EFFORT_LEVEL=max`. **V4.1 Flash uses numeric reasoning effort (1–100, `max` = 100) and has no context floor**, so Max Think applies at any context there.
-
 ## Performance
 
 Measured single-stream generation throughput on a **Mac Studio M3 Ultra** (512 GiB):
