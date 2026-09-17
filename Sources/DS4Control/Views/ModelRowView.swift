@@ -6,9 +6,10 @@ struct ModelRowView: View {
     @Environment(\.openWindow) private var openWindow
     let ramGiB: Double
 
+    /// Model variants offered by the popup for the machine's unified-memory tier.
     private var variants: [Variant] {
         if ramGiB >= 512 { return [.pro, .flash, .flash41] }
-        if ramGiB >= 128 { return [.flash, .flash41] }
+        if ramGiB >= 96 { return [.flash, .flash41] }
         return [.flash]
     }
 
@@ -19,7 +20,10 @@ struct ModelRowView: View {
             }
             .pickerStyle(.segmented)
             .labelsHidden()
-            .disabled(supervisor.state == .downloading)  // don't switch model mid-download
+            // No model switch mid-download, and none while a server is loading or serving —
+            // the popup has no Apply & Restart, so Stop comes first.
+            .disabled(supervisor.state == .downloading || supervisor.state.isServerActive)
+            .help("Stop the server to change the model.")
 
             let feas = feasibility(
                 ramGiB: ramGiB, selection: app.quantSelection,

@@ -6,6 +6,15 @@ struct SettingsView: View {
     private let ram = systemRamGiB()
     @State private var confirmingCleanup = false
     @State private var confirming41Cleanup = false
+    /// Measured form height, used to size the window like the Metal wired-limit help pane —
+    /// as tall as the form needs, but capped (with the screen) so the pane opens as a
+    /// comfortable settings window rather than a full-height sheet; the ScrollView scrolls.
+    @State private var contentHeight: CGFloat = 0
+
+    private var windowHeight: CGFloat {
+        let cap = min((NSScreen.main?.visibleFrame.height ?? 1200) - 24, 820)
+        return min(max(contentHeight, 480), cap)
+    }
 
     private var isRunning: Bool { supervisor.state == .ready || supervisor.state == .starting }
     /// Busy = a server is running/starting/stopping or a download is in flight; cleanup is
@@ -50,60 +59,54 @@ struct SettingsView: View {
     private func flash41CleanupGiB(_ quants: [Flash41Quant]) -> Int {
         Int((quants.reduce(0.0) { $0 + Double(supervisor.flash41ArtifactBytes($1)) }) / 1_073_741_824)
     }
-    private var flashModelFooter: String {
+    private var cleanupFooter: String {
         let base =
-            "Which Flash weights to download and run. Sizes are running memory; "
-            + "options that don't fit this Mac's RAM are unavailable."
-        return isBusy
-            ? base + " Stop the server to delete unused downloads."
-            : base
-                + " Clean up can delete the other downloaded Flash variants or all of them "
-                + "(V4 Pro is always kept)."
-    }
-    private var flash41ModelFooter: String {
-        let base =
-            "Which V4.1 weights to download and run. Labels show resident main weights; "
-            + "~189 GiB of Engram tables stream from the SSD in every mode. Full GPU power is "
-            + "always used, and SSD streaming engages automatically when full residency doesn't fit."
-        return isBusy
-            ? base + " Stop the server to delete unused downloads."
-            : base + " Clean up deletes the other downloaded V4.1 quant (V4 Pro is always kept)."
-    }
-
-    private var ctxHint: String {
-        if app.ctxOverride > 0 {
-            if app.selectedVariant == .flash41 {
-                return "V4.1 Flash runs Max Think at any context; no minimum applies."
-            }
-            if !supportsMaxThink(ramGiB: ram) {
-                return "Max Think is unavailable below 128 GiB unified memory."
-            }
-            return "Max Think is available when context ≥ 393,216."
-        }
-        return
-            "Auto: \(defaultCtx(ramGiB: ram, selection: app.quantSelection).formatted()) tokens (based on \(Int(ram)) GiB RAM)."
+            "Clean up can delete the other downloaded Flash variants or all of them, "
+            + "or the other V4.1 Flash quant (V4 Pro is always kept). "
+            + "Deleted weights must be downloaded again."
+        return isBusy ? base + " Stop the server to delete unused downloads." : base
     }
 
     private var thinkingHint: String {
-        if app.selectedVariant == .flash41 {
-            return
-                "Coding agents set their own level; this only affects the built-in chat. "
-                + "V4.1 Flash has no Max Think context floor."
-        }
+        let base = "Coding agents set their own level; this only affects the built-in chat."
+        if app.selectedVariant == .flash41 { return base }
         if !supportsMaxThink(ramGiB: ram) {
-            return
-                "Max Think requires at least 128 GiB unified memory. "
-                + "Coding agents set their own level; this only affects the built-in chat."
+            return "Max Think requires at least 128 GiB unified memory. " + base
         }
-        return
-            "Max Think needs a context of at least 393,216 — you'll be asked to raise it. "
-            + "Coding agents set their own level; this only affects the built-in chat."
+        return "Max Think needs a context of at least 393,216 — you'll be asked to raise it. " + base
     }
 
+    /// The Server-group values a launch would use right now, normalized exactly the way
+    /// `SupervisorService.start` normalizes them (trimmed/defaulted bind host; V4.1 ignores
+    /// the power slider).
+    private var configuredLaunch: LaunchConfig {
+        LaunchConfig(
+            selection: app.quantSelection,
+            ctx: app.effectiveCtx(ramGiB: ram),
+            host: SupervisorService.normalizedBindHost(app.host),
+            port: app.port,
+            power: app.power,
+            sessions: app.concurrentSessions,
+            kvDiskCache: app.kvDiskCache)
+    }
+    /// True when the running server's launch config differs from the live controls. An
+    /// adopted server's flags are unknown (`activeConfig == nil`), so Apply stays available.
+    private var hasUnappliedChanges: Bool {
+        guard let active = supervisor.activeConfig else { return true }
+        return active != configuredLaunch
+    }
+    /// "Apply & Restart Server" is only actionable while a server runs with changed settings.
+    /// Clicking it restarts into the new config, and Start in the popup records one too, so
+    /// the button returns to disabled either way.
+    private var canApplyChanges: Bool { isRunning && hasUnappliedChanges }
+
     private var restartHint: String {
-        isRunning
-            ? "Restarts ds4-server with these settings."
-            : "Server not running — settings apply on next Start."
+        guard isRunning else {
+            return "Server not running — settings and variant changes apply on next Start."
+        }
+        return hasUnappliedChanges
+            ? "Restarts ds4-server with these settings, applying any variant change."
+            : "No unapplied changes."
     }
     private var launchAtLoginBinding: Binding<Bool> {
         Binding(get: { app.launchAtLogin }, set: { app.setLaunchAtLogin($0) })
@@ -117,6 +120,61 @@ struct SettingsView: View {
     }
     private var sessionsBinding: Binding<Double> {
         Binding(get: { Double(app.concurrentSessions) }, set: { app.concurrentSessions = Int($0.rounded()) })
+    }
+    /// Largest parallel-slot count whose launch config clears the wired-limit gate at the
+    /// live context without the "Start anyway" override; 0 when even one slot doesn't pass.
+    private var fittingSessionCount: Int {
+        maxFittingSessions(
+            ramGiB: ram, selection: app.quantSelection,
+            ctx: app.effectiveCtx(ramGiB: ram), wiredLimitMB: effectiveWiredLimitMB(ramGiB: ram))
+    }
+    /// Stepper bound: the fitting count, never below an already-stored value — a config that
+    /// stopped fitting (raised context, heavier model tier) stays visible and reversible —
+    /// and never below one, so the control always has a valid range.
+    private var stepperMaxSessions: Int { max(fittingSessionCount, app.concurrentSessions, 1) }
+    /// GPU-wired MB for `sessions` resident sessions at the live context and selection.
+    private func wiredMB(sessions: Int) -> Int {
+        requiredWiredMB(
+            ramGiB: ram, wiredLimitMB: effectiveWiredLimitMB(ramGiB: ram),
+            selection: app.quantSelection, ctx: app.effectiveCtx(ramGiB: ram), sessions: sessions)
+    }
+    /// What the second resident slot adds (KV + per-session Metal allocations), in whole GiB;
+    /// nil when the config overflows any Mac's budget or the cost rounds below a GiB.
+    private var perSlotGiB: Int? {
+        let one = wiredMB(sessions: 1)
+        let two = wiredMB(sessions: 2)
+        guard one != Int.max, two != Int.max, two > one else { return nil }
+        let gib = Int((Double(two - one) / 1024).rounded())
+        return gib >= 1 ? gib : nil
+    }
+    /// What the current slot count adds over a single session, in whole GiB.
+    private var extraGiBAtCurrentSessions: Int? {
+        guard app.concurrentSessions > 1 else { return nil }
+        let one = wiredMB(sessions: 1)
+        let many = wiredMB(sessions: app.concurrentSessions)
+        guard one != Int.max, many != Int.max, many > one else { return nil }
+        let gib = Int((Double(many - one) / 1024).rounded())
+        return gib >= 1 ? gib : nil
+    }
+    /// Live cost line under the stepper: per-slot memory at the current context, the extra
+    /// for the selected count, and how many slots fit this Mac's wired limit. A selection
+    /// where even one slot doesn't pass the gate says so instead of implying one fits.
+    private var sessionsMemoryCaption: String {
+        guard fittingSessionCount > 0 else {
+            return "No slot fits this selection at the current context."
+        }
+        var parts: [String] = []
+        if let perSlot = perSlotGiB {
+            parts.append("≈ \(perSlot) GiB per slot at \(app.effectiveCtx(ramGiB: ram).formatted()) ctx")
+        }
+        if let extra = extraGiBAtCurrentSessions {
+            parts.append("\(app.concurrentSessions) slots add ≈ \(extra) GiB")
+        }
+        parts.append("up to \(fittingSessionCount) fit this Mac")
+        if app.concurrentSessions > fittingSessionCount {
+            parts.append("the current \(app.concurrentSessions) doesn't fit")
+        }
+        return parts.joined(separator: " · ")
     }
     /// Context-size field as text. Always shows the active window: the override if set, else the
     /// tiered default — so the box is never blank. Backspacing it away stores 0 (auto), which the
@@ -134,6 +192,25 @@ struct SettingsView: View {
     }
 
     var body: some View {
+        ScrollView { form }
+            .frame(width: 600, height: windowHeight)
+            .onAppear {
+                app.refreshLaunchAtLoginStatus()  // pick up any change made in System Settings
+                WindowChrome.windowOpened(title: "DS4 Control Settings")
+            }
+            .onReceive(NotificationCenter.default.publisher(for: NSApplication.didBecomeActiveNotification)) { _ in
+                // After approving the login item in System Settings the OS state can change while
+                // we're backgrounded; re-sync the snapshot when the app becomes active again.
+                app.refreshLaunchAtLoginStatus()
+            }
+            .onDisappear { WindowChrome.windowClosed() }
+    }
+
+    /// The settings form, sized and measured like the Metal wired-limit help pane: the
+    /// ScrollView gives it an unbounded height proposal so its full natural height can be
+    /// measured and shown at once, and it takes over scrolling when `windowHeight` clamps
+    /// against the screen.
+    @ViewBuilder private var form: some View {
         Form {
             Section {
                 Toggle("Open DS4 Control at login", isOn: launchAtLoginBinding)
@@ -146,14 +223,6 @@ struct SettingsView: View {
                 Toggle("Stop ds4-server when DS4 Control quits", isOn: stopServerOnQuitBinding)
             } header: {
                 Text("App")
-            } footer: {
-                VStack(alignment: .leading, spacing: 4) {
-                    Text("Launches the menu bar app automatically when you sign in to your Mac.")
-                    Text(
-                        "When off, quitting DS4 Control leaves ds4-server and its loaded model "
-                            + "available in the background."
-                    )
-                }
             }
 
             Section {
@@ -186,15 +255,22 @@ struct SettingsView: View {
                 .fixedSize(horizontal: false, vertical: true)
                 LabeledContent {
                     HStack(spacing: 10) {
-                        Slider(value: sessionsBinding, in: 1...Double(maxConcurrentSessions), step: 1)
                         Text("\(app.concurrentSessions)")
                             .monospacedDigit().foregroundStyle(.secondary)
                             .frame(width: 30, alignment: .trailing)
+                        Stepper(
+                            "", value: sessionsBinding, in: 1...Double(stepperMaxSessions),
+                            step: 1
+                        )
+                        .labelsHidden()
                     }
-                    .frame(width: 230)
                 } label: {
-                    Text("Concurrent sessions")
+                    Text("Parallel chats & agents")
                 }
+                Text(sessionsMemoryCaption)
+                    .font(.caption2)
+                    .foregroundStyle(app.concurrentSessions > fittingSessionCount ? .orange : .secondary)
+                    .fixedSize(horizontal: false, vertical: true)
                 LabeledContent {
                     HStack(spacing: 10) {
                         Slider(value: powerBinding, in: 1...100)
@@ -207,25 +283,31 @@ struct SettingsView: View {
                     Text("GPU power duty")
                 }
                 Toggle("Disk KV cache", isOn: $app.kvDiskCache)
+                Picker("V4 Flash variant", selection: $app.selectedFlashQuant) {
+                    ForEach(FlashQuant.allCases) { q in
+                        Text(q.label + (supervisor.isFlashQuantDownloaded(q) ? "  (downloaded)" : ""))
+                            .tag(q)
+                            .disabled(!flashQuantFits(q, ramGiB: ram))
+                    }
+                }
+                .disabled(supervisor.state == .downloading)  // locked while a download is in progress
+                Picker("V4.1 Flash variant", selection: $app.selectedFlash41Quant) {
+                    ForEach(Flash41Quant.allCases) { q in
+                        Text(q.label + (supervisor.isFlash41QuantDownloaded(q) ? "  (downloaded)" : ""))
+                            .tag(q)
+                            .disabled(
+                                !flash41QuantFits(
+                                    q, ramGiB: ram, wiredLimitMB: effectiveWiredLimitMB(ramGiB: ram)))
+                    }
+                }
+                .disabled(supervisor.state == .downloading)  // locked while a download is in progress
             } header: {
                 Text("Server")
-            } footer: {
-                VStack(alignment: .leading, spacing: 4) {
-                    Text(ctxHint)
-                    Text(
-                        "Concurrent sessions run that many chats or coding agents at the same time. "
-                            + "Memory use grows with sessions × context size. "
-                            + "Applies on next server start or restart.")
-                    Text(
-                        "Disk KV cache checkpoints session state so conversations can resume faster "
-                            + "after slot reuse or restart. It does not reduce resident memory. "
-                            + "Applies on next server start or restart.")
-                }
             }
 
             Section {
                 Button("Apply & Restart Server") { restart() }
-                    .disabled(!isRunning)
+                    .disabled(!canApplyChanges)
             } footer: {
                 Text(restartHint)
             }
@@ -239,20 +321,18 @@ struct SettingsView: View {
             }
 
             Section {
-                Picker("Variant", selection: $app.selectedFlashQuant) {
-                    ForEach(FlashQuant.allCases) { q in
-                        Text(q.label + (supervisor.isFlashQuantDownloaded(q) ? "  (downloaded)" : ""))
-                            .tag(q)
-                            .disabled(!flashQuantFits(q, ramGiB: ram))
-                    }
-                }
-                .disabled(supervisor.state == .downloading)  // locked while a download is in progress
-                Button("Clean up Flash downloads…") { confirmingCleanup = true }
+                Toggle("High performance mode", isOn: $app.highPerformanceDownload)
+                Button("Clean up V4 Flash downloads…") { confirmingCleanup = true }
                     .disabled(flashCleanupQuants.isEmpty || isBusy)
+                Button("Clean up V4.1 downloads…") { confirming41Cleanup = true }
+                    .disabled(removableFlash41CleanupQuants.isEmpty || isBusy)
             } header: {
-                Text("V4 Flash (0731) model")
+                Text("Downloads")
             } footer: {
-                Text(flashModelFooter)
+                VStack(alignment: .leading, spacing: 4) {
+                    Text("Downloads use 64 connections instead of 8. Leave off behind CGNAT or strict NAT.")
+                    Text(cleanupFooter)
+                }
             }
             .confirmationDialog(
                 "Delete V4 Flash downloads?", isPresented: $confirmingCleanup,
@@ -276,25 +356,6 @@ struct SettingsView: View {
             } message: {
                 Text("V4 Pro is always kept. Deleted weights must be downloaded again.")
             }
-
-            Section {
-                Picker("Variant", selection: $app.selectedFlash41Quant) {
-                    ForEach(Flash41Quant.allCases) { q in
-                        Text(q.label + (supervisor.isFlash41QuantDownloaded(q) ? "  (downloaded)" : ""))
-                            .tag(q)
-                            .disabled(
-                                !flash41QuantFits(
-                                    q, ramGiB: ram, wiredLimitMB: effectiveWiredLimitMB(ramGiB: ram)))
-                    }
-                }
-                .disabled(supervisor.state == .downloading)  // locked while a download is in progress
-                Button("Clean up V4.1 downloads…") { confirming41Cleanup = true }
-                    .disabled(removableFlash41CleanupQuants.isEmpty || isBusy)
-            } header: {
-                Text("V4.1 Flash model")
-            } footer: {
-                Text(flash41ModelFooter)
-            }
             .confirmationDialog(
                 "Delete the other V4.1 Flash quant?", isPresented: $confirming41Cleanup,
                 titleVisibility: .visible
@@ -312,32 +373,14 @@ struct SettingsView: View {
                 Text("Keeps the selected quant and V4 Pro. Deleted weights must be downloaded again.")
             }
 
-            Section {
-                Toggle("High performance mode", isOn: $app.highPerformanceDownload)
-            } header: {
-                Text("Downloads")
-            } footer: {
-                Text(
-                    "Downloads start at 8 connections and only add more (up to 64) while throughput "
-                        + "keeps improving, settling back when it stops and re-trying every few minutes. "
-                        + "Leave off behind CGNAT or strict NAT — many connections can overload your "
-                        + "router and knock you offline."
-                )
-            }
-
         }
         .formStyle(.grouped)
-        .frame(width: 480, height: 600)
-        .onAppear {
-            app.refreshLaunchAtLoginStatus()  // pick up any change made in System Settings
-            WindowChrome.windowOpened(title: "DS4 Control Settings")
+        .frame(width: 600, alignment: .leading)
+        .onGeometryChange(for: CGFloat.self) { proxy in
+            proxy.size.height
+        } action: { height in
+            contentHeight = height
         }
-        .onReceive(NotificationCenter.default.publisher(for: NSApplication.didBecomeActiveNotification)) { _ in
-            // After approving the login item in System Settings the OS state can change while
-            // we're backgrounded; re-sync the snapshot when the app becomes active again.
-            app.refreshLaunchAtLoginStatus()
-        }
-        .onDisappear { WindowChrome.windowClosed() }
     }
 
     private func restart(overrideWiredLimitGate: Bool = false) {

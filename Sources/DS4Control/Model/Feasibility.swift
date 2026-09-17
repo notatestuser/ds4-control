@@ -563,10 +563,12 @@ func flash41UsesSSDStreaming(
     return resident > flash41BudgetMB(ramGiB: ramGiB, wiredLimitMB: wiredLimitMB)
 }
 
-/// Documented RAM floor per V4.1 quant (README tier table): 41-q2 runs from 128 GiB via SSD
-/// streaming; 41-q4 requires ≥ 256 GiB — the 128 GiB class would have to stream essentially
-/// every routed expert, which the supported tiers do not offer.
-func flash41MinRamGiB(_ q: Flash41Quant) -> Double { q == .q4 ? 256 : 128 }
+/// Documented RAM floor per V4.1 quant (README tier table): 41-q2 runs from 96 GiB via SSD
+/// streaming — verified against the pinned ds4 admission with the real Q2 weights, which
+/// admits a 96 GiB host (3,638 cached experts at a 72 GiB Metal recommended set and 1M ctx)
+/// — and 41-q4 requires ≥ 256 GiB: below that it would have to stream essentially every
+/// routed expert, which the supported tiers do not offer.
+func flash41MinRamGiB(_ q: Flash41Quant) -> Double { q == .q4 ? 256 : 96 }
 
 /// Whether a V4.1 quant's default launch fits this machine. Drives which options the
 /// Settings quant picker offers; the RAM floor is the documented tier, then the launch's
@@ -671,13 +673,22 @@ func defaultFlash41Quant(ramGiB: Double) -> Flash41Quant {
 
 /// Default context, tiered by model generation and machine memory. V4 Pro and ≥128 GiB
 /// Flash (q2-q4 quant) run the full 1M window all-resident; 96–127 GiB Flash (q2) is
-/// capped at 256K. V4.1 Flash defaults to 32,768 — upstream's documented SSD-streaming
-/// configuration (docs/MODELS.md@bd66c40); raise it from Settings when memory allows.
+/// capped at 256K. V4.1 Flash defaults to the 1,048,576 ceiling when the machine holds that
+/// window fully resident (the auto `--ssd-streaming` heuristic says no streaming is needed
+/// at this RAM tier — 41-q2 from 256 GiB, 41-q4 from 384 GiB), else to upstream's documented
+/// 32,768 SSD-streaming configuration (docs/MODELS.md@bd66c40); both are adjustable from
+/// Settings.
 func defaultCtx(ramGiB: Double, selection: QuantSelection) -> Int {
-    switch selection.variant {
+    switch selection {
     case .pro: return Variant.pro.ctxCeiling
     case .flash: return ramGiB >= 128 ? Variant.flash.ctxCeiling : 256_000
-    case .flash41: return 32_768
+    case .flash41(let q):
+        guard ramGiB >= flash41MinRamGiB(q) else { return 32_768 }
+        let ceiling = Variant.flash41.ctxCeiling
+        let streaming = flash41UsesSSDStreaming(
+            ramGiB: ramGiB, wiredLimitMB: wiredLimitAdvisoryMB(ramGiB: ramGiB),
+            quant: q.quant, ctx: ceiling, sessions: 1)
+        return streaming ? 32_768 : ceiling
     }
 }
 
@@ -708,7 +719,7 @@ func feasibility(
             return .blocked(
                 reason: q == .q4
                     ? "V4.1 Flash 41-q4 needs ≥ 256 GiB unified memory. Its 294 GiB of main weights would stream essentially every routed expert below that tier, which is not supported."
-                    : "V4.1 Flash needs ≥ 128 GiB unified memory. Its 152 GiB of resident main weights, plus disk-only Engram streaming, cannot run safely below that."
+                    : "V4.1 Flash needs ≥ 96 GiB unified memory. Below that, even the SSD-streaming fixed set (non-routed weights, graph, and prefill headroom) plus a routed expert cannot be admitted."
             )
         }
     }
@@ -742,4 +753,23 @@ func feasibility(
     feasibility(
         ramGiB: ramGiB, selection: variant == .pro ? .pro : .flash(flashQuant),
         ctx: ctx, wiredLimitMB: wiredLimitMB, sessions: sessions)
+}
+
+/// Largest resident-session count whose launch config passes the wired-limit gate at the
+/// live limit without the "Start anyway" override, capped at `maxConcurrentSessions`.
+/// Returns 0 when even one session fails the gate — the config needs the override (or is
+/// blocked outright), which the Start/Restart gate reports; callers keep the stepper's
+/// minimum at one.
+func maxFittingSessions(
+    ramGiB: Double, selection: QuantSelection, ctx: Int, wiredLimitMB: Int
+) -> Int {
+    for sessions in stride(from: maxConcurrentSessions, through: 1, by: -1) {
+        if case .standard = feasibility(
+            ramGiB: ramGiB, selection: selection, ctx: ctx, wiredLimitMB: wiredLimitMB,
+            sessions: sessions)
+        {
+            return sessions
+        }
+    }
+    return 0
 }

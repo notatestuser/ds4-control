@@ -22,6 +22,10 @@ enum ServerState: Equatable {
     case ready
     case stopping
     case error(ServerError)
+
+    /// A ds4-server process is loading or serving. The popup locks its model picker then:
+    /// it has no Apply & Restart affordance, so switching models means Stop first.
+    var isServerActive: Bool { self == .starting || self == .ready }
 }
 
 struct DownloadProgress: Equatable {
