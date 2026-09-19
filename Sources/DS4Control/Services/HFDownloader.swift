@@ -434,7 +434,9 @@ final class HFDownloader: NSObject, @unchecked Sendable {
                                     ? now.addingTimeInterval(rampRearmInterval) : nil
                             }
                         }
-                        try await Task.sleep(nanoseconds: UInt64(window * 1_000_000_000))
+                        try await Self.rampSleep(window) {
+                            generator.allHandedOut || workerPool.hasFailure
+                        }
                     }
                 }
                 // Propagate the first worker failure (or cancellation) to the rest.

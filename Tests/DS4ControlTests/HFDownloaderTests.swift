@@ -436,6 +436,34 @@ final class HFDownloaderTests: XCTestCase {
             "the backed-off pool must be reported after the first non-improving window")
     }
 
+    /// The ramping controller's measurement sleep must yield as soon as every chunk has been
+    /// handed out: with a full (here 30 s) window it would otherwise hold the finished download
+    /// open long after its last byte landed.
+    func testRampControllerSleepWakesOnceAllChunksAreHandedOut() async throws {
+        MockHFProtocol.state.reset(failFirst: false, alwaysFail: false)
+        // 9 chunks / 8 workers: the last chunk is handed out when the first fetch completes,
+        // while the controller is parked in its min-window sleep.
+        let total = 9 * 65_536
+        MockHFProtocol.state.configure(total: Int64(total), body: Data(repeating: 0, count: total))
+        MockHFProtocol.state.setDelayBase(0.01)
+        let dir = URL(fileURLWithPath: NSTemporaryDirectory()).appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let cfg = URLSessionConfiguration.ephemeral
+        cfg.protocolClasses = [MockHFProtocol.self]
+        let dl = HFDownloader(repo: "test/repo", sessionConfiguration: cfg, minRampWindow: 30)
+
+        let started = Date()
+        try await dl.download(
+            file: "wake.gguf", into: dir, token: nil, highPerformance: true, chunkSize: 65_536
+        ) { _, _, _ in }
+        let elapsed = Date().timeIntervalSince(started)
+
+        XCTAssertLessThan(
+            elapsed, 10, "a handed-out pool must not wait out the full measurement window")
+        XCTAssertEqual(
+            try Data(contentsOf: dir.appendingPathComponent("wake.gguf")).count, total)
+    }
+
     /// Without High Performance the pool is fixed at the base: the baseline reports it, and the
     /// live ticks never exceed it (the count decays as workers run out of chunks and exit).
     func testProgressReportsBaseConnectionsWithoutHighPerformance() async throws {
