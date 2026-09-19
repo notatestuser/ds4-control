@@ -83,6 +83,25 @@ final class HFDownloaderTests: XCTestCase {
         XCTAssertEqual(atCap.startProbe(), 64, "nothing to probe at the cap")
     }
 
+    /// A retry discards a worker's partially received bytes, which can drop the raw received
+    /// count below what the UI was already told. Commit and the ramp's emit sites must use the
+    /// monotonic accessor so emitted progress can never walk backwards.
+    func testProgressEmissionsNeverRegressAfterDiscard() {
+        let progress = HFDownloader.Progress(completedBytes: 0, workerCount: 2, total: 100_000_000)
+        XCTAssertEqual(progress.addInflight(0, 20_000_000), 20_000_000, "crosses the report step")
+        progress.discard(0)  // the chunk retry drops this attempt's partial bytes
+        XCTAssertEqual(progress.received(), 0, "the raw count is allowed to fall")
+        XCTAssertEqual(progress.reportedReceived(), 20_000_000, "emissions stay monotonic")
+
+        // Another worker's commit while the regressed raw count stands must not emit a drop.
+        XCTAssertEqual(progress.commit(1), 20_000_000, "a commit below the high-water mark clamps")
+        XCTAssertEqual(progress.reportedReceived(), 20_000_000)
+
+        // Bytes beyond the high-water mark still advance it.
+        XCTAssertEqual(progress.addInflight(1, 30_000_000), 30_000_000)
+        XCTAssertEqual(progress.reportedReceived(), 30_000_000)
+    }
+
     /// The measurement window is quantization-aware: long enough for ~2 chunks at the current
     /// rate, floored and capped so tiny or huge rates can't produce noisy or glacial windows.
     func testRampWindowSeconds() {
@@ -95,6 +114,37 @@ final class HFDownloaderTests: XCTestCase {
         let smallFile = HFDownloader.rampWindowSeconds(
             rate: 10_000_000, chunkSize: 65_536, minWindow: 0.05)
         XCTAssertEqual(smallFile, 0.05, accuracy: 0.001, "small-file tests can lower the floor")
+    }
+
+    /// The settled controller must not hold a finished (or failed) download open for a full
+    /// window: `rampSleep` closes short slices and returns as soon as `shouldWake` flips.
+    func testRampSleepWakesEarly() async throws {
+        let start = Date()
+        try await HFDownloader.rampSleep(5) { Date().timeIntervalSince(start) > 0.1 }
+        let elapsed = Date().timeIntervalSince(start)
+        XCTAssertLessThan(elapsed, 1.0, "must wake on the first slice after the condition flips")
+        XCTAssertGreaterThanOrEqual(elapsed, 0.1, "and must not wake before the condition")
+    }
+
+    /// With nothing to wake for, the sliced sleep still spans the whole window.
+    func testRampSleepHonorsFullWindow() async throws {
+        let start = Date()
+        try await HFDownloader.rampSleep(0.4) { false }
+        let elapsed = Date().timeIntervalSince(start)
+        XCTAssertGreaterThanOrEqual(elapsed, 0.35)
+        XCTAssertLessThan(elapsed, 1.0)
+    }
+
+    /// Slicing must preserve `Task.sleep`'s cancellation behavior.
+    func testRampSleepPropagatesCancellation() async throws {
+        let task = Task { try await HFDownloader.rampSleep(30) { false } }
+        try await Task.sleep(nanoseconds: 50_000_000)
+        task.cancel()
+        do {
+            try await task.value
+            XCTFail("cancellation must propagate out of rampSleep")
+        } catch is CancellationError {
+        }
     }
 
     /// Real end-to-end network download of a small public GGUF through the native `HFDownloader`:
