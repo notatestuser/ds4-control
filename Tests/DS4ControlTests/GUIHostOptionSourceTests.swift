@@ -233,4 +233,24 @@ final class GUIHostOptionSourceTests: XCTestCase {
         XCTAssertTrue(modelRow.contains("if ramGiB >= 96 { return [.flash, .flash41] }"))
         XCTAssertTrue(modelRow.contains("return [.flash]"))
     }
+
+    /// Verification must render as its own row (phase label + advancing %), and the download
+    /// row must step aside once every byte is fetched — a multi-minute hash otherwise shows as
+    /// a frozen download bar with no speed. Covers every model with a published digest.
+    func testPopupShowsVerificationProgress() throws {
+        let popup = try source("Sources/DS4Control/Views/PopupView.swift")
+
+        XCTAssertTrue(popup.contains("supervisor.verification"))
+        XCTAssertTrue(popup.contains("Text(v.label)"))
+        XCTAssertTrue(popup.contains("verificationStatusLabel"))
+        XCTAssertTrue(popup.contains("d.pct < 100"))
+    }
+
+    /// The download status line shows the live connection count next to the speed.
+    func testPopupShowsConnectionCount() throws {
+        let popup = try source("Sources/DS4Control/Views/PopupView.swift")
+
+        XCTAssertTrue(popup.contains("d.connections"))
+        XCTAssertTrue(popup.contains("conns"))
+    }
 }

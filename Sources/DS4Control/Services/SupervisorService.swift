@@ -65,6 +65,9 @@ final class SupervisorService: ObservableObject {
     /// resumed from a prior session) one found via pgrep. Drives the live spinner; refreshed
     /// every poll tick so it clears within ~1s of the process stopping or being killed.
     @Published private(set) var downloadProcessLive = false
+    /// The digest-verification pass in flight (nil when none), so the popup can show "Verifying
+    /// part 1 of 2…" with an advancing % instead of a frozen download bar.
+    @Published private(set) var verification: VerificationProgress?
     @Published private(set) var recentLog: [String] = []
     /// Bumped whenever the on-disk gguf set changes via cleanup, so SwiftUI views that read
     /// `isFlashQuantDownloaded` (the Settings picker) re-render.
@@ -123,7 +126,7 @@ final class SupervisorService: ObservableObject {
     typealias FetchFile =
         @Sendable (
             _ repo: String, _ file: String, _ destDir: URL, _ token: String?, _ highPerformance: Bool,
-            _ onProgress: @escaping @Sendable (Int64, Int64) -> Void
+            _ onProgress: @escaping @Sendable (Int64, Int64, Int) -> Void
         ) async throws -> Void
     private let fetchFile: FetchFile
 
@@ -675,6 +678,60 @@ final class SupervisorService: ObservableObject {
     /// preserve it; only a final this session's own fetch renamed into place is cancel's to
     /// delete.
     private var preexistingFinalOnDownloadStart = false
+    /// Bumped at the start and end of every verification pass, so a progress callback still
+    /// queued from a previous pass can't resurrect a stale verification row.
+    private var verificationGeneration = 0
+
+    /// Coalesces the hasher's per-block callbacks into ~256 MiB UI updates (always emitting the
+    /// final byte). Called only from the single hashing thread.
+    private final class HashProgressThrottle: @unchecked Sendable {
+        private var lastEmitted: Int64 = -1
+        private let step: Int64
+        init(step: Int64 = 256 * 1024 * 1024) { self.step = step }
+        func shouldEmit(_ processed: Int64, total: Int64) -> Bool {
+            if processed >= total { return true }
+            if lastEmitted < 0 || processed - lastEmitted >= step {
+                lastEmitted = processed
+                return true
+            }
+            return false
+        }
+    }
+
+    /// Runs `operation` while publishing `verification` for the UI: the row appears at 0%
+    /// immediately — a digest pass takes minutes on the V4.1 quants, and without this the popup
+    /// sits on a frozen download bar — advances in ~256 MiB steps, and clears on exit (the
+    /// generation bump drops any progress callback still queued from this pass). Artifacts
+    /// without a published digest skip the UI entirely: their verify is the instant size check.
+    @MainActor
+    private func withVerificationProgress<T>(
+        label: String, totalBytes: Int64, expectedSHA256: String?,
+        _ operation: (_ onHashProgress: @escaping @Sendable (Int64) -> Void) async throws -> T
+    ) async rethrows -> T {
+        guard expectedSHA256 != nil else { return try await operation { _ in } }
+        verificationGeneration += 1
+        let gen = verificationGeneration
+        verification = VerificationProgress(
+            label: label, pct: 0, processedBytes: 0, totalBytes: totalBytes)
+        defer {
+            if verificationGeneration == gen {
+                verificationGeneration += 1
+                verification = nil
+            }
+        }
+        let throttle = HashProgressThrottle()
+        return try await operation { [self] processed in
+            guard throttle.shouldEmit(processed, total: totalBytes) else { return }
+            Self.onMain {
+                guard self.verificationGeneration == gen else { return }
+                self.verification = VerificationProgress(
+                    label: label,
+                    pct: totalBytes > 0
+                        ? min(100, Double(processed) / Double(totalBytes) * 100) : 0,
+                    processedBytes: processed, totalBytes: totalBytes)
+            }
+        }
+    }
 
     /// Runs a (minutes-long, synchronous) digest pass on the global executor. `nonisolated
     /// async` inherits the download Task's cancellation — unlike `Task.detached`, which would
@@ -683,23 +740,27 @@ final class SupervisorService: ObservableObject {
     /// `completeDownload`, on the MainActor behind its generation check, so a stale (cancelled
     /// or retried) task can never certify bytes a newer download owns.
     private nonisolated static func verifyArtifact(
-        _ url: URL, expectedBytes: Int64, expectedSHA256: String?
+        _ url: URL, expectedBytes: Int64, expectedSHA256: String?,
+        onHashProgress: (@Sendable (Int64) -> Void)? = nil
     ) async throws {
         try Task.checkCancellation()
-        try GGUFJoiner.verify(url: url, expectedBytes: expectedBytes, expectedSHA256: expectedSHA256)
+        try GGUFJoiner.verify(
+            url: url, expectedBytes: expectedBytes, expectedSHA256: expectedSHA256,
+            onHashProgress: onHashProgress)
     }
 
     /// The join twin of `verifyArtifact`: same executor, cancellation rules, and marker
     /// discipline (the marker is published by `completeDownload`).
     private nonisolated static func joinArtifacts(
         part1: URL, part2: URL, into target: URL, part1Bytes: Int64, expectedBytes: Int64,
-        expectedSHA256: String?, freeSpaceRequired: Int64
+        expectedSHA256: String?, freeSpaceRequired: Int64,
+        onHashProgress: (@Sendable (Int64) -> Void)? = nil
     ) async throws {
         try Task.checkCancellation()
         try GGUFJoiner.join(
             part1: part1, part2: part2, into: target, part1Bytes: part1Bytes,
             expectedBytes: expectedBytes, expectedSHA256: expectedSHA256,
-            freeSpaceRequired: freeSpaceRequired)
+            freeSpaceRequired: freeSpaceRequired, onHashProgress: onHashProgress)
     }
 
     /// Removes a part that failed size/digest verification, plus any downloader sidecars and
@@ -732,9 +793,20 @@ final class SupervisorService: ObservableObject {
             return !FileManager.default.fileExists(atPath: partURL.path)
                 || resumableBytes(ggufDir: baseDir, filename: part.filename) > 0
         }
+        // A joined final awaiting its marker only needs verification, even when its transport
+        // parts are gone: mirror the fetch loop's early-return condition so a verification-only
+        // resume never reports downloader connections.
+        let joinedFinalOnlyNeedsVerification =
+            parts.count > 1
+            && FileManager.default.fileExists(atPath: baseDir.appendingPathComponent(finalName).path)
+            && !FileManager.default.fileExists(atPath: assemblingURL.path)
         download = DownloadProgress(
             pct: 0, file: firstPending?.filename ?? finalName, receivedBytes: 0,
-            totalBytes: expectedBytes)
+            totalBytes: expectedBytes,
+            // Claim the CGNAT-safe base only when a fetch will actually run; High Performance
+            // ramps up from there (live counts arrive with the downloader's progress ticks).
+            connections: firstPending != nil && !joinedFinalOnlyNeedsVerification
+                ? HFDownloader.workerCount(highPerformance: false) : nil)
         state = .downloading
         lastDownloadSample = nil
         activeDownloadSelection = selection
@@ -768,8 +840,14 @@ final class SupervisorService: ObservableObject {
                     !FileManager.default.fileExists(atPath: assembling.path)
                 {
                     do {
-                        try await Self.verifyArtifact(
-                            finalURL, expectedBytes: expectedBytes, expectedSHA256: q.sha256)
+                        try await self?.withVerificationProgress(
+                            label: "Verifying the joined file…", totalBytes: expectedBytes,
+                            expectedSHA256: q.sha256
+                        ) { onHashProgress in
+                            try await Self.verifyArtifact(
+                                finalURL, expectedBytes: expectedBytes, expectedSHA256: q.sha256,
+                                onHashProgress: onHashProgress)
+                        }
                     } catch let error as GGUFJoiner.Failure {
                         switch error {
                         case .wrongSize, .checksumMismatch:
@@ -785,6 +863,12 @@ final class SupervisorService: ObservableObject {
                     return
                 }
                 var completedBytes: Int64 = 0
+                // Pipelined verification: part i's digest pass runs while part i+1 downloads
+                // (the hash is CPU/disk-bound — minutes for V4.1's 480 GiB part1 — while the
+                // fetch is network-bound). Each part is still fully verified before anything
+                // downstream uses it, and the join re-verifies the assembled result.
+                var inFlightVerify: Task<Void, Error>?
+                defer { inFlightVerify?.cancel() }
                 for (index, part) in parts.enumerated() {
                     let partURL = baseDir.appendingPathComponent(part.filename)
                     // After an interrupted join the verified 480 GiB prefix lives in the
@@ -794,56 +878,127 @@ final class SupervisorService: ObservableObject {
                         && FileManager.default.fileExists(atPath: assembling.path)
                     if !prefixInAssembly {
                         let partial = resumableBytes(ggufDir: baseDir, filename: part.filename) > 0
-                        if !FileManager.default.fileExists(atPath: partURL.path) || partial {
-                            let baseBytes = completedBytes  // immutable snapshot for the callback
+                        let needsFetch =
+                            !FileManager.default.fileExists(atPath: partURL.path) || partial
+                        let baseBytes = completedBytes  // immutable snapshot for the callback
+                        if let previous = inFlightVerify {
+                            // Race this fetch against the PREVIOUS part's verification: a corrupt
+                            // part must abort the in-flight next-part download instead of waiting
+                            // for gigabytes to land first. A verification *success* decides
+                            // nothing yet — waitForAll keeps the fetch running — only a failure
+                            // cancels it, and the first error propagates.
+                            inFlightVerify = nil
+                            try await withThrowingTaskGroup(of: Void.self) { group in
+                                group.addTask {
+                                    try await withTaskCancellationHandler {
+                                        try await previous.value
+                                    } onCancel: {
+                                        previous.cancel()
+                                    }
+                                }
+                                if needsFetch {
+                                    group.addTask {
+                                        try await fetch(
+                                            q.repo, part.filename, baseDir, token, highPerformance
+                                        ) { received, _, connections in
+                                            Self.onMain {
+                                                self?.updateDownloadProgress(
+                                                    gen: gen, file: part.filename,
+                                                    received: baseBytes + received,
+                                                    total: expectedBytes, connections: connections)
+                                            }
+                                        }
+                                    }
+                                }
+                                // Explicit race: wait for whichever finishes first, then cancel
+                                // the sibling (a verify failure aborts the fetch; a fetch failure
+                                // aborts the hash). If the first completed cleanly, waitForAll
+                                // keeps the other running to completion — a verification success
+                                // must not cut the download short.
+                                defer { group.cancelAll() }
+                                try await group.next()
+                                try await group.waitForAll()
+                            }
+                        } else if needsFetch {
                             try await fetch(q.repo, part.filename, baseDir, token, highPerformance) {
-                                received, _ in
+                                received, _, connections in
                                 Self.onMain {
                                     self?.updateDownloadProgress(
                                         gen: gen, file: part.filename,
-                                        received: baseBytes + received, total: expectedBytes)
+                                        received: baseBytes + received, total: expectedBytes,
+                                        connections: connections)
                                 }
                             }
                         }
                         // Size always, published digest when available: a resumed part is
-                        // re-verified before it counts as complete. Hashing a 480 GiB part
-                        // takes minutes, so it runs off the main actor (see verifyArtifact).
-                        do {
-                            try await Self.verifyArtifact(
-                                partURL, expectedBytes: part.bytes, expectedSHA256: part.sha256)
-                        } catch let error as GGUFJoiner.Failure {
-                            switch error {
-                            case .wrongSize, .checksumMismatch:
-                                // Drop the bad artifact so Retry re-fetches it instead of
-                                // re-verifying the same file forever (and so a corrupt
-                                // single-file quant never counts as downloaded).
-                                Self.discardCorruptPart(part.filename, baseDir: baseDir)
-                            default:
-                                break
+                        // re-verified before it counts as complete — started here so its hash
+                        // runs concurrently with the next part's fetch.
+                        let label =
+                            parts.count > 1
+                            ? "Verifying part \(index + 1) of \(parts.count)…" : "Verifying…"
+                        inFlightVerify = Task { [weak self] in
+                            do {
+                                try await self?.withVerificationProgress(
+                                    label: label, totalBytes: part.bytes,
+                                    expectedSHA256: part.sha256
+                                ) { onHashProgress in
+                                    try await Self.verifyArtifact(
+                                        partURL, expectedBytes: part.bytes,
+                                        expectedSHA256: part.sha256,
+                                        onHashProgress: onHashProgress)
+                                }
+                            } catch let error as GGUFJoiner.Failure {
+                                switch error {
+                                case .wrongSize, .checksumMismatch:
+                                    // Drop the bad artifact so Retry re-fetches it instead of
+                                    // re-verifying the same file forever (and so a corrupt
+                                    // single-file quant never counts as downloaded).
+                                    Self.discardCorruptPart(part.filename, baseDir: baseDir)
+                                default:
+                                    break
+                                }
+                                throw error
                             }
-                            throw error
                         }
                     }
                     let cumulativeBytes = completedBytes + part.bytes
                     completedBytes = cumulativeBytes
                     Self.onMain {
+                        // This part's fetch is over: clear the connection count instead of
+                        // carrying the finished fetch's live count into the digest/join that
+                        // follows. A later part's fetch re-reports its own pool with its ticks.
                         self?.updateDownloadProgress(
                             gen: gen, file: part.filename, received: cumulativeBytes,
-                            total: expectedBytes)
+                            total: expectedBytes, connections: nil)
                     }
+                }
+                // The last part's verification may still be running while nothing else fetches.
+                if let previous = inFlightVerify {
+                    try await withTaskCancellationHandler {
+                        try await previous.value
+                    } onCancel: {
+                        previous.cancel()
+                    }
+                    inFlightVerify = nil
                 }
                 if parts.count > 1 {
                     // Joining + verifying the 518 GiB result takes minutes; keep it off the
-                    // main actor and let Cancel stop it between blocks.
+                    // main actor, let Cancel stop it between blocks, and show its progress.
                     do {
-                        try await Self.joinArtifacts(
-                            part1: baseDir.appendingPathComponent(parts[0].filename),
-                            part2: baseDir.appendingPathComponent(parts[1].filename),
-                            into: baseDir.appendingPathComponent(finalName),
-                            part1Bytes: parts[0].bytes, expectedBytes: expectedBytes,
-                            expectedSHA256: q.sha256,
-                            // The tail plus headroom; the prefix is appended in place.
-                            freeSpaceRequired: parts[1].bytes + 1_073_741_824)
+                        try await self?.withVerificationProgress(
+                            label: "Verifying the joined file…", totalBytes: expectedBytes,
+                            expectedSHA256: q.sha256
+                        ) { onHashProgress in
+                            try await Self.joinArtifacts(
+                                part1: baseDir.appendingPathComponent(parts[0].filename),
+                                part2: baseDir.appendingPathComponent(parts[1].filename),
+                                into: baseDir.appendingPathComponent(finalName),
+                                part1Bytes: parts[0].bytes, expectedBytes: expectedBytes,
+                                expectedSHA256: q.sha256,
+                                // The tail plus headroom; the prefix is appended in place.
+                                freeSpaceRequired: parts[1].bytes + 1_073_741_824,
+                                onHashProgress: onHashProgress)
+                        }
                     } catch let error as GGUFJoiner.Failure {
                         switch error {
                         case .wrongSize, .checksumMismatch:
@@ -870,7 +1025,9 @@ final class SupervisorService: ObservableObject {
     /// compute pct, and a transfer rate from the delta against the last sample (the rate logic moved
     /// here from the old on-disk poll). Generation-guarded so a superseded download's late callback
     /// can't clobber the current bar. `Date()` is fine in app code.
-    private func updateDownloadProgress(gen: Int, file: String, received: Int64, total: Int64) {
+    private func updateDownloadProgress(
+        gen: Int, file: String, received: Int64, total: Int64, connections: Int?
+    ) {
         guard downloadGeneration == gen, state == .downloading else { return }
         let now = Date()
         // Rate over a fixed ~0.5 s window: advance the anchor only when the window elapses, so the
@@ -889,7 +1046,7 @@ final class SupervisorService: ObservableObject {
         let pct = total > 0 ? min(100, Double(received) / Double(total) * 100) : 0
         download = DownloadProgress(
             pct: pct, file: file, receivedBytes: received, totalBytes: total > 0 ? total : nil,
-            rate: rate)
+            rate: rate, connections: connections)
     }
 
     private func completeDownload(gen: Int, filename: String) {
@@ -931,12 +1088,16 @@ final class SupervisorService: ObservableObject {
         downloadProcessLive = false
         activeDownloadSelection = nil
         preexistingFinalOnDownloadStart = false
+        verificationGeneration += 1
+        verification = nil
     }
 
     /// Cancel whatever download is in flight and start a fresh one — the user's escape hatch from a
     /// stuck/stalled or errored progress bar. The native downloader cancels through the cancelled
     /// task; `download` re-resumes from the on-disk bitmap.
     func retryDownload(selection: QuantSelection, highPerformance: Bool = false) {
+        verificationGeneration += 1
+        verification = nil
         downloadTask?.cancel()
         downloadTask = nil
         lastDownloadSample = nil
@@ -997,6 +1158,8 @@ final class SupervisorService: ObservableObject {
         preexistingFinalOnDownloadStart = false
         lastDownloadSample = nil
         download = nil
+        verificationGeneration += 1
+        verification = nil
         state = .idle
     }
 

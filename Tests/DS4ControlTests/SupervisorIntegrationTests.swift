@@ -20,6 +20,13 @@ private actor FetchProbe {
     func bump() { calls += 1 }
 }
 
+/// Flips once a fetch for the watched filename begins — lets a test observe that a later part's
+/// download started while an earlier part's digest pass is still running.
+private actor FetchStartedFlag {
+    private(set) var started = false
+    func mark() { started = true }
+}
+
 @MainActor
 final class SupervisorIntegrationTests: XCTestCase {
     /// A fetch that never returns — keeps the download in flight without touching the network.
@@ -316,7 +323,7 @@ final class SupervisorIntegrationTests: XCTestCase {
             fetchFile: { _, _, _, _, _, onProgress in
                 for step in 1...4 {
                     try Task.checkCancellation()
-                    onProgress(Int64(step) * 25 * 1024 * 1024, total)
+                    onProgress(Int64(step) * 25 * 1024 * 1024, total, 8)
                     try await Task.sleep(nanoseconds: 200_000_000)
                 }
             })
@@ -466,7 +473,7 @@ final class SupervisorIntegrationTests: XCTestCase {
             let sizer = try FileHandle(forWritingTo: part)
             try sizer.truncate(atOffset: UInt64(total))
             try sizer.close()
-            onProgress(chunkSize, total)
+            onProgress(chunkSize, total, 8)
             throw HFDownloader.Failure.incompleteAfterRetries
         }
         let s = SupervisorService(ds4Dir: dir, runner: RealProcessRunner(), fetchFile: failing)
@@ -754,6 +761,9 @@ final class SupervisorIntegrationTests: XCTestCase {
         let s = SupervisorService(ds4Dir: dir, runner: RealProcessRunner())
         s.resumeInFlightDownloadIfAny(selection: .flash(.q2))
         XCTAssertEqual(s.state, .downloading, "a marker-less final re-verifies in place")
+        XCTAssertNil(
+            s.download?.connections,
+            "a re-verification with no fetch must not report downloader connections")
         s.cancelDownload()
         XCTAssertEqual(s.state, .idle)
         XCTAssertTrue(
@@ -787,6 +797,9 @@ final class SupervisorIntegrationTests: XCTestCase {
             fetchFile: { _, _, _, _, _, _ in await probe.bump() })
         s.resumeInFlightDownloadIfAny(selection: .flash41(.q4))
         XCTAssertEqual(s.state, .downloading)
+        XCTAssertNil(
+            s.download?.connections,
+            "a marker-less joined final must not report downloader connections")
         try await Task.sleep(nanoseconds: 300_000_000)  // let the task pick verify-vs-fetch
         let calls = await probe.calls
         XCTAssertEqual(calls, 0, "a marker-less joined final must not refetch the consumed parts")
@@ -798,6 +811,135 @@ final class SupervisorIntegrationTests: XCTestCase {
         XCTAssertFalse(
             FileManager.default.fileExists(atPath: final.path + ".verified"),
             "a cancelled verification must publish no marker")
+    }
+
+    /// The minutes-long digest pass of a marker-less V4.1 final must surface as `verification`
+    /// (label + total bytes) — never a frozen download bar — and cancel must clear it.
+    /// Covers all models: any artifact with a published digest reports progress.
+    func testReverifyPublishesVerificationProgressAndClearsOnCancel() async throws {
+        let dir = URL(fileURLWithPath: NSTemporaryDirectory()).appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let g = dir.appendingPathComponent("gguf")
+        try FileManager.default.createDirectory(at: g, withIntermediateDirectories: true)
+        try stubDs4(dir)
+        let final = g.appendingPathComponent(Quant.q41Q2.ggufFilename)
+        FileManager.default.createFile(atPath: final.path, contents: nil)
+        let handle = try FileHandle(forWritingTo: final)
+        try handle.truncate(atOffset: UInt64(Quant.q41Q2.ggufBytes))
+        try handle.close()
+
+        let s = SupervisorService(ds4Dir: dir, runner: RealProcessRunner())
+        s.resumeInFlightDownloadIfAny(selection: .flash41(.q2))
+        XCTAssertEqual(s.state, .downloading)
+        await until { s.verification != nil }
+        let v = try XCTUnwrap(s.verification)
+        XCTAssertEqual(v.label, "Verifying…")
+        XCTAssertEqual(v.totalBytes, Int64(Quant.q41Q2.ggufBytes))
+        XCTAssertGreaterThanOrEqual(v.pct, 0)
+
+        s.retryDownload(selection: .flash41(.q2))
+        XCTAssertEqual(s.state, .downloading)
+        XCTAssertNil(s.verification, "retry must clear the previous verification row immediately")
+        await until { s.verification != nil }
+        XCTAssertNotNil(s.verification, "the replacement download must publish its own verification")
+
+        s.cancelDownload()
+        XCTAssertEqual(s.state, .idle)
+        XCTAssertNil(s.verification, "cancel must clear the verification row")
+    }
+
+    /// Part 2's fetch must start while part 1's digest pass still runs: the hash (CPU/disk-bound,
+    /// minutes for 480 GiB) otherwise serializes in front of the next part's download
+    /// (network-bound), costing the whole verification window on every Q4 download.
+    func testQ4Part2FetchOverlapsPart1Verification() async throws {
+        let dir = URL(fileURLWithPath: NSTemporaryDirectory()).appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let g = dir.appendingPathComponent("gguf")
+        try FileManager.default.createDirectory(at: g, withIntermediateDirectories: true)
+        try stubDs4(dir)
+        let started = FetchStartedFlag()
+        let stub: SupervisorService.FetchFile = { _, file, destDir, _, _, _ in
+            if file.hasSuffix(".part2") {
+                await started.mark()
+                try await Task.sleep(nanoseconds: 600_000_000_000)
+                return
+            }
+            // part1: sparse materialization at the published size so the size check passes and
+            // its (minutes-long) digest pass begins.
+            let url = destDir.appendingPathComponent(file)
+            FileManager.default.createFile(atPath: url.path, contents: nil)
+            let handle = try FileHandle(forWritingTo: url)
+            try handle.truncate(atOffset: UInt64(Quant.q41Q4.downloadParts[0].bytes))
+            try handle.close()
+        }
+        let s = SupervisorService(ds4Dir: dir, runner: RealProcessRunner(), fetchFile: stub)
+        s.download(selection: .flash41(.q4))
+        XCTAssertEqual(s.state, .downloading)
+
+        var sawPart2 = false
+        for _ in 0..<400 {
+            if await started.started { sawPart2 = true; break }
+            try await Task.sleep(nanoseconds: 10_000_000)
+        }
+        XCTAssertTrue(sawPart2, "part2's fetch must start while part1 is being verified")
+        XCTAssertNotNil(s.verification, "part1's hash must still be running when part2 starts")
+        s.cancelDownload()  // also stops the minutes-long hash if the assertion above failed
+        XCTAssertEqual(s.state, .idle)
+    }
+
+    /// The download progress shows the live connection count: the CGNAT-safe base at start, then
+    /// the downloader's reported pool size as ticks arrive (the High Performance ramp moves it).
+    func testDownloadProgressReportsConnectionCount() async throws {
+        let dir = URL(fileURLWithPath: NSTemporaryDirectory()).appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let g = dir.appendingPathComponent("gguf")
+        try FileManager.default.createDirectory(at: g, withIntermediateDirectories: true)
+        try stubDs4(dir)
+        let reporting: SupervisorService.FetchFile = { _, _, _, _, _, onProgress in
+            onProgress(1_000_000, 10_000_000, 16)
+            try await Task.sleep(nanoseconds: 600_000_000_000)
+        }
+        let s = SupervisorService(ds4Dir: dir, runner: RealProcessRunner(), fetchFile: reporting)
+        s.download(selection: .flash(.q2q4))
+        XCTAssertEqual(s.download?.connections, 8, "the initial progress shows the base pool")
+        await until { s.download?.connections == 16 }
+        XCTAssertEqual(s.download?.connections, 16, "ticks carry the downloader's live pool size")
+        s.cancelDownload()
+        XCTAssertEqual(s.state, .idle)
+    }
+
+    /// A finished fetch must not leave its connection count on the bar: once no fetch remains
+    /// (here: the only part, with verification still hashing) the count clears instead of
+    /// claiming live downloader connections through the minutes-long digest.
+    func testDownloadClearsConnectionsAfterFetchCompletes() async throws {
+        let dir = URL(fileURLWithPath: NSTemporaryDirectory()).appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let g = dir.appendingPathComponent("gguf")
+        try FileManager.default.createDirectory(at: g, withIntermediateDirectories: true)
+        try stubDs4(dir)
+        let quant = Quant.q41Q2
+        let fetching: SupervisorService.FetchFile = { _, file, destDir, _, _, onProgress in
+            onProgress(1_000_000, Int64(quant.ggufBytes), 16)
+            // Hold the fetch open briefly so the tick is observable before completion clears it.
+            try await Task.sleep(nanoseconds: 300_000_000)
+            // Materialize the part at its published size (sparse) so the digest pass begins;
+            // this test only observes the connection state and cancels the hash.
+            let url = destDir.appendingPathComponent(file)
+            FileManager.default.createFile(atPath: url.path, contents: nil)
+            let handle = try FileHandle(forWritingTo: url)
+            try handle.truncate(atOffset: UInt64(quant.ggufBytes))
+            try handle.close()
+        }
+        let s = SupervisorService(ds4Dir: dir, runner: RealProcessRunner(), fetchFile: fetching)
+        s.download(selection: .flash41(.q2))
+        await until { s.download?.connections == 16 }
+        XCTAssertEqual(s.download?.connections, 16, "the fetch tick reports its live pool")
+        await until { s.download?.connections == nil }
+        XCTAssertNil(
+            s.download?.connections,
+            "a completed fetch must not carry its connection count into verification")
+        s.cancelDownload()
+        XCTAssertEqual(s.state, .idle)
     }
 
     func testGenerationSpecificKVCachePaths() {

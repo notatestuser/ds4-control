@@ -25,6 +25,10 @@ final class HFDownloader: NSObject, @unchecked Sendable {
     private let sessionConfiguration: URLSessionConfiguration?
     /// Backoff base between probe attempts (tests shrink it).
     private let probeRetryBackoff: TimeInterval
+    /// Ramp measurement-window floor (tests shrink it for small files).
+    private let minRampWindow: TimeInterval
+    /// Cooldown between a settled ramp's one-promotion probes (tests shrink it).
+    private let rampRearmInterval: TimeInterval
 
     /// Coalesce progress callbacks so the UI isn't spammed (~8 MB granularity).
     private static let progressStep: Int64 = 8 * 1024 * 1024
@@ -34,14 +38,15 @@ final class HFDownloader: NSObject, @unchecked Sendable {
     /// `download` parameter so tests can force many chunks on a small file.
     static let parallelChunkSize: Int64 = 256 * 1024 * 1024
 
-    /// Parallel connection count: a CGNAT-safe 8 by default (up to ~16 sockets across the
-    /// resolve + cas-bridge hosts), an aggressive-but-safe 64 when the user opts into High
-    /// Performance (still under the 256 fd soft-limit, with headroom for HF 429).
+    /// Worker-count bounds: the CGNAT-safe base (8) that every download starts at, and the
+    /// opt-in aggressive ceiling (64) that High Performance ramps toward while throughput
+    /// improves. Also keeps us under the 256 fd soft-limit, with headroom for HF 429.
     static func workerCount(highPerformance: Bool) -> Int { highPerformance ? 64 : 8 }
 
     init(
         repo: String, endpoint: String = "https://huggingface.co", revision: String = "main", maxRetries: Int = 8,
-        sessionConfiguration: URLSessionConfiguration? = nil, probeRetryBackoff: TimeInterval = 1.0
+        sessionConfiguration: URLSessionConfiguration? = nil, probeRetryBackoff: TimeInterval = 1.0,
+        minRampWindow: TimeInterval = 8, rampRearmInterval: TimeInterval = 300
     ) {
         self.repo = repo
         self.endpoint = endpoint
@@ -51,6 +56,9 @@ final class HFDownloader: NSObject, @unchecked Sendable {
         // Sanitized at the boundary: this knob exists for tests, and a negative, non-finite, or
         // gigantic value would otherwise trap the UInt64 nanosecond conversion in the probe retry.
         self.probeRetryBackoff = probeRetryBackoff.isFinite ? min(max(probeRetryBackoff, 0), 60) : 0
+        self.minRampWindow = minRampWindow.isFinite ? min(max(minRampWindow, 0), 30) : 8
+        self.rampRearmInterval =
+            rampRearmInterval.isFinite ? min(max(rampRearmInterval, 0), 3600) : 300
         super.init()
     }
 
@@ -58,7 +66,7 @@ final class HFDownloader: NSObject, @unchecked Sendable {
     /// into its own slot; `received` = durably-completed bytes + Σ in-flight, clamped to `total`.
     /// Methods return a coalesced `received` (≥ the ~8 MB step since the last report) to emit, or nil
     /// when nothing material changed — so the UI sees a single monotonic counter despite N writers.
-    private final class Progress: @unchecked Sendable {
+    final class Progress: @unchecked Sendable {
         private let lock = NSLock()
         private let total: Int64
         private var completedBytes: Int64
@@ -92,15 +100,13 @@ final class HFDownloader: NSObject, @unchecked Sendable {
         }
 
         /// Promote `worker`'s in-flight bytes to durably-complete (its chunk finished + fsynced) and
-        /// reset its slot. Always returns the new received count so completion is reported promptly.
+        /// reset its slot. Always returns a received count so completion is reported promptly.
         func commit(_ worker: Int) -> Int64 {
             lock.lock()
             defer { lock.unlock() }
             completedBytes += inflight[worker]
             inflight[worker] = 0
-            let received = receivedLocked()
-            lastReported = received
-            return received
+            return reportedLocked()
         }
 
         /// Drop `worker`'s in-flight bytes without committing them — used before a chunk retry so the
@@ -117,6 +123,22 @@ final class HFDownloader: NSObject, @unchecked Sendable {
             defer { lock.unlock() }
             return receivedLocked()
         }
+
+        /// `received()`, but never below the last value already reported: a retry's `discard`
+        /// lowers the raw count, while every emission (commit and the ramp's ticks) must stay
+        /// monotonic. Advances the high-water mark to the returned value.
+        func reportedReceived() -> Int64 {
+            lock.lock()
+            defer { lock.unlock() }
+            return reportedLocked()
+        }
+
+        /// Monotonic high-water mark used by every emit path; `reportedReceived` reads it too.
+        private func reportedLocked() -> Int64 {
+            let received = max(receivedLocked(), lastReported)
+            lastReported = received
+            return received
+        }
     }
 
     /// Lock-guarded generator that hands each not-yet-complete chunk index to exactly one worker.
@@ -126,6 +148,7 @@ final class HFDownloader: NSObject, @unchecked Sendable {
         private var next: Int
         private let count: Int
         private let skip: Set<Int>
+        private var handedOut = 0
 
         init(chunkCount: Int, skip: Set<Int>) {
             self.next = 0
@@ -136,27 +159,113 @@ final class HFDownloader: NSObject, @unchecked Sendable {
         /// The number of chunks that still need fetching — used to size the worker pool.
         var remaining: Int { count - skip.count }
 
+        /// True once every outstanding index has been handed to a worker: the ramp controller's
+        /// stop condition (the pool then only drains what is already in flight).
+        var allHandedOut: Bool {
+            lock.lock()
+            defer { lock.unlock() }
+            return handedOut >= count - skip.count
+        }
+
         func nextIndex() -> Int? {
             lock.lock()
             defer { lock.unlock() }
             while next < count {
                 let i = next
                 next += 1
-                if !skip.contains(i) { return i }
+                if !skip.contains(i) {
+                    handedOut += 1
+                    return i
+                }
             }
             return nil
         }
     }
 
+    /// Lock-guarded task state shared by the ramp controller and workers. Worker slots are reused
+    /// after a backed-off task exits so their indices always remain valid `Progress` slots. Workers
+    /// only report completion/failure here; the controller remains the sole task-group mutator.
+    private final class WorkerPoolState: @unchecked Sendable {
+        private let lock = NSLock()
+        private let cap: Int
+        private var live: Set<Int> = []
+        private var firstFailure: (any Error)?
+
+        init(cap: Int) {
+            self.cap = max(cap, 1)
+        }
+
+        /// Atomically reserve every vacant slot below `desired` before the controller spawns it.
+        func reserve(upTo desired: Int) -> [Int] {
+            lock.lock()
+            defer { lock.unlock() }
+            guard firstFailure == nil else { return [] }
+            let limit = min(max(desired, 0), cap)
+            let workers = (0..<limit).filter { !live.contains($0) }
+            live.formUnion(workers)
+            return workers
+        }
+
+        func finish(_ worker: Int, failure: (any Error)? = nil) {
+            lock.lock()
+            defer { lock.unlock() }
+            live.remove(worker)
+            if firstFailure == nil, let failure {
+                firstFailure = failure
+            }
+        }
+
+        var hasFailure: Bool {
+            lock.lock()
+            defer { lock.unlock() }
+            return firstFailure != nil
+        }
+
+        /// Live worker-task count (reserved and running) — the pool occupancy progress ticks
+        /// should report, as opposed to the ramp's target allowance.
+        var liveCount: Int {
+            lock.lock()
+            defer { lock.unlock() }
+            return live.count
+        }
+    }
+
+    /// Length of one ramp measurement window: long enough for ~2 chunks at the current rate so a
+    /// window's rate isn't dominated by chunk-boundary quantization, floored at `minWindow` (8 s
+    /// production; tests lower it for small files) and capped so a slow path can't stall the ramp.
+    static func rampWindowSeconds(
+        rate: Double, chunkSize: Int64, minWindow: TimeInterval = 8
+    ) -> TimeInterval {
+        let seconds = rate > 0 ? (2 * Double(chunkSize)) / rate : minWindow
+        return min(30, max(minWindow, seconds))
+    }
+
+    /// Sleep a full ramp window in short slices, returning as soon as `shouldWake` flips (the
+    /// pool finished handing out every chunk, or a worker failed) so a settled controller never
+    /// holds a finished/failed download open for the rest of a ≤30 s window. With nothing to
+    /// wake for, the total sleep still spans `window`; cancellation propagates like `Task.sleep`.
+    static func rampSleep(
+        _ window: TimeInterval, shouldWake: () -> Bool
+    ) async throws {
+        let deadline = Date().addingTimeInterval(window)
+        while Date() < deadline {
+            if shouldWake() { return }
+            let remaining = deadline.timeIntervalSinceNow
+            try await Task.sleep(nanoseconds: UInt64(max(min(remaining, 0.25), 0) * 1_000_000_000))
+        }
+    }
+
     /// Download `file` into `destDir` with `workerCount(highPerformance:)` parallel chunk connections,
     /// resuming any partial `<file>.part`/`<file>.part.dl` left by a prior run. Returns once the full
-    /// file is durably on disk (atomically renamed from `.part`). `onProgress(received, total)` fires
-    /// from worker tasks as a single monotonic counter. Throws `CancellationError` if the surrounding
-    /// task is cancelled, or `Failure`/the underlying I/O error after exhausting per-chunk retries.
+    /// file is durably on disk (atomically renamed from `.part`). `onProgress(received, total,
+    /// connections)` fires from worker tasks as a single monotonic counter, with the live pool size
+    /// so the UI can show how many connections the download is using. Throws `CancellationError` if
+    /// the surrounding task is cancelled, or `Failure`/the underlying I/O error after exhausting
+    /// per-chunk retries.
     func download(
         file: String, into destDir: URL, token: String?, highPerformance: Bool,
         chunkSize: Int64 = HFDownloader.parallelChunkSize,
-        onProgress: @escaping @Sendable (Int64, Int64) -> Void
+        onProgress: @escaping @Sendable (Int64, Int64, Int) -> Void
     ) async throws {
         let dest = destDir.appendingPathComponent(file)
         if FileManager.default.fileExists(atPath: dest.path) { return }
@@ -234,19 +343,100 @@ final class HFDownloader: NSObject, @unchecked Sendable {
 
         let progress = Progress(completedBytes: bitmap.completedBytes(), workerCount: workers, total: total)
         let generator = ChunkIndexGenerator(chunkCount: bitmap.chunkCount, skip: bitmap.completedIndices())
-        // Emit the resume baseline immediately so the UI jumps to the already-downloaded fraction.
-        onProgress(progress.received(), total)
 
-        let spawn = min(workers, generator.remaining)
-        if spawn > 0 {
+        // Every download starts at the CGNAT-safe base; High Performance ramps toward the cap
+        // while measured throughput improves (see WorkerRamp — starting wide is what stalled a
+        // real 64-connection run over a lossy tunnel).
+        let capWorkers = workers
+        let baseWorkers = min(workers, HFDownloader.workerCount(highPerformance: false))
+        let ramp = WorkerRamp(start: baseWorkers, cap: capWorkers)
+        let workerPool = WorkerPoolState(cap: capWorkers)
+        // Emit the resume baseline immediately so the UI jumps to the already-downloaded fraction.
+        onProgress(progress.received(), total, ramp.allowed)
+        let initial = min(ramp.allowed, generator.remaining)
+        if initial > 0 {
             try await withThrowingTaskGroup(of: Void.self) { group in
-                for worker in 0..<spawn {
-                    group.addTask { [weak self] in
-                        guard let self else { return }
-                        try await self.runWorker(
-                            worker: worker, url: url, token: token, part: part, chunkSize: chunkSize,
-                            total: total, session: session, bitmap: bitmap, generator: generator,
-                            progress: progress, onProgress: onProgress)
+                func addWorkers(upTo desired: Int) {
+                    for worker in workerPool.reserve(upTo: desired) {
+                        group.addTask {
+                            do {
+                                try await self.runWorker(
+                                    worker: worker, url: url, token: token, part: part,
+                                    chunkSize: chunkSize, total: total, session: session,
+                                    bitmap: bitmap, generator: generator, ramp: ramp,
+                                    workerPool: workerPool, progress: progress,
+                                    onProgress: onProgress)
+                                workerPool.finish(worker)
+                            } catch {
+                                workerPool.finish(worker, failure: error)
+                                throw error
+                            }
+                        }
+                    }
+                }
+                addWorkers(upTo: initial)
+                if capWorkers > baseWorkers {
+                    // Adaptive ramp: sample durable bytes per window and grow the pool only while
+                    // the rate improves; the first window that doesn't settles back at the best
+                    // count (extra workers exit at their chunk boundary via `ramp.allows`). A
+                    // settled ramp re-arms after `rampRearmInterval` with one promotion, so a
+                    // recovering path is exploited instead of staying at the backed-off count.
+                    var lastCompleted = bitmap.completedBytes()
+                    var lastSample = Date()
+                    var nextProbeAt: Date? = nil
+                    while !generator.allHandedOut {
+                        if workerPool.hasFailure { break }
+                        let now = Date()
+                        let completed = bitmap.completedBytes()
+                        let elapsed = max(now.timeIntervalSince(lastSample), 0.001)
+                        let rate = Double(completed - lastCompleted) / elapsed
+                        lastCompleted = completed
+                        lastSample = now
+                        let window = HFDownloader.rampWindowSeconds(
+                            rate: rate, chunkSize: chunkSize, minWindow: minRampWindow)
+
+                        if ramp.settled, ramp.allowed >= ramp.cap {
+                            try await Self.rampSleep(window) {
+                                generator.allHandedOut || workerPool.hasFailure
+                            }
+                            continue  // nothing left to probe at the cap
+                        }
+                        if ramp.settled {
+                            if let probeAt = nextProbeAt, now < probeAt {
+                                try await Self.rampSleep(window) {
+                                    generator.allHandedOut || workerPool.hasFailure
+                                }
+                                continue  // cooldown: hold the backed-off count
+                            }
+                            let before = ramp.allowed
+                            let next = ramp.startProbe()
+                            addWorkers(upTo: next)
+                            // Report actual occupancy: on a backoff the extra workers are still
+                            // finishing their chunks, so `next` would understate the live pool.
+                            if next != before {
+                                onProgress(progress.reportedReceived(), total, workerPool.liveCount)
+                            }
+                            nextProbeAt =
+                                next < ramp.cap
+                                ? now.addingTimeInterval(rampRearmInterval) : nil
+                        } else {
+                            let before = ramp.allowed
+                            let next = ramp.observe(rate: rate)
+                            addWorkers(upTo: next)
+                            // Report actual occupancy: on a backoff the extra workers are still
+                            // finishing their chunks, so `next` would understate the live pool.
+                            if next != before {
+                                onProgress(progress.reportedReceived(), total, workerPool.liveCount)
+                            }
+                            if ramp.settled {
+                                nextProbeAt =
+                                    ramp.allowed < ramp.cap
+                                    ? now.addingTimeInterval(rampRearmInterval) : nil
+                            }
+                        }
+                        try await Self.rampSleep(window) {
+                            generator.allHandedOut || workerPool.hasFailure
+                        }
                     }
                 }
                 // Propagate the first worker failure (or cancellation) to the rest.
@@ -272,13 +462,17 @@ final class HFDownloader: NSObject, @unchecked Sendable {
     private func runWorker(
         worker: Int, url: URL, token: String?, part: URL, chunkSize: Int64, total: Int64,
         session: URLSession, bitmap: ChunkBitmap, generator: ChunkIndexGenerator,
-        progress: Progress, onProgress: @escaping @Sendable (Int64, Int64) -> Void
+        ramp: WorkerRamp, workerPool: WorkerPoolState, progress: Progress,
+        onProgress: @escaping @Sendable (Int64, Int64, Int) -> Void
     ) async throws {
         let fetcher = ChunkFetcher(session: session)
         let fh = try FileHandle(forWritingTo: part)
         defer { try? fh.close() }
 
-        while let idx = generator.nextIndex() {
+        // Check the ramp BEFORE pulling: a worker the ramp backed away from exits at its chunk
+        // boundary and leaves every index it hasn't taken for the workers that remain.
+        while ramp.allows(worker) {
+            guard let idx = generator.nextIndex() else { break }
             try Task.checkCancellation()
             let offset = Int64(idx) * chunkSize
             let end = min(offset + chunkSize - 1, total - 1)
@@ -291,7 +485,9 @@ final class HFDownloader: NSObject, @unchecked Sendable {
                     _ = try await fetcher.fetch(
                         url: url, offset: offset, end: end, token: token, fileHandle: fh,
                         onBytes: { n in
-                            if let received = progress.addInflight(worker, n) { onProgress(received, total) }
+                            if let received = progress.addInflight(worker, n) {
+                                onProgress(received, total, workerPool.liveCount)
+                            }
                         })
                     break  // chunk delivered fully (ChunkFetcher rejects short reads).
                 } catch is CancellationError {
@@ -312,7 +508,7 @@ final class HFDownloader: NSObject, @unchecked Sendable {
             // this chunk's bytes from in-flight to completed and report.
             try fh.synchronize()
             try bitmap.markComplete(idx)
-            onProgress(progress.commit(worker), total)
+            onProgress(progress.commit(worker), total, workerPool.liveCount)
         }
     }
 
@@ -332,7 +528,7 @@ final class HFDownloader: NSObject, @unchecked Sendable {
         }
         let task = Task {
             do {
-                try await dl.download(file: file, into: dir, token: nil, highPerformance: false) { _, _ in }
+                try await dl.download(file: file, into: dir, token: nil, highPerformance: false) { _, _, _ in }
             } catch is CancellationError {
             } catch { err("\(error)") }
         }
@@ -354,5 +550,122 @@ final class HFDownloader: NSObject, @unchecked Sendable {
             }
         }
         dispatchMain()
+    }
+}
+
+/// Adaptive worker-count policy for High Performance downloads: begin at the CGNAT-safe base,
+/// double toward the cap while a measurement window beats the best rate by ≥10%, and on the first
+/// window that fails to improve (or stalls) settle back at the best-observed count. The controller
+/// re-arms a settled ramp after a cooldown with ONE promotion probe, so a recovering path is
+/// exploited instead of staying backed off. Starting wide is what stalled a real download at 64
+/// connections over a lossy tunnel; the ramp keeps the aggressive ceiling for healthy paths without
+/// racing into congestion.
+final class WorkerRamp: @unchecked Sendable {
+    static let improvementMargin = 1.10
+    /// Ramping is judging windows and may grow; settled is holding at the best count (the
+    /// controller re-arms a probe after its cooldown); probing is the one promotion tried then.
+    enum Phase { case ramping, settled, probing }
+    private let lock = NSLock()
+    let cap: Int
+    private var _allowed: Int
+    private var bestRate: Double = 0
+    private var bestAllowed: Int
+    private var _phase: Phase = .ramping
+
+    init(start: Int, cap: Int) {
+        self.cap = max(1, cap)
+        self._allowed = max(1, min(start, self.cap))
+        self.bestAllowed = self._allowed
+    }
+
+    /// Whether `worker` may pull more chunks. Checked before each handout, so workers the
+    /// ramp backed away from exit at their chunk boundary instead of competing on.
+    func allows(_ worker: Int) -> Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        return worker < _allowed
+    }
+
+    var allowed: Int {
+        lock.lock()
+        defer { lock.unlock() }
+        return _allowed
+    }
+
+    var settled: Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        return _phase == .settled
+    }
+
+    /// Feed one measurement window's aggregate rate (bytes/s); returns the count to allow next.
+    @discardableResult
+    func observe(rate: Double) -> Int {
+        lock.lock()
+        defer { lock.unlock() }
+        if rate <= 0 {
+            // A stalled window must never grow the pool; once a baseline exists it ends the attempt.
+            if bestRate > 0, _phase != .settled {
+                _allowed = bestAllowed
+                _phase = .settled
+            }
+            return _allowed
+        }
+        switch _phase {
+        case .settled:
+            return _allowed  // only the controller's re-arm starts growth again
+        case .probing:
+            if rate > bestRate * Self.improvementMargin {
+                bestRate = rate
+                bestAllowed = _allowed
+                _phase = .ramping  // the path recovered: keep the probe and resume growing
+            } else {
+                _allowed = bestAllowed
+                _phase = .settled  // the probe failed: back to the best, wait for the next re-arm
+            }
+            return _allowed
+        case .ramping:
+            if bestRate == 0 {
+                // First window: establish the baseline, then try more connections.
+                bestRate = rate
+                bestAllowed = _allowed
+                _allowed = min(cap, _allowed * 2)
+                return _allowed
+            }
+            if _allowed >= cap {
+                // At the cap: hold it on improvement; the first window that fails to improve
+                // settles back at the best count.
+                if rate > bestRate * Self.improvementMargin {
+                    bestRate = rate
+                    bestAllowed = _allowed
+                } else {
+                    _allowed = bestAllowed
+                }
+                _phase = .settled
+                return _allowed
+            }
+            if rate > bestRate * Self.improvementMargin {
+                bestRate = rate
+                bestAllowed = _allowed
+                _allowed = min(cap, _allowed * 2)
+            } else {
+                // First window that failed to improve: back to the best count and hold.
+                _allowed = bestAllowed
+                _phase = .settled
+            }
+            return _allowed
+        }
+    }
+
+    /// The controller's re-arm after the cooldown: probe ONE promotion from the settled count.
+    /// Returns the count to allow (unchanged at the cap or if the ramp isn't settled).
+    @discardableResult
+    func startProbe() -> Int {
+        lock.lock()
+        defer { lock.unlock() }
+        guard _phase == .settled, _allowed < cap else { return _allowed }
+        _phase = .probing
+        _allowed = min(cap, _allowed * 2)
+        return _allowed
     }
 }

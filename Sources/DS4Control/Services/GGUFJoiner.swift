@@ -24,29 +24,37 @@ enum GGUFJoiner {
     /// The autorelease pool must be drained per iteration: Foundation's `Data` bridges through
     /// it, and a tight read loop otherwise accumulates every 16 MiB chunk until Jetsam kills
     /// the app — measured at ~200 GiB into a 480 GiB verification. Cancellation is checked per
-    /// block so Cancel stops the pass instead of hashing on in the background.
-    static func sha256(of url: URL) throws -> String {
+    /// block so Cancel stops the pass instead of hashing on in the background. `onProgress`
+    /// reports cumulative hashed bytes after each block so long passes can drive UI progress.
+    static func sha256(of url: URL, onProgress: ((Int64) -> Void)? = nil) throws -> String {
         let handle = try FileHandle(forReadingFrom: url)
         defer { try? handle.close() }
         var hasher = SHA256()
+        var processed: Int64 = 0
         while true {
             try Task.checkCancellation()
             let chunk: Data? = try autoreleasepool { try handle.read(upToCount: blockSize) }
             guard let chunk, !chunk.isEmpty else { break }
             hasher.update(data: chunk)
+            processed += Int64(chunk.count)
+            onProgress?(processed)
         }
         return hasher.finalize().map { String(format: "%02x", $0) }.joined()
     }
 
     /// Size (always) and digest (when published) verification for a downloaded artifact.
-    static func verify(url: URL, expectedBytes: Int64, expectedSHA256: String?) throws {
+    /// `onHashProgress` receives cumulative hashed bytes during the digest pass.
+    static func verify(
+        url: URL, expectedBytes: Int64, expectedSHA256: String?,
+        onHashProgress: ((Int64) -> Void)? = nil
+    ) throws {
         try Task.checkCancellation()
         let actual = fileSize(url)
         guard actual == expectedBytes else {
             throw Failure.wrongSize(
                 name: url.lastPathComponent, expected: expectedBytes, actual: actual)
         }
-        if let expectedSHA256, try sha256(of: url) != expectedSHA256 {
+        if let expectedSHA256, try sha256(of: url, onProgress: onHashProgress) != expectedSHA256 {
             throw Failure.checksumMismatch(name: url.lastPathComponent)
         }
     }
@@ -56,11 +64,14 @@ enum GGUFJoiner {
     /// The final file appears atomically; `part2` is removed only after a verified rename.
     static func join(
         part1: URL, part2: URL, into target: URL,
-        part1Bytes: Int64, expectedBytes: Int64, expectedSHA256: String?, freeSpaceRequired: Int64
+        part1Bytes: Int64, expectedBytes: Int64, expectedSHA256: String?, freeSpaceRequired: Int64,
+        onHashProgress: ((Int64) -> Void)? = nil
     ) throws {
         let fm = FileManager.default
         if fm.fileExists(atPath: target.path) {
-            try verify(url: target, expectedBytes: expectedBytes, expectedSHA256: expectedSHA256)
+            try verify(
+                url: target, expectedBytes: expectedBytes, expectedSHA256: expectedSHA256,
+                onHashProgress: onHashProgress)
             try? fm.removeItem(at: part2)
             return
         }
@@ -108,7 +119,9 @@ enum GGUFJoiner {
         }
 
         // Verify before publishing; on mismatch the assembled file stays for a retry.
-        try verify(url: assembling, expectedBytes: expectedBytes, expectedSHA256: expectedSHA256)
+        try verify(
+            url: assembling, expectedBytes: expectedBytes, expectedSHA256: expectedSHA256,
+            onHashProgress: onHashProgress)
         try? fm.removeItem(at: target)
         try fm.moveItem(at: assembling, to: target)
         try? fm.removeItem(at: part2)
