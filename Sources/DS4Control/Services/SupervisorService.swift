@@ -964,9 +964,12 @@ final class SupervisorService: ObservableObject {
                     let cumulativeBytes = completedBytes + part.bytes
                     completedBytes = cumulativeBytes
                     Self.onMain {
+                        // This part's fetch is over: clear the connection count instead of
+                        // carrying the finished fetch's live count into the digest/join that
+                        // follows. A later part's fetch re-reports its own pool with its ticks.
                         self?.updateDownloadProgress(
                             gen: gen, file: part.filename, received: cumulativeBytes,
-                            total: expectedBytes, connections: self?.download?.connections)
+                            total: expectedBytes, connections: nil)
                     }
                 }
                 // The last part's verification may still be running while nothing else fetches.

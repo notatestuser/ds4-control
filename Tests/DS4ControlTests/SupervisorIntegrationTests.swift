@@ -908,6 +908,40 @@ final class SupervisorIntegrationTests: XCTestCase {
         XCTAssertEqual(s.state, .idle)
     }
 
+    /// A finished fetch must not leave its connection count on the bar: once no fetch remains
+    /// (here: the only part, with verification still hashing) the count clears instead of
+    /// claiming live downloader connections through the minutes-long digest.
+    func testDownloadClearsConnectionsAfterFetchCompletes() async throws {
+        let dir = URL(fileURLWithPath: NSTemporaryDirectory()).appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let g = dir.appendingPathComponent("gguf")
+        try FileManager.default.createDirectory(at: g, withIntermediateDirectories: true)
+        try stubDs4(dir)
+        let quant = Quant.q41Q2
+        let fetching: SupervisorService.FetchFile = { _, file, destDir, _, _, onProgress in
+            onProgress(1_000_000, Int64(quant.ggufBytes), 16)
+            // Hold the fetch open briefly so the tick is observable before completion clears it.
+            try await Task.sleep(nanoseconds: 300_000_000)
+            // Materialize the part at its published size (sparse) so the digest pass begins;
+            // this test only observes the connection state and cancels the hash.
+            let url = destDir.appendingPathComponent(file)
+            FileManager.default.createFile(atPath: url.path, contents: nil)
+            let handle = try FileHandle(forWritingTo: url)
+            try handle.truncate(atOffset: UInt64(quant.ggufBytes))
+            try handle.close()
+        }
+        let s = SupervisorService(ds4Dir: dir, runner: RealProcessRunner(), fetchFile: fetching)
+        s.download(selection: .flash41(.q2))
+        await until { s.download?.connections == 16 }
+        XCTAssertEqual(s.download?.connections, 16, "the fetch tick reports its live pool")
+        await until { s.download?.connections == nil }
+        XCTAssertNil(
+            s.download?.connections,
+            "a completed fetch must not carry its connection count into verification")
+        s.cancelDownload()
+        XCTAssertEqual(s.state, .idle)
+    }
+
     func testGenerationSpecificKVCachePaths() {
         let dir = URL(fileURLWithPath: NSTemporaryDirectory()).appendingPathComponent(UUID().uuidString)
         let s = SupervisorService(
