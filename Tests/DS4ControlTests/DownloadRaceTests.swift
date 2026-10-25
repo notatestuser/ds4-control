@@ -204,6 +204,8 @@ final class DownloadRaceTests: XCTestCase {
 
         s.cancelDownload()
         XCTAssertEqual(s.state, .idle)
+        XCTAssertNotNil(s.drainingShardGeneration)
+        XCTAssertFalse(s.canRemoveLegacyFlash41Storage)
         for sidecar in sidecars {
             XCTAssertTrue(FileManager.default.fileExists(atPath: sidecar.path))
         }
