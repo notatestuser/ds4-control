@@ -366,11 +366,11 @@ private func metalIndexerScratchBytes(variant: Variant, ctx: Int) -> Int? {
 
 // MARK: - DeepSeek V4.1 Flash (ds41) Metal memory mirror
 //
-// The V4.1 graphite and admission rules live in ds4@bd66c40 (see AGENTS.md). Constants
+// The V4.1 graph sizing and admission rules live in ds4@a101246 (see AGENTS.md). Constants
 // below are transcribed from that revision; do not carry them across a ds4 bump without
 // re-verifying `ds41_graph_bytes`, `ds41_carry_cap` and `ds4_streaming_prefill_headroom_bytes`.
 
-/// V4.1 Flash shape (`DS4_SHAPE_FLASH41`, ds4.c:604-639).
+/// V4.1 Flash shape (`DS4_SHAPE_FLASH41` at a101246).
 private enum DS41Shape {
     static let layers = 40
     static let embd = 5120
@@ -391,13 +391,13 @@ private enum DS41Shape {
     static let engramDim = 256
 }
 
-/// `sizeof(ds41_gpu_graph)` at bd66c40 (clang record layout; pointers + scalars only).
-private let ds41GraphStructBytes = 51_080
-/// `DS41_PREFILL_CAP` and index batch width (ds4.c:39058-39059).
+/// `sizeof(ds41_gpu_graph)` at a101246 (clang record layout; pointers + scalars only).
+private let ds41GraphStructBytes = 51_192
+/// `DS41_PREFILL_CAP` and `DS41_INDEX_BATCH` at a101246.
 private let ds41PrefillCapWide = 8192
 private let ds41IndexBatch = 32
 
-/// `ds41_prefill_limit` (ds4.c:39100): wide chunks need enough context.
+/// `ds41_prefill_limit`: wide chunks need enough context.
 private func ds41PrefillCap(ctx: Int) -> Int {
     if ctx < 8192 { return min(2048, ctx) }
     if ctx < 16384 { return min(4096, ctx) }
@@ -409,7 +409,7 @@ private func ds41CarryWords(width: Int, mask: Bool) -> Int {
     mask ? (width + 31) / 32 : (width + 1) / 2
 }
 
-/// `ds41_carry_cap` (ds4.c:39111): the 3 GiB carry budget in rows, bounded and aligned.
+/// `ds41_carry_cap`: the 3 GiB carry budget in rows, bounded and aligned.
 private func ds41CarryCap(ctx: Int) -> Int {
     let blockMask = (ctx + 7) / 8
     let rowBytes =
@@ -426,14 +426,14 @@ private func ds41CarryCap(ctx: Int) -> Int {
     return cap > chunk ? cap : 0
 }
 
-/// `ds4_gpu_dsv41_indexer_packed_bytes` (ds4_metal.m:36065).
+/// `ds4_gpu_dsv41_indexer_packed_bytes` in the pinned ds4_metal.m.
 private func ds41IndexerPackedBytes(sourceRows: Int, rows: Int) -> Int {
     let flags = ((rows + (sourceRows + 63) / 64) * 4 + 255) & ~255
     return flags + rows * 32 * 128 * 2 + ((sourceRows + 63) / 64) * 64 * 128 * 2
 }
 
 /// Exact bytes of one resident session's V4.1 Metal graph, mirroring `ds41_graph_bytes`
-/// (ds4.c:39227). All terms are bounded by `ctx <= 1,048,576`, so Int cannot overflow
+/// at a101246. All terms are bounded by `ctx <= 1,048,576`, so Int cannot overflow
 /// (~21 GiB max). `sizeof(*g)`, the token map, the bounded packed activation buffer and
 /// the index-sorter merge buffers are included exactly as ds4 accounts them.
 func ds41GraphBytes(ctx: Int) -> Int? {
@@ -448,7 +448,7 @@ func ds41GraphBytes(ctx: Int) -> Int? {
         floats += (ctx / (i < 3 ? 2 : 1) + 1) * (512 + 128) + 2 * 512
     }
     floats += 2 * 2 * shape.embd * shape.hc
-    // DS41_SCRATCH (ds4.c:39126).
+    // DS41_SCRATCH at the pinned revision.
     floats += (prefillCap + 3) / 4  // image_text_mask
     floats += 3 * shape.hc * shape.embd  // residual, after_attn, flat_norm
     floats += 24 + 24 + 24 + 4  // mix, attn_split, ffn_split, pre
@@ -516,38 +516,59 @@ func ds41GraphBytes(ctx: Int) -> Int? {
     return floats * 4 + ds41GraphStructBytes + shape.vocab * 4 + packed + sort
 }
 
-/// Fixed wired bytes for V4.1 before the auto-fitted expert cache, from the quantize plan
-/// (`deepseek41_quantize.py`) plus `weights_model_map_decode_static_spans` (ds4.c:7577):
+/// Fixed wired bytes for V4.1 before the auto-fitted expert cache, verified by binding
+/// the real 1017 GGUF tensor headers with `weights_streaming_non_routed_bytes`:
 /// every non-routed decode-static tensor (token table, output head, attention/compressor/
 /// indexer/shared-expert/HC tensors and the two engram KV projections). Identical for Q2
-/// and Q4 because only routed experts change precision between the recipes.
-let ds41NonRoutedBytes = 10_061_367_744
+/// and MXFP4 because only routed experts change precision between the recipes.
+let ds41NonRoutedBytes = 10_060_841_408
 
-/// `ds4_streaming_prefill_headroom_bytes` (ds4.c:4878) for V4.1: one routed layer's
+/// `ds4_streaming_prefill_headroom_bytes` for V4.1: one routed layer's
 /// experts × `DS4_STREAMING_PREFILL_HEADROOM_LAYERS` (2), per recipe.
 let ds41Q2PrefillHeadroomBytes = 7_644_119_040
-let ds41Q4PrefillHeadroomBytes = 15_288_238_080
+let ds41MXFP4PrefillHeadroomBytes = 14_438_891_520
 
-/// V4.1 fixed working set (MB) before the expert cache, mirroring the `fixed` term of
-/// `ds41_memory_admit_for_host` (ds4.c:65460): resident or streamed weights + one graph
+/// V4.1 fixed working set (bytes) before the expert cache, mirroring the `fixed` term of
+/// `ds41_memory_admit_for_host`: resident or streamed weights + one graph
 /// per resident session + ds4's fixed 2 GiB (+ the streaming prefill headroom).
-func v41FixedWiredMB(quant: Quant, ctx: Int, sessions: Int, streaming: Bool) -> Int {
+private func v41FixedWiredBytes(quant: Quant, ctx: Int, sessions: Int, streaming: Bool) -> Int? {
     guard let resident = quant.residentMainBytes, let graph = ds41GraphBytes(ctx: ctx) else {
-        return Int.max
+        return nil
     }
     let weights = streaming ? ds41NonRoutedBytes : resident
     let headroom =
         streaming
-        ? (quant == .q41Q4 ? ds41Q4PrefillHeadroomBytes : ds41Q2PrefillHeadroomBytes) : 0
+        ? (quant == .q41MXFP4 ? ds41MXFP4PrefillHeadroomBytes : ds41Q2PrefillHeadroomBytes) : 0
     let (graphSessions, graphOverflow) = graph.multipliedReportingOverflow(by: max(sessions, 1))
-    guard !graphOverflow else { return Int.max }
-    let (fixed, overflow) = weights.addingReportingOverflow(
-        graphSessions + 2 * 1024 * 1024 * 1024 + headroom)
-    guard !overflow, let mb = roundedUpMiB(fixed) else { return Int.max }
-    return mb
+    guard !graphOverflow else { return nil }
+    // The app disables vision, MTP and DSpark, so their admission terms are zero.
+    // ds4 auto-fits the expert cache after reserving this fixed set; counting the
+    // cache here would count its prefill headroom twice.
+    return checkedSum([weights, graphSessions, 2 * 1024 * 1024 * 1024, headroom])
 }
 
-/// ds4's V4.1 admission budget: `min(host × 7/8, recommended working set)` (ds4.c:65468).
+func v41FixedWiredMB(quant: Quant, ctx: Int, sessions: Int, streaming: Bool) -> Int {
+    guard
+        let bytes = v41FixedWiredBytes(
+            quant: quant, ctx: ctx, sessions: sessions, streaming: streaming)
+    else { return Int.max }
+    return roundedUpMiB(bytes) ?? Int.max
+}
+
+/// Admission requires fixed < budget, plus room for at least one routed expert
+/// when streaming. The two-layer prefill headroom above remains a separate reserve.
+private func v41AdmissionRequiredMB(quant: Quant, ctx: Int, sessions: Int, streaming: Bool) -> Int {
+    guard
+        let fixed = v41FixedWiredBytes(
+            quant: quant, ctx: ctx, sessions: sessions, streaming: streaming)
+    else { return Int.max }
+    let headroom = quant == .q41MXFP4 ? ds41MXFP4PrefillHeadroomBytes : ds41Q2PrefillHeadroomBytes
+    let minimumBudgetHeadroom = streaming ? headroom / (2 * DS41Shape.expert) : 1
+    guard let required = checkedSum([fixed, minimumBudgetHeadroom]) else { return Int.max }
+    return roundedUpMiB(required) ?? Int.max
+}
+
+/// ds4's V4.1 admission budget: `min(host × 7/8, recommended working set)`.
 func flash41BudgetMB(ramGiB: Double, wiredLimitMB: Int) -> Int {
     min(Int(ramGiB * 1024 * 7 / 8), wiredLimitMB)
 }
@@ -558,17 +579,17 @@ func flash41BudgetMB(ramGiB: Double, wiredLimitMB: Int) -> Int {
 func flash41UsesSSDStreaming(
     ramGiB: Double, wiredLimitMB: Int, quant: Quant, ctx: Int, sessions: Int
 ) -> Bool {
-    let resident = v41FixedWiredMB(quant: quant, ctx: ctx, sessions: sessions, streaming: false)
+    let resident = v41AdmissionRequiredMB(quant: quant, ctx: ctx, sessions: sessions, streaming: false)
     guard resident != Int.max else { return true }
     return resident > flash41BudgetMB(ramGiB: ramGiB, wiredLimitMB: wiredLimitMB)
 }
 
-/// Documented RAM floor per V4.1 quant (README tier table): 41-q2 runs from 96 GiB via SSD
-/// streaming — verified against the pinned ds4 admission with the real Q2 weights, which
-/// admits a 96 GiB host (3,638 cached experts at a 72 GiB Metal recommended set and 1M ctx)
-/// — and 41-q4 requires ≥ 256 GiB: below that it would have to stream essentially every
+/// Documented RAM floor per V4.1 quant (README tier table): 1017-q2 runs from 96 GiB via SSD
+/// streaming, verified against the pinned ds4 admission with real 1017 Q2 tensor headers
+/// at a 72 GiB Metal recommended set and 1M context. MXFP4 requires ≥ 256 GiB: below that
+/// it would have to stream essentially every
 /// routed expert, which the supported tiers do not offer.
-func flash41MinRamGiB(_ q: Flash41Quant) -> Double { q == .q4 ? 256 : 96 }
+func flash41MinRamGiB(_ q: Flash41Quant) -> Double { q == .mxfp4 ? 256 : 96 }
 
 /// Whether a V4.1 quant's default launch fits this machine. Drives which options the
 /// Settings quant picker offers; the RAM floor is the documented tier, then the launch's
@@ -578,9 +599,11 @@ func flash41QuantFits(_ q: Flash41Quant, ramGiB: Double, wiredLimitMB: Int) -> B
     let ctx = defaultCtx(ramGiB: ramGiB, selection: .flash41(q))
     let streaming = flash41UsesSSDStreaming(
         ramGiB: ramGiB, wiredLimitMB: wiredLimitMB, quant: q.quant, ctx: ctx, sessions: 1)
-    let required = v41FixedWiredMB(
+    let required = v41AdmissionRequiredMB(
         quant: q.quant, ctx: ctx, sessions: 1, streaming: streaming)
-    return required <= wiredLimitAdvisoryMB(ramGiB: ramGiB)
+    return required
+        <= flash41BudgetMB(
+            ramGiB: ramGiB, wiredLimitMB: wiredLimitAdvisoryMB(ramGiB: ramGiB))
 }
 
 /// The GPU-wired working set ds4 needs for this launch config (MB): exact resident
@@ -627,7 +650,7 @@ func requiredWiredMB(
         let streaming = flash41UsesSSDStreaming(
             ramGiB: ramGiB, wiredLimitMB: wiredLimitMB, quant: q.quant, ctx: ctx,
             sessions: sessions)
-        return v41FixedWiredMB(
+        return v41AdmissionRequiredMB(
             quant: q.quant, ctx: ctx, sessions: sessions, streaming: streaming)
     }
 }
@@ -665,19 +688,18 @@ func defaultFlashQuant(ramGiB: Double) -> FlashQuant {
     ramGiB >= 128 ? .q2q4 : .q2
 }
 
-/// Default V4.1 Flash quant: q4 on ≥512 GiB (full residency), else q2. Only used when
+/// Default V4.1 Flash quant: MXFP4 on ≥512 GiB (full residency), else q2. Only used when
 /// nothing is persisted yet.
 func defaultFlash41Quant(ramGiB: Double) -> Flash41Quant {
-    ramGiB >= 512 ? .q4 : .q2
+    ramGiB >= 512 ? .mxfp4 : .q2
 }
 
 /// Default context, tiered by model generation and machine memory. V4 Pro and ≥128 GiB
 /// Flash (q2-q4 quant) run the full 1M window all-resident; 96–127 GiB Flash (q2) is
-/// capped at 256K. V4.1 Flash defaults to the 1,048,576 ceiling when the machine holds that
-/// window fully resident (the auto `--ssd-streaming` heuristic says no streaming is needed
-/// at this RAM tier — 41-q2 from 256 GiB, 41-q4 from 384 GiB), else to upstream's documented
-/// 32,768 SSD-streaming configuration (docs/MODELS.md@bd66c40); both are adjustable from
-/// Settings.
+/// capped at 256K. V4.1 Flash evaluates full-window residency using the RAM-derived
+/// raised wired advisory: Q2 defaults to 1,048,576 from 256 GiB, MXFP4 from 384 GiB,
+/// otherwise 32,768 (docs/MODELS.md@a101246). Actual launch streaming also depends on
+/// the effective Metal wired limit; both contexts are adjustable from Settings.
 func defaultCtx(ramGiB: Double, selection: QuantSelection) -> Int {
     switch selection {
     case .pro: return Variant.pro.ctxCeiling
@@ -717,8 +739,8 @@ func feasibility(
     case .flash41:
         if case let .flash41(q) = selection, ramGiB < flash41MinRamGiB(q) {
             return .blocked(
-                reason: q == .q4
-                    ? "V4.1 Flash 41-q4 needs ≥ 256 GiB unified memory. Its 294 GiB of main weights would stream essentially every routed expert below that tier, which is not supported."
+                reason: q == .mxfp4
+                    ? "V4.1 Flash 1017 MXFP4 needs ≥ 256 GiB unified memory. Its 278 GiB of main weights would stream essentially every routed expert below that tier, which is not supported."
                     : "V4.1 Flash needs ≥ 96 GiB unified memory. Below that, even the SSD-streaming fixed set (non-routed weights, graph, and prefill headroom) plus a routed expert cannot be admitted."
             )
         }
@@ -732,8 +754,17 @@ func feasibility(
                 "This context and session count is too large to run on any Mac. Reduce context or concurrent sessions."
         )
     }
-    let usableMB = wiredLimitAdvisoryMB(ramGiB: ramGiB)
+    let usableMB =
+        variant == .flash41
+        ? flash41BudgetMB(ramGiB: ramGiB, wiredLimitMB: wiredLimitAdvisoryMB(ramGiB: ramGiB))
+        : wiredLimitAdvisoryMB(ramGiB: ramGiB)
     if required > usableMB {
+        if variant == .flash41 {
+            return .blocked(
+                reason:
+                    "This V4.1 Flash 1017 setup needs ~\(roundedUpGiB(fromMB: required)) GiB for its resident working set, above ds4's safe ~\(roundedUpGiB(fromMB: usableMB)) GiB budget on this Mac. Reduce context or concurrent sessions."
+            )
+        }
         return .blocked(
             reason:
                 "This setup needs ~\(roundedUpGiB(fromMB: required)) GiB unified memory, but this Mac has ~\(Int(ramGiB)) GiB and macOS needs ~\(Int(osReserveGiB)) GiB. Reduce context or concurrent sessions."

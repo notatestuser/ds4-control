@@ -4,7 +4,7 @@
 
 A macOS menu bar pane for **DeepSeek V4** and **V4.1** via [`dwarfstar`](https://github.com/antirez/ds4).
 
-It launches, supervises, and monitors a local ds4 server, lets you pick **V4.1 Flash**, **V4 Pro (0813)**, or **V4 Flash (0731)** with up to **1M** context, and shows resource use.
+It launches, supervises, and monitors a local ds4 server, lets you pick **V4.1 Flash 1017**, **V4 Pro (0813)**, or **V4 Flash (0731)** with up to **1M** context, and shows resource use.
 
 **Launch Pi, Claude Code or [BYOC](https://github.com/antirez/ds4/blob/main/docs/CLIENTS.md) (Bring Your Own CLI) for local agentic coding.**
 
@@ -75,10 +75,20 @@ DeepSeek V4 is memory-hungry so DS4 Control gates feasibility before launching.
 | Variant | Quant | RAM | Notes |
 | --- | --- | --- | --- |
 | V4 Pro (0813) | pro-imatrix | **≥ 512 GiB required** | Anything below is blocked. |
-| V4.1 Flash | 41-q2 | ≥ 96 GiB | 341 GiB on disk, ~152 GiB resident main weights + ~189 GiB disk-only Engram. SSD streaming engages automatically on 96–255 GiB (slow: nearly every routed expert streams from disk); full residency on ≥ 256 GiB. |
-| V4.1 Flash | 41-q4 | ≥ 256 GiB | 483 GiB on disk, ~294 GiB resident main weights. SSD streaming on 256–511 GiB; full residency on ≥ 512 GiB. |
+| V4.1 Flash 1017 | 1017-q2 | ≥ 96 GiB | 341 GiB on disk, ~152 GiB resident main weights + ~189 GiB disk-only Engram. SSD streaming engages automatically when the resident configuration does not fit (usually 96–255 GiB; slow: routed experts stream from disk). |
+| V4.1 Flash 1017 | 1017-mxfp4 | ≥ 256 GiB | 467 GiB on disk, ~278 GiB resident main weights + ~189 GiB disk-only Engram. Streams on lower tiers; fully resident when the context, sessions, and live Metal wired limit permit it. |
 | V4 Flash (0731) | q4-imatrix | ≥ 256 GiB | Standard. |
 | V4 Flash (0731) | q2-imatrix | 96 GiB minimum | 96–127 GiB requires raising the Metal wired limit (see in-app help). |
+
+V4.1 defaults to Q2 below 512 GiB and MXFP4 from 512 GiB. Its automatic context is 32,768 below the full-residency RAM tiers (Q2 below 256 GiB and MXFP4 below 384 GiB), and 1,048,576 at or above them. Whether a launch uses SSD streaming also depends on the live Metal wired limit. The launch gate accounts for each configured chat/agent session and ds4's host-memory budget, so the minimum tier alone does not guarantee every context/session combination fits. Engram stays on disk in both modes.
+
+## V4.1 Flash 1017 downloads and migration
+
+The 1017 recipes are pinned to [Hugging Face revision `9dcee516`](https://huggingface.co/antirez/deepseek-v4.1-flash-gguf/tree/9dcee51692e6540f697141fc98b097e3c96492a3): Q2 downloads one verified GGUF; MXFP4 downloads nine standard GGUF shards and assembles them natively into one file. The shards contain independent headers and tensor offsets, so they are parsed and rewritten rather than concatenated. Each shard is SHA-256 verified and removed only after its tensors and a durable assembly checkpoint are saved. Interrupted downloads and assembly resume after restart. MXFP4's incremental assembly needs about **562 GiB peak disk space plus 1 GiB headroom**; the finished file uses about 467 GiB. No Python installation is needed.
+
+An existing V4.1 Q2 choice stays Q2; the former V4.1 Q4 choice becomes 1017 MXFP4. Other model selections and server/chat preferences are preserved. Earlier V4.1 weights are never renamed or treated as 1017 downloads, and the new weights use separate, quant-specific KV cache directories.
+
+The popup detects obsolete V4.1 GGUFs, download sidecars, and the old `kv-flash-41` cache and offers a cleanup review while the server is stopped. A native confirmation lists the exact paths and estimated space before anything is deleted; Cancel is the default. **Not now** hides that banner, and **Settings → Downloads → Clean up old V4.1 data…** remains available. Current 1017 files and unrelated Hugging Face cache entries are kept. Failed deletions remain visible for retry.
 
 ## Performance
 
@@ -110,6 +120,18 @@ bash build.sh
 ```
 
 This builds a release binary and assembles `DS4 Control.app`.
+
+The bundled runtime is pinned to [antirez/ds4 `a1012463383a`](https://github.com/antirez/ds4/commit/a1012463383a09c6d11f8164218e0ee45e267acf). The app's V4.1 allocation/admission mirror is checked against that source. The manual memory harness can exercise either 1017 quant in streaming or resident mode; it is separate from the unit tests and does load the real weights:
+
+```sh
+# Q2 streaming frontier run on a 128 GiB host.
+DS41_LIMIT_GIB=128 scripts/flash41-mem-harness.sh "32768"
+# Short resident MXFP4 smoke run on a suitably sized host.
+DS41_QUANT=mxfp4 DS41_MODE=resident DS41_LIMIT_GIB=512 \
+  DS41_PROMPT_TOKENS=64 DS41_SKIP_CONTROL=1 scripts/flash41-mem-harness.sh "32768"
+```
+
+These commands are validation procedures, not a claim that this release has been tested with real 1017 weights on every memory tier. A short smoke prefill does not validate the frontier-memory peak.
 
 **First run:** open **Settings** (the gear in the popup) and set the **ds4 directory** — the folder that contains `ds4-server`.
 

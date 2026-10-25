@@ -45,6 +45,11 @@ final class AppState: ObservableObject {
     @Published var legacyStoragePromptDismissed: Bool {
         didSet { d.set(legacyStoragePromptDismissed, forKey: "legacyStoragePromptDismissed0813") }
     }
+    /// The 1017 checkpoint replaces both earlier V4.1 GGUF recipes and their KV cache.
+    /// Its dismissal is independent of the older Pro/Flash preview migration.
+    @Published var legacyFlash41StoragePromptDismissed: Bool {
+        didSet { d.set(legacyFlash41StoragePromptDismissed, forKey: "legacyFlash41StoragePromptDismissed1017") }
+    }
     @Published var selectedVariant: Variant {
         didSet { d.set(selectedVariant.rawValue, forKey: "selectedVariant") }
     }
@@ -53,7 +58,7 @@ final class AppState: ObservableObject {
     @Published var selectedFlashQuant: FlashQuant {
         didSet { d.set(selectedFlashQuant.rawValue, forKey: "selectedFlashQuant") }
     }
-    /// User-selected V4.1 Flash quant (default q2). Drives the V4.1 download/run filename.
+    /// User-selected 1017 V4.1 Flash quant. Drives the V4.1 download/run filename.
     @Published var selectedFlash41Quant: Flash41Quant {
         didSet { d.set(selectedFlash41Quant.rawValue, forKey: "selectedFlash41Quant") }
     }
@@ -109,14 +114,25 @@ final class AppState: ObservableObject {
             d.set(true, forKey: "quitBehaviorChosen")
         }
         legacyStoragePromptDismissed = d.bool(forKey: "legacyStoragePromptDismissed0813")
+        legacyFlash41StoragePromptDismissed = d.bool(forKey: "legacyFlash41StoragePromptDismissed1017")
         let stored = d.string(forKey: "selectedVariant").flatMap(Variant.init(rawValue:))
         // Default Pro on ≥512 GiB, V4.1 Flash on ≥96 GiB, V4 Flash (0731) below that.
         // Stored selections are never auto-migrated: an existing 0731 user keeps 0731.
         selectedVariant = stored ?? (ramGiB >= 512 ? .pro : ramGiB >= 96 ? .flash41 : .flash)
         let storedQuant = d.string(forKey: "selectedFlashQuant").flatMap(FlashQuant.init(rawValue:))
         selectedFlashQuant = storedQuant ?? defaultFlashQuant(ramGiB: ramGiB)  // default q2-q4-imatrix
-        let storedQuant41 = d.string(forKey: "selectedFlash41Quant").flatMap(Flash41Quant.init(rawValue:))
-        selectedFlash41Quant = storedQuant41 ?? defaultFlash41Quant(ramGiB: ramGiB)  // default q2
+        let storedQuant41 = d.string(forKey: "selectedFlash41Quant")
+        if storedQuant41 == "q4" {
+            // The previous Q4 recipe has been replaced by 1017 MXFP4. Persist the new key
+            // immediately so this conversion happens once, without changing the variant or
+            // any server/chat preference. Existing Q2 and 0731 selections stay intact.
+            selectedFlash41Quant = .mxfp4
+            d.set(Flash41Quant.mxfp4.rawValue, forKey: "selectedFlash41Quant")
+        } else {
+            selectedFlash41Quant =
+                storedQuant41.flatMap(Flash41Quant.init(rawValue:))
+                ?? defaultFlash41Quant(ramGiB: ramGiB)
+        }
     }
 
     func effectiveCtx(ramGiB: Double) -> Int {

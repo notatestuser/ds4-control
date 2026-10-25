@@ -99,6 +99,18 @@ final class AppStateTests: XCTestCase {
         XCTAssertTrue(AppState(defaults: defaults).legacyStoragePromptDismissed)
     }
 
+    func testFlash1017StorageDismissalIsIndependentAndPersists() {
+        let defaults = UserDefaults(suiteName: "test.\(UUID().uuidString)")!
+        defaults.set(true, forKey: "legacyWeightsPromptDismissed0731")
+        defaults.set(true, forKey: "legacyStoragePromptDismissed0813")
+        let app = AppState(defaults: defaults)
+        XCTAssertTrue(app.legacyStoragePromptDismissed)
+        XCTAssertFalse(app.legacyFlash41StoragePromptDismissed)
+        app.legacyFlash41StoragePromptDismissed = true
+        XCTAssertTrue(defaults.bool(forKey: "legacyFlash41StoragePromptDismissed1017"))
+        XCTAssertTrue(AppState(defaults: defaults).legacyFlash41StoragePromptDismissed)
+    }
+
     func testThinkingModeLabels() {
         XCTAssertEqual(ThinkingMode.allCases.map(\.label), ["Instant", "Standard", "Max Think"])
     }
@@ -201,8 +213,8 @@ final class AppStateTests: XCTestCase {
             defaults: UserDefaults(suiteName: "test.\(UUID().uuidString)")!, ramGiB: 128)
         XCTAssertEqual(app.selectedFlash41Quant, .q2)
         XCTAssertEqual(app.quantSelection, .flash41(.q2))
-        app.selectedFlash41Quant = .q4
-        XCTAssertEqual(app.quantSelection, .flash41(.q4))
+        app.selectedFlash41Quant = .mxfp4
+        XCTAssertEqual(app.quantSelection, .flash41(.mxfp4))
         app.selectedVariant = .flash
         XCTAssertEqual(app.quantSelection, .flash(app.selectedFlashQuant))
         app.selectedVariant = .pro
@@ -212,10 +224,59 @@ final class AppStateTests: XCTestCase {
     func testFlash41QuantSelectionPersists() {
         let name = "test.\(UUID().uuidString)"
         let a1 = AppState(defaults: UserDefaults(suiteName: name)!, ramGiB: 128)
-        a1.selectedFlash41Quant = .q4
+        a1.selectedFlash41Quant = .mxfp4
         XCTAssertEqual(
             AppState(defaults: UserDefaults(suiteName: name)!, ramGiB: 128).selectedFlash41Quant,
-            .q4)
+            .mxfp4)
+    }
+
+    func testFlash1017MigratesOldQ4OnceAndKeepsOtherPreferences() {
+        let defaults = UserDefaults(suiteName: "test.\(UUID().uuidString)")!
+        defaults.set("flash", forKey: "selectedVariant")
+        defaults.set(FlashQuant.q2q4.rawValue, forKey: "selectedFlashQuant")
+        defaults.set("q4", forKey: "selectedFlash41Quant")
+        defaults.set(9001, forKey: "port")
+        defaults.set("0.0.0.0", forKey: "host")
+        defaults.set(123_456, forKey: "ctxOverride")
+        defaults.set(61, forKey: "power")
+        defaults.set(3, forKey: "concurrentSessions")
+        defaults.set(false, forKey: "kvDiskCache")
+        defaults.set(ThinkingMode.max.rawValue, forKey: "thinkingMode")
+        defaults.set(true, forKey: "highPerformanceDownload")
+        defaults.set(true, forKey: "legacyStoragePromptDismissed0813")
+
+        let app = AppState(defaults: defaults, ramGiB: 512)
+        XCTAssertEqual(app.selectedFlash41Quant, .mxfp4)
+        XCTAssertEqual(defaults.string(forKey: "selectedFlash41Quant"), "mxfp4")
+        XCTAssertEqual(app.selectedVariant, .flash)
+        XCTAssertEqual(app.selectedFlashQuant, .q2q4)
+        XCTAssertEqual(app.port, 9001)
+        XCTAssertEqual(app.host, "0.0.0.0")
+        XCTAssertEqual(app.ctxOverride, 123_456)
+        XCTAssertEqual(app.power, 61)
+        XCTAssertEqual(app.concurrentSessions, 3)
+        XCTAssertFalse(app.kvDiskCache)
+        XCTAssertEqual(app.thinkingMode, .max)
+        XCTAssertTrue(app.highPerformanceDownload)
+        XCTAssertTrue(app.legacyStoragePromptDismissed)
+        XCTAssertFalse(app.legacyFlash41StoragePromptDismissed)
+
+        // A later deliberate selection must survive subsequent launches.
+        app.selectedFlash41Quant = .q2
+        XCTAssertEqual(AppState(defaults: defaults, ramGiB: 512).selectedFlash41Quant, .q2)
+        XCTAssertEqual(defaults.string(forKey: "selectedFlash41Quant"), "q2")
+    }
+
+    func testFlash1017KeepsStoredQ2AndDefaultsMXFP4OnlyFrom512GiB() {
+        let stored = UserDefaults(suiteName: "test.\(UUID().uuidString)")!
+        stored.set("q2", forKey: "selectedFlash41Quant")
+        XCTAssertEqual(AppState(defaults: stored, ramGiB: 512).selectedFlash41Quant, .q2)
+        for ram: Double in [96, 128, 256, 384] {
+            let defaults = UserDefaults(suiteName: "test.\(UUID().uuidString)")!
+            XCTAssertEqual(AppState(defaults: defaults, ramGiB: ram).selectedFlash41Quant, .q2)
+        }
+        let fresh = UserDefaults(suiteName: "test.\(UUID().uuidString)")!
+        XCTAssertEqual(AppState(defaults: fresh, ramGiB: 512).selectedFlash41Quant, .mxfp4)
     }
 
     func testFlash41MaxThinkNeedsNoCtxFloor() {

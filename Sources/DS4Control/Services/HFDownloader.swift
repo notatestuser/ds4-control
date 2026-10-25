@@ -54,6 +54,48 @@ final class HFDownloader: NSObject, @unchecked Sendable {
         super.init()
     }
 
+    /// A bounded prefix for planning GGUF shard assembly. Uses the same redirect and
+    /// strict closed-range validation as downloads, never buffering a full response.
+    func prefix(file: String, count: Int, expectedBytes: Int64, token: String?) async throws -> Data {
+        guard count > 0, count <= 128 * 1024 * 1024, Int64(count) <= expectedBytes else {
+            throw Failure.http(-3)
+        }
+        let temporary = FileManager.default.temporaryDirectory
+            .appendingPathComponent("ds4-header-\(UUID().uuidString)")
+        guard FileManager.default.createFile(atPath: temporary.path, contents: nil) else {
+            throw CocoaError(.fileWriteUnknown)
+        }
+        defer { try? FileManager.default.removeItem(at: temporary) }
+        let handle = try FileHandle(forUpdating: temporary)
+        defer { try? handle.close() }
+        let base = sessionConfiguration ?? URLSessionConfiguration.default
+        let config = (base.copy() as? URLSessionConfiguration) ?? base
+        config.timeoutIntervalForRequest = 60
+        config.waitsForConnectivity = false
+        let session = URLSession(configuration: config)
+        defer { session.invalidateAndCancel() }
+        let url = URL(string: "\(endpoint)/\(repo)/resolve/\(revision)/\(file)")!
+        for attempt in 0..<3 {
+            try Task.checkCancellation()
+            do {
+                try handle.truncate(atOffset: 0)
+                try handle.seek(toOffset: 0)
+                let total = try await ChunkFetcher(session: session).fetch(
+                    url: url, offset: 0, end: Int64(count - 1), token: token,
+                    fileHandle: handle, onBytes: { _ in })
+                guard total == expectedBytes else { throw Failure.http(-3) }
+                try handle.seek(toOffset: 0)
+                return try handle.readToEnd() ?? Data()
+            } catch is CancellationError {
+                throw CancellationError()
+            } catch {
+                if attempt == 2 { throw error }
+                try await Task.sleep(for: .seconds(Double(attempt + 1) * probeRetryBackoff))
+            }
+        }
+        throw Failure.incompleteAfterRetries
+    }
+
     /// Lock-guarded byte accumulator shared by every worker. Each worker reports its in-flight bytes
     /// into its own slot; `received` = durably-completed bytes + Σ in-flight, clamped to `total`.
     /// Methods return a coalesced `received` (≥ the ~8 MB step since the last report) to emit, or nil

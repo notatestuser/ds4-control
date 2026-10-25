@@ -6,6 +6,7 @@ struct SettingsView: View {
     private let ram = systemRamGiB()
     @State private var confirmingCleanup = false
     @State private var confirming41Cleanup = false
+    @State private var legacyFlash41CleanupError: String?
     /// Measured form height, used to size the window like the Metal wired-limit help pane —
     /// as tall as the form needs, but capped (with the screen) so the pane opens as a
     /// comfortable settings window rather than a full-height sheet; the ScrollView scrolls.
@@ -291,7 +292,7 @@ struct SettingsView: View {
                     }
                 }
                 .disabled(supervisor.state == .downloading)  // locked while a download is in progress
-                Picker("V4.1 Flash variant", selection: $app.selectedFlash41Quant) {
+                Picker("V4.1 Flash 1017 variant", selection: $app.selectedFlash41Quant) {
                     ForEach(Flash41Quant.allCases) { q in
                         Text(q.label + (supervisor.isFlash41QuantDownloaded(q) ? "  (downloaded)" : ""))
                             .tag(q)
@@ -326,6 +327,14 @@ struct SettingsView: View {
                     .disabled(flashCleanupQuants.isEmpty || isBusy)
                 Button("Clean up V4.1 downloads…") { confirming41Cleanup = true }
                     .disabled(removableFlash41CleanupQuants.isEmpty || isBusy)
+                Button("Clean up old V4.1 data…") {
+                    legacyFlash41CleanupError = Flash41LegacyCleanupPrompt.confirm(supervisor: supervisor, app: app)
+                }
+                .disabled(supervisor.legacyFlash41StorageURLs().isEmpty || !supervisor.canRemoveLegacyFlash41Storage)
+                if let error = legacyFlash41CleanupError {
+                    Text(error).font(.caption2).foregroundStyle(.red)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
             } header: {
                 Text("Downloads")
             } footer: {
@@ -390,7 +399,7 @@ struct SettingsView: View {
             ctx: app.effectiveCtx(ramGiB: ram),
             host: host, port: app.port, power: app.power,
             sessions: app.concurrentSessions,
-            kvDiskDir: app.kvDiskCache ? supervisor.kvDiskCacheURL(for: app.selectedVariant) : nil,
+            kvDiskDir: app.kvDiskCache ? supervisor.kvDiskCacheURL(for: app.quantSelection) : nil,
             overrideWiredLimitGate: overrideWiredLimitGate)
         if case let .rejected(feasibility) = result {
             RestartRejectionAlert.show(

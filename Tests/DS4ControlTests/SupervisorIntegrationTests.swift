@@ -23,7 +23,7 @@ private actor FetchProbe {
 @MainActor
 final class SupervisorIntegrationTests: XCTestCase {
     /// A fetch that never returns — keeps the download in flight without touching the network.
-    private static let pending: SupervisorService.FetchFile = { _, _, _, _, _, _ in
+    private static let pending: SupervisorService.FetchFile = { _, _, _, _, _, _, _ in
         try await Task.sleep(nanoseconds: 600_000_000_000)
     }
     /// Stub `ds4-server` + `download_model.sh` so `validateDs4Dir()` passes.
@@ -76,7 +76,7 @@ final class SupervisorIntegrationTests: XCTestCase {
         let dl = dir.appendingPathComponent("gguf/.cache/huggingface/download")
         try FileManager.default.createDirectory(at: dl, withIntermediateDirectories: true)
         try stubDs4(dir)
-        try Data(count: 5_000_000).write(to: dl.appendingPathComponent("h.incomplete"))
+        try Data(count: 5_000_000).write(to: dl.appendingPathComponent(Quant.proImatrix.ggufFilename + ".h.incomplete"))
         let s = SupervisorService(ds4Dir: dir, runner: RealProcessRunner(), fetchFile: Self.pending)
         s.resumeInFlightDownloadIfAny(selection: .pro)  // a partial exists → resumes
         XCTAssertEqual(s.state, .downloading)
@@ -282,7 +282,7 @@ final class SupervisorIntegrationTests: XCTestCase {
         try stubDs4(dir)
         let s = SupervisorService(
             ds4Dir: dir, runner: RealProcessRunner(),
-            fetchFile: { _, file, destDir, _, _, _ in
+            fetchFile: { _, _, file, destDir, _, _, _ in
                 // Sparse materialization at the published size so size verification passes.
                 let url = destDir.appendingPathComponent(file)
                 FileManager.default.createFile(atPath: url.path, contents: nil)
@@ -313,7 +313,7 @@ final class SupervisorIntegrationTests: XCTestCase {
         let total: Int64 = 100 * 1024 * 1024
         let s = SupervisorService(
             ds4Dir: dir, runner: RealProcessRunner(),
-            fetchFile: { _, _, _, _, _, onProgress in
+            fetchFile: { _, _, _, _, _, _, onProgress in
                 for step in 1...4 {
                     try Task.checkCancellation()
                     onProgress(Int64(step) * 25 * 1024 * 1024, total)
@@ -419,7 +419,7 @@ final class SupervisorIntegrationTests: XCTestCase {
         let q = Quant.for(.flash, flashQuant: .q2)
         let final = g.appendingPathComponent(q.ggufFilename)
         // Fetch "completes" (final renamed into place), then hangs — the verify window.
-        let fetch: SupervisorService.FetchFile = { _, filename, destDir, _, _, _ in
+        let fetch: SupervisorService.FetchFile = { _, _, filename, destDir, _, _, _ in
             try Data(count: 4).write(to: destDir.appendingPathComponent(filename))
             try await Task.sleep(nanoseconds: 600_000_000_000)
         }
@@ -457,7 +457,7 @@ final class SupervisorIntegrationTests: XCTestCase {
         let total = chunkSize * 8
         // Fake fetch: create the real partial in the destDir (2nd positional arg), report one progress
         // tick, then throw the retries-exhausted failure. No network.
-        let failing: SupervisorService.FetchFile = { _, _, destDir, _, _, onProgress in
+        let failing: SupervisorService.FetchFile = { _, _, _, destDir, _, _, onProgress in
             let part = destDir.appendingPathComponent(filename + ".part")
             FileManager.default.createFile(atPath: part.path, contents: nil)
             let bitmap = try ChunkBitmap.loadOrCreate(
@@ -657,7 +657,7 @@ final class SupervisorIntegrationTests: XCTestCase {
         let g = dir.appendingPathComponent("gguf")
         try FileManager.default.createDirectory(at: g, withIntermediateDirectories: true)
         let chunkSize: Int64 = 16 * 1024 * 1024
-        let part2 = Quant.q41Q4.downloadParts[1].filename
+        let part2 = Quant.q41MXFP4.downloadParts[1].filename
         try seedResumablePartial(
             part: g.appendingPathComponent(part2 + ".part"),
             total: chunkSize * 8, chunkSize: chunkSize, completeChunks: 2)
@@ -665,19 +665,24 @@ final class SupervisorIntegrationTests: XCTestCase {
         let s = SupervisorService(ds4Dir: dir, runner: RealProcessRunner())
 
         // Partial-only quant: stranded artifacts, durable bytes only.
-        XCTAssertTrue(s.hasFlash41PartialDownload(.q4))
-        XCTAssertEqual(s.flash41ArtifactURLs(.q4).count, 2)  // .part + .part.dl
-        XCTAssertEqual(s.flash41ArtifactBytes(.q4), 2 * chunkSize)
+        XCTAssertTrue(s.hasFlash41PartialDownload(.mxfp4))
+        XCTAssertEqual(s.flash41ArtifactURLs(.mxfp4).count, 2)  // .part + .part.dl
+        XCTAssertEqual(
+            s.flash41ArtifactBytes(.mxfp4),
+            s.flash41ArtifactURLs(.mxfp4).reduce(0) { $0 + GGUFShardDownload.allocatedBytes($1) })
         // Untouched quant: nothing to clean.
         XCTAssertFalse(s.hasFlash41PartialDownload(.q2))
         XCTAssertTrue(s.flash41ArtifactURLs(.q2).isEmpty)
         XCTAssertEqual(s.flash41ArtifactBytes(.q2), 0)
-        // Verified quant: the final file at its full on-disk size.
+        // A stale empty marker cannot certify even a new-generation filename.
         try Data(count: 4).write(to: g.appendingPathComponent(Quant.q41Q2.ggufFilename))
         try Data().write(to: g.appendingPathComponent(Quant.q41Q2.ggufFilename + ".verified"))
-        XCTAssertFalse(s.hasFlash41PartialDownload(.q2))
-        XCTAssertEqual(s.flash41ArtifactURLs(.q2).count, 1)
-        XCTAssertEqual(s.flash41ArtifactBytes(.q2), Int64(Quant.q41Q2.ggufBytes))
+        XCTAssertTrue(s.hasFlash41PartialDownload(.q2))
+        XCTAssertFalse(s.isDownloaded(.flash41(.q2)))
+        XCTAssertEqual(s.flash41ArtifactURLs(.q2).count, 2)
+        XCTAssertEqual(
+            s.flash41ArtifactBytes(.q2),
+            s.flash41ArtifactURLs(.q2).reduce(0) { $0 + GGUFShardDownload.allocatedBytes($1) })
     }
 
     /// A marker-write failure must fail the download rather than silently complete with an
@@ -721,15 +726,16 @@ final class SupervisorIntegrationTests: XCTestCase {
         defer { try? FileManager.default.removeItem(at: dir) }
         let g = dir.appendingPathComponent("gguf")
         try FileManager.default.createDirectory(at: g, withIntermediateDirectories: true)
-        let final = Quant.q41Q4.ggufFilename
+        let final = Quant.q41MXFP4.ggufFilename
         try Data(count: 4).write(to: g.appendingPathComponent(final))
 
         let s = SupervisorService(ds4Dir: dir, runner: RealProcessRunner())
 
-        XCTAssertFalse(s.isFlash41QuantDownloaded(.q4))
-        XCTAssertTrue(s.hasFlash41PartialDownload(.q4))
-        XCTAssertEqual(s.flash41ArtifactURLs(.q4).map(\.lastPathComponent), [final])
-        XCTAssertEqual(s.flash41ArtifactBytes(.q4), 4)
+        XCTAssertFalse(s.isFlash41QuantDownloaded(.mxfp4))
+        XCTAssertTrue(s.hasFlash41PartialDownload(.mxfp4))
+        XCTAssertEqual(s.flash41ArtifactURLs(.mxfp4).map(\.lastPathComponent), [final])
+        XCTAssertEqual(
+            s.flash41ArtifactBytes(.mxfp4), GGUFShardDownload.allocatedBytes(g.appendingPathComponent(final)))
         XCTAssertFalse(s.hasFlash41PartialDownload(.q2))
     }
 
@@ -775,17 +781,17 @@ final class SupervisorIntegrationTests: XCTestCase {
         let g = dir.appendingPathComponent("gguf")
         try FileManager.default.createDirectory(at: g, withIntermediateDirectories: true)
         try stubDs4(dir)
-        let final = g.appendingPathComponent(Quant.q41Q4.ggufFilename)
+        let final = g.appendingPathComponent(Quant.q41MXFP4.ggufFilename)
         FileManager.default.createFile(atPath: final.path, contents: nil)
         let handle = try FileHandle(forWritingTo: final)
-        try handle.truncate(atOffset: UInt64(Quant.q41Q4.ggufBytes))
+        try handle.truncate(atOffset: UInt64(Quant.q41MXFP4.ggufBytes))
         try handle.close()
 
         let probe = FetchProbe()
         let s = SupervisorService(
             ds4Dir: dir, runner: RealProcessRunner(),
-            fetchFile: { _, _, _, _, _, _ in await probe.bump() })
-        s.resumeInFlightDownloadIfAny(selection: .flash41(.q4))
+            fetchFile: { _, _, _, _, _, _, _ in await probe.bump() })
+        s.resumeInFlightDownloadIfAny(selection: .flash41(.mxfp4))
         XCTAssertEqual(s.state, .downloading)
         try await Task.sleep(nanoseconds: 300_000_000)  // let the task pick verify-vs-fetch
         let calls = await probe.calls
@@ -800,6 +806,26 @@ final class SupervisorIntegrationTests: XCTestCase {
             "a cancelled verification must publish no marker")
     }
 
+    func testFlash41CleanupHonorsOtherAssemblerLockAndKeepsLockInode() throws {
+        let dir = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let g = dir.appendingPathComponent("gguf")
+        try FileManager.default.createDirectory(at: g, withIntermediateDirectories: true)
+        let target = g.appendingPathComponent(Quant.q41MXFP4.ggufFilename)
+        let assembly = GGUFShardAssembler.assemblyURL(for: target)
+        try Data([1, 2, 3]).write(to: assembly)
+        let otherProcess = try GGUFShardAssembler.acquireLock(target: target)
+        let supervisor = SupervisorService(ds4Dir: dir, runner: RealProcessRunner())
+        XCTAssertTrue(supervisor.cleanupUnusedFlash41Quants(keep: .q2).isEmpty)
+        XCTAssertEqual(try Data(contentsOf: assembly), Data([1, 2, 3]))
+        XCTAssertTrue(FileManager.default.fileExists(atPath: GGUFShardAssembler.lockURL(for: target).path))
+        otherProcess.release()
+        XCTAssertTrue(supervisor.cleanupUnusedFlash41Quants(keep: .q2).contains(assembly.lastPathComponent))
+        XCTAssertFalse(FileManager.default.fileExists(atPath: assembly.path))
+        XCTAssertTrue(FileManager.default.fileExists(atPath: GGUFShardAssembler.lockURL(for: target).path))
+        XCTAssertFalse(supervisor.hasFlash41PartialDownload(.mxfp4), "empty lock is not model data")
+    }
+
     func testGenerationSpecificKVCachePaths() {
         let dir = URL(fileURLWithPath: NSTemporaryDirectory()).appendingPathComponent(UUID().uuidString)
         let s = SupervisorService(
@@ -809,9 +835,11 @@ final class SupervisorIntegrationTests: XCTestCase {
             s.kvDiskCacheURL(for: .pro).path,
             dir.appendingPathComponent("kv-pro-0813").path)
         XCTAssertEqual(
-            s.kvDiskCacheURL(for: .flash).path,
+            s.kvDiskCacheURL(for: .flash(.q2q4)).path,
             dir.appendingPathComponent("kv-flash-0731").path)
         XCTAssertNotEqual(s.kvDiskCacheURL(for: .pro).path, dir.appendingPathComponent("kv").path)
+        XCTAssertEqual(s.kvDiskCacheURL(for: .flash41(.q2)).lastPathComponent, "kv-flash-41-1017-q2")
+        XCTAssertEqual(s.kvDiskCacheURL(for: .flash41(.mxfp4)).lastPathComponent, "kv-flash-41-1017-mxfp4")
     }
 
     func testLegacyStorageDetectionBytesAndRemoval() throws {
@@ -825,7 +853,7 @@ final class SupervisorIntegrationTests: XCTestCase {
         try Data(count: 2).write(to: g.appendingPathComponent(names[3] + ".part.dl"))
         let hfIncompleteDir = g.appendingPathComponent(".cache/huggingface/download")
         try FileManager.default.createDirectory(at: hfIncompleteDir, withIntermediateDirectories: true)
-        try Data(count: 8).write(to: hfIncompleteDir.appendingPathComponent("h.incomplete"))
+        try Data(count: 8).write(to: hfIncompleteDir.appendingPathComponent(names[0] + ".h.incomplete"))
         let legacyCache = dir.appendingPathComponent("kv/nested")
         try FileManager.default.createDirectory(at: legacyCache, withIntermediateDirectories: true)
         try Data(count: 64).write(to: legacyCache.appendingPathComponent("checkpoint"))
@@ -844,7 +872,7 @@ final class SupervisorIntegrationTests: XCTestCase {
         let removed = s.removeLegacyStorage()
         XCTAssertEqual(
             Set(removed),
-            [names[0], names[1], names[3] + ".part", names[3] + ".part.dl", "h.incomplete", "kv"])
+            [names[0], names[1], names[3] + ".part", names[3] + ".part.dl", names[0] + ".h.incomplete", "kv"])
         XCTAssertEqual(s.legacyStorageBytes(), 0)
         XCTAssertEqual(s.ggufStoreVersion, before + 1)
         XCTAssertTrue(

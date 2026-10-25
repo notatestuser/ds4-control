@@ -29,6 +29,13 @@ enum ServerState: Equatable {
 }
 
 struct DownloadProgress: Equatable {
+    enum Phase: String, Sendable {
+        case preparing = "Preparing"
+        case downloading = "Downloading"
+        case verifying = "Verifying"
+        case assembling = "Assembling"
+    }
+    let phase: Phase
     let pct: Double
     let file: String
     let receivedBytes: Int64
@@ -36,7 +43,11 @@ struct DownloadProgress: Equatable {
     /// Human-readable transfer rate (e.g. "213MB/s"), or nil if unknown.
     let rate: String?
 
-    init(pct: Double, file: String, receivedBytes: Int64, totalBytes: Int64?, rate: String? = nil) {
+    init(
+        pct: Double, file: String, receivedBytes: Int64, totalBytes: Int64?, rate: String? = nil,
+        phase: Phase = .downloading
+    ) {
+        self.phase = phase
         self.pct = min(max(pct, 0), 100)
         self.file = file
         self.receivedBytes = receivedBytes

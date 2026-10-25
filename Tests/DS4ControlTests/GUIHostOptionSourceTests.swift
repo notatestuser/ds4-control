@@ -117,7 +117,7 @@ final class GUIHostOptionSourceTests: XCTestCase {
         let settings = try source("Sources/DS4Control/Views/SettingsView.swift")
 
         XCTAssertTrue(settings.contains("Picker(\"V4 Flash variant\", selection: $app.selectedFlashQuant)"))
-        XCTAssertTrue(settings.contains("Picker(\"V4.1 Flash variant\", selection: $app.selectedFlash41Quant)"))
+        XCTAssertTrue(settings.contains("Picker(\"V4.1 Flash 1017 variant\", selection: $app.selectedFlash41Quant)"))
         XCTAssertTrue(settings.contains("ForEach(Flash41Quant.allCases)"))
         XCTAssertTrue(settings.contains("flash41QuantFits("))
         XCTAssertTrue(settings.contains("supervisor.cleanupUnusedFlash41Quants(keep: app.selectedFlash41Quant)"))
@@ -135,7 +135,7 @@ final class GUIHostOptionSourceTests: XCTestCase {
         let flash = try XCTUnwrap(
             settings.range(of: "Picker(\"V4 Flash variant\", selection: $app.selectedFlashQuant)"))
         let flash41 = try XCTUnwrap(
-            settings.range(of: "Picker(\"V4.1 Flash variant\", selection: $app.selectedFlash41Quant)"))
+            settings.range(of: "Picker(\"V4.1 Flash 1017 variant\", selection: $app.selectedFlash41Quant)"))
         let apply = try XCTUnwrap(
             settings.range(of: #"Button("Apply & Restart Server") { restart() }"#))
         XCTAssertLessThan(kvCache.lowerBound, flash.lowerBound)
@@ -196,9 +196,12 @@ final class GUIHostOptionSourceTests: XCTestCase {
     func testMarkerPublicationIsGenerationGuarded() throws {
         let supervisor = try source("Sources/DS4Control/Services/SupervisorService.swift")
 
-        XCTAssertTrue(
-            supervisor.contains(
-                "try Data().write(to: ggufBaseDir().appendingPathComponent(filename + \".verified\"))"))
+        let completion = try XCTUnwrap(supervisor.range(of: "private func completeDownload"))
+        let guardPosition = try XCTUnwrap(
+            supervisor.range(of: "guard downloadGeneration == gen", range: completion.lowerBound..<supervisor.endIndex))
+        let marker = try XCTUnwrap(
+            supervisor.range(of: "Data((quant.sha256", range: completion.lowerBound..<supervisor.endIndex))
+        XCTAssertLessThan(guardPosition.lowerBound, marker.lowerBound)
         XCTAssertFalse(supervisor.contains("url.path + \".verified\""))
         XCTAssertFalse(supervisor.contains("target.path + \".verified\""))
     }

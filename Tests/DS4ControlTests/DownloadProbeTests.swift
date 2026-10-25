@@ -11,12 +11,14 @@ final class DownloadProbeTests: XCTestCase {
         XCTAssertEqual(formatRate(-5), "0 B/s")
     }
 
-    func testDownloadedBytesSumsIncomplete() throws {
+    func testDownloadedBytesOnlyCountsAssociatedIncomplete() throws {
         let dir = URL(fileURLWithPath: NSTemporaryDirectory()).appendingPathComponent(UUID().uuidString)
         let dl = dir.appendingPathComponent(".cache/huggingface/download")
         try FileManager.default.createDirectory(at: dl, withIntermediateDirectories: true)
-        try Data(count: 4096).write(to: dl.appendingPathComponent("abc123.incomplete"))
+        try Data(count: 4096).write(to: dl.appendingPathComponent("model.gguf.abc123.incomplete"))
+        try Data(count: 8192).write(to: dl.appendingPathComponent("unrelated.incomplete"))
         XCTAssertEqual(downloadedBytes(ggufDir: dir, filename: "model.gguf"), 4096)
+        XCTAssertEqual(downloadedBytes(ggufDir: dir, filename: "other.gguf"), 0)
     }
 
     func testDownloadedBytesPrefersFinalFile() throws {

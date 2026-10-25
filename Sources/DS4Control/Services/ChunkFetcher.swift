@@ -26,6 +26,8 @@ final class ChunkFetcher: NSObject, URLSessionDataDelegate, @unchecked Sendable 
     private var currentRange: String?
     /// `end - offset + 1`: how many bytes a correct 206 must deliver for this chunk.
     private var expectedLength: Int64 = 0
+    private var expectedOffset: Int64 = 0
+    private var expectedEnd: Int64 = 0
     /// Bytes actually written for this chunk — checked against `expectedLength` at completion.
     private var writtenThisChunk: Int64 = 0
     /// Total final-file size parsed from the first 206's `Content-Range: a-b/total`; -1 until seen.
@@ -54,6 +56,8 @@ final class ChunkFetcher: NSObject, URLSessionDataDelegate, @unchecked Sendable 
         self.handle = fileHandle
         self.onBytes = onBytes
         self.expectedLength = end - offset + 1
+        self.expectedOffset = offset
+        self.expectedEnd = end
         self.writtenThisChunk = 0
         self.total = -1
         self.cont = nil
@@ -108,17 +112,33 @@ final class ChunkFetcher: NSObject, URLSessionDataDelegate, @unchecked Sendable 
         // 429 (rate limited) / 503 (unavailable) are RETRYABLE — surface them as Failure.http so the
         // caller's retry loop backs off and re-fetches; any other non-2xx is a hard failure for this
         // chunk. Either way we cancel the task.
-        guard http.statusCode == 200 || http.statusCode == 206 else {
+        guard http.statusCode == 206 else {
             finish(.failure(HFDownloader.Failure.http(http.statusCode)))
             completionHandler(.cancel)
             return
         }
-        if total < 0 { total = Self.parseTotal(http, fallbackOffset: writtenThisChunk) }
+        // Reject a full-file response or a misdirected range before writing any bytes.
+        // In particular, a header probe must never stream a hundreds-of-GB GGUF.
+        let expectedPrefix = "bytes \(expectedOffset)-\(expectedEnd)/"
+        guard let range = http.value(forHTTPHeaderField: "Content-Range"),
+            range.hasPrefix(expectedPrefix),
+            let length = Int64(range.dropFirst(expectedPrefix.count)), length > expectedEnd
+        else {
+            finish(.failure(HFDownloader.Failure.http(-3)))
+            completionHandler(.cancel)
+            return
+        }
+        total = length
         completionHandler(.allow)
     }
 
     func urlSession(_ session: URLSession, dataTask: URLSessionDataTask, didReceive data: Data) {
         guard let handle else { return }
+        guard Int64(data.count) <= expectedLength - writtenThisChunk else {
+            dataTask.cancel()
+            finish(.failure(HFDownloader.Failure.http(-3)))
+            return
+        }
         do {
             try handle.write(contentsOf: data)
         } catch {
@@ -155,19 +175,4 @@ final class ChunkFetcher: NSObject, URLSessionDataDelegate, @unchecked Sendable 
         c.resume(with: result)
     }
 
-    /// Total file size from a 206's `Content-Range: bytes a-b/total`, else `Content-Length` plus the
-    /// request offset (a 200 full response), else -1. A tiny private copy — deliberately not coupled
-    /// to `HFDownloader`'s private parser.
-    private static func parseTotal(_ http: HTTPURLResponse, fallbackOffset: Int64) -> Int64 {
-        if let cr = http.value(forHTTPHeaderField: "Content-Range"),
-            let slash = cr.lastIndex(of: "/"),
-            let t = Int64(cr[cr.index(after: slash)...].trimmingCharacters(in: .whitespaces))
-        {
-            return t
-        }
-        if let len = http.value(forHTTPHeaderField: "Content-Length"), let l = Int64(len) {
-            return fallbackOffset + l
-        }
-        return -1
-    }
 }

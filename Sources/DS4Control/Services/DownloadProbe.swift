@@ -21,7 +21,9 @@ func downloadedBytes(ggufDir: URL, filename: String) -> Int64 {
         let items = try? FileManager.default.contentsOfDirectory(
             at: incompleteDir, includingPropertiesForKeys: [.fileSizeKey])
     else { return 0 }
-    return items.filter { $0.pathExtension == "incomplete" }.reduce(0) { $0 + fileSize($1) }
+    return items.filter {
+        $0.pathExtension == "incomplete" && $0.lastPathComponent.hasPrefix(filename + ".")
+    }.reduce(0) { $0 + fileSize($1) }
 }
 
 /// Durably-downloaded bytes recorded in the parallel downloader's `<filename>.part.dl` bitmap
@@ -52,14 +54,30 @@ func resumableBytes(ggufDir: URL, filename: String) -> Int64 {
 /// Aggregate downloaded bytes across a quant's transport files. The final (joined) file wins;
 /// otherwise parts count individually (a complete earlier part plus the current part's progress).
 func downloadedBytes(ggufDir: URL, quant: Quant) -> Int64 {
-    let finalSize = fileSize(ggufDir.appendingPathComponent(quant.ggufFilename))
-    if finalSize > 0 { return min(finalSize, Int64(quant.ggufBytes)) }
-    var total: Int64 = 0
-    for part in quant.downloadParts {
-        let done = downloadedBytes(ggufDir: ggufDir, filename: part.filename)
-        total += done > 0 ? min(done, part.bytes) : 0
+    let target = ggufDir.appendingPathComponent(quant.ggufFilename)
+    let finalSize = fileSize(target)
+    if finalSize > 0 { return min(finalSize, quant.downloadBytes) }
+    let completed: Int
+    if quant.assemblyFormat == .ggufShards, let sha = quant.sha256 {
+        completed = min(
+            quant.downloadParts.count,
+            GGUFShardAssembler.completedShardCount(target: target, expectedSHA256: sha))
+    } else {
+        completed = 0
     }
-    return min(total, Int64(quant.ggufBytes))
+    var total = quant.downloadParts.prefix(completed).reduce(Int64(0)) { $0 + $1.bytes }
+    for part in quant.downloadParts.dropFirst(completed) {
+        // Per-file native bookkeeping only: a shared HF cache directory must not
+        // be counted once for every shard.
+        let final = fileSize(ggufDir.appendingPathComponent(part.filename))
+        let sidecar = ggufDir.appendingPathComponent(part.filename + ".part.dl")
+        let partial =
+            FileManager.default.fileExists(atPath: sidecar.path)
+            ? resumableBytes(ggufDir: ggufDir, filename: part.filename)
+            : fileSize(ggufDir.appendingPathComponent(part.filename + ".part"))
+        total += min(max(final, partial), part.bytes)
+    }
+    return min(total, quant.downloadBytes)
 }
 
 /// True when a prior session left recoverable state for this quant: a partial part (bitmap or
@@ -67,7 +85,9 @@ func downloadedBytes(ggufDir: URL, quant: Quant) -> Int64 {
 /// The final file itself is the caller's business.
 func hasPartialDownload(ggufDir: URL, quant: Quant) -> Bool {
     let fm = FileManager.default
-    if fm.fileExists(atPath: ggufDir.appendingPathComponent(quant.ggufFilename + ".assembling").path) {
+    if [".assembling", ".assembling.json"].contains(where: {
+        fm.fileExists(atPath: ggufDir.appendingPathComponent(quant.ggufFilename + $0).path)
+    }) {
         return true
     }
     for part in quant.downloadParts {

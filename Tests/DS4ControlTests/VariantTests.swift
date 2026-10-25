@@ -77,66 +77,133 @@ final class VariantTests: XCTestCase {
         XCTAssertTrue(flashQuantFits(.q4, ramGiB: 185))
     }
     func testFlash41VariantIdentity() {
-        XCTAssertEqual(Variant.flash41.displayName, "V4.1 Flash")
+        XCTAssertEqual(Variant.flash41.displayName, "V4.1 1017")
         XCTAssertEqual(Variant.flash41.modelId, "deepseek-v4.1-flash")
-        XCTAssertEqual(Variant.flash41.kvCacheDirectoryName, "kv-flash-41")
+        XCTAssertEqual(Variant.flash41.kvCacheDirectoryName, "kv-flash-41-1017")
         XCTAssertEqual(Variant.flash41.layers, 40)
         XCTAssertEqual(Variant.flash41.ctxCeiling, 1_048_576)
         XCTAssertEqual(Variant(rawValue: "flash41"), .flash41)
-        XCTAssertEqual(Variant(rawValue: "flash"), .flash)  // 0731 raw value unchanged
+        XCTAssertEqual(Variant(rawValue: "flash"), .flash)
         XCTAssertEqual(Variant.flash.kvCacheDirectoryName, "kv-flash-0731")
     }
     func testQuantSelectionMapping() {
         XCTAssertEqual(Quant.for(.pro), .proImatrix)
         XCTAssertEqual(Quant.for(.flash(.q4)), .q4Imatrix)
         XCTAssertEqual(Quant.for(.flash41(.q2)), .q41Q2)
-        XCTAssertEqual(Quant.for(.flash41(.q4)), .q41Q4)
+        XCTAssertEqual(Quant.for(.flash41(.mxfp4)), .q41MXFP4)
         XCTAssertEqual(QuantSelection.pro.variant, .pro)
         XCTAssertEqual(QuantSelection.flash(.q2q4).variant, .flash)
         XCTAssertEqual(QuantSelection.flash41(.q2).variant, .flash41)
         XCTAssertEqual(QuantSelection.flash41(.q2).quant, .q41Q2)
     }
     func testFlash41QuantConstants() {
-        XCTAssertEqual(Quant.q41Q2.ggufFilename, "DeepSeek-V4.1-Flash-Q2.gguf")
-        XCTAssertEqual(Quant.q41Q4.ggufFilename, "DeepSeek-V4.1-Flash-Q4.gguf")
+        XCTAssertEqual(
+            Quant.q41Q2.ggufFilename, "DeepSeek-V4.1-Flash-1017-IQ2_XXS-Q2_K-imatrix.gguf")
+        XCTAssertEqual(
+            Quant.q41MXFP4.ggufFilename, "DeepSeek-V4.1-Flash-1017-MXFP4-experts.gguf")
+        XCTAssertEqual(Quant.q41Q2.arg, "ds41f-q2")
+        XCTAssertEqual(Quant.q41MXFP4.arg, "ds41f-mxfp4")
         XCTAssertEqual(Quant.q41Q2.repo, "antirez/deepseek-v4.1-flash-gguf")
         XCTAssertEqual(Quant.proImatrix.repo, "antirez/deepseek-v4-gguf")
         XCTAssertEqual(Quant.q41Q2.ggufBytes, 365_713_686_528)
-        XCTAssertEqual(Quant.q41Q4.ggufBytes, 518_596_067_328)
-        // Whole file minus the 202,778,032,400 B of disk-only Engram rows (ds4 munmaps them).
-        XCTAssertEqual(Quant.q41Q2.residentMainBytes, 162_935_654_128)
-        XCTAssertEqual(Quant.q41Q4.residentMainBytes, 315_818_034_928)
+        XCTAssertEqual(Quant.q41MXFP4.ggufBytes, 501_609_136_128)
+        // Real 1017 GGUF headers: the two disk-only tables contain these row counts,
+        // at 264 bytes per row. Main-weight estimates retain the final file's padding.
+        let engramBytes = (384_006_168 + 384_016_682) * 264
+        XCTAssertEqual(engramBytes, 202_758_032_400)
+        XCTAssertEqual(Quant.q41Q2.residentMainBytes, 162_955_654_128)
+        XCTAssertEqual(Quant.q41MXFP4.residentMainBytes, 298_851_103_728)
+        XCTAssertEqual(Quant.q41Q2.ggufBytes - engramBytes, Quant.q41Q2.residentMainBytes)
+        XCTAssertEqual(Quant.q41MXFP4.ggufBytes - engramBytes, Quant.q41MXFP4.residentMainBytes)
         XCTAssertNil(Quant.q2Imatrix.residentMainBytes)
         XCTAssertEqual(
             Quant.q41Q2.sha256,
-            "1ce6a8f8806205c13330d7ca287bd198331dc5ca35ccc5d8a9a92a188a6f6f42")
+            "5296e85ff64b42ecb62c8d0c0c54e1caa07e3df8e93112f2365ebbaed62ce93a")
         XCTAssertEqual(
-            Quant.q41Q4.sha256,
-            "a5e2e2c3ada4b2e98d9f9e4b50f6d9c2a12c2c96f5da165c07e13aff9264984e")
+            Quant.q41MXFP4.sha256,
+            "79608a69cd5bb919d8140c37105edc3a33419692d4e6caf4e68c901e4b359141")
         XCTAssertNil(Quant.proImatrix.sha256)
     }
-    func testFlash41Q4Parts() {
-        let parts = Quant.q41Q4.downloadParts
+    func testFlash41MXFP4ShardManifest() {
+        // Published LFS manifest at the immutable Hub revision below, cross-checked
+        // against ds4@a101246 download_model.sh. These are standard GGUF shards.
+        let parts = Quant.q41MXFP4.downloadParts
+        XCTAssertEqual(parts.count, 9)
         XCTAssertEqual(
             parts.map(\.filename),
-            ["DeepSeek-V4.1-Flash-Q4.gguf.part1", "DeepSeek-V4.1-Flash-Q4.gguf.part2"])
-        XCTAssertEqual(parts.map(\.bytes), [480_000_000_000, 38_596_067_328])
-        XCTAssertEqual(parts.reduce(0) { $0 + $1.bytes }, Int64(Quant.q41Q4.ggufBytes))
+            (1...9).map {
+                "DeepSeek-V4.1-Flash-1017-MXFP4-experts-0000\($0)-of-00009.gguf"
+            })
         XCTAssertEqual(
-            parts[0].sha256,
-            "6442b1f9224079662c02003c0ef9ef6be6e2aff509510f681dab9e6cc41df246")
+            parts.map(\.bytes),
+            [
+                49_353_784_544, 49_412_635_712, 49_582_960_352, 49_418_206_432,
+                49_412_829_632, 49_257_603_776, 2_406_482_112, 101_377_628_544,
+                101_380_404_256,
+            ])
         XCTAssertEqual(
-            parts[1].sha256,
-            "7c3e10646c918eeaffbc39305a75ec96117450262c61454ff194cef00d7617f0")
-        XCTAssertEqual(Quant.q41Q2.downloadParts.count, 1)  // single file
-        XCTAssertEqual(Quant.q41Q2.downloadParts[0].filename, Quant.q41Q2.ggufFilename)
-        XCTAssertEqual(Quant.q41Q2.downloadParts[0].bytes, Int64(Quant.q41Q2.ggufBytes))
+            parts.map(\.sha256),
+            [
+                "636918b09de6253bf41af29f06aac3ceeda220e46379d8a2058ef92c4e433ed8",
+                "b26d3fc1e6ae1be6c52665542f3c1fee6a33791478f26e6cd90b5a75940a9f96",
+                "20c7fe7adb0578336d8a5e5f9eed521aeb88e8c119ba46e0916cdaab28931c80",
+                "67592ba15870c4292a615666adcc2736b53cc345b2cccb1c36710a0a6caf15b4",
+                "ecd04e0aa71bfab8cfe79ea7fef7f35b6be0b6772455139e2081d6ce1dcc18ed",
+                "88214e0cc80fbae578b80c114527e6ce725199684e0b6849475c7d00b3d0f54c",
+                "38939faf3e4258f3ae333f0fa1954ce89515b75ceee90d37bf4ebe5fafe285e6",
+                "a9d1634da2ac57459a64b10b69ddedfadda7dcde0e71ca6e55bea7c293c4a9f0",
+                "b9832b355288c005da6ef444d02424464dd27f6ebdefeadbec2244264eb65285",
+            ])
+        XCTAssertEqual(Quant.q41MXFP4.assemblyFormat, .ggufShards)
+        XCTAssertEqual(Quant.q41MXFP4.downloadBytes, 501_602_535_360)
+        XCTAssertNotEqual(Quant.q41MXFP4.downloadBytes, Int64(Quant.q41MXFP4.ggufBytes))
+        XCTAssertEqual(
+            Quant.q41MXFP4.downloadRevision, "9dcee51692e6540f697141fc98b097e3c96492a3")
     }
-    func testFlash41QuantLabels() {
-        XCTAssertEqual(Flash41Quant.allCases, [.q2, .q4])  // smallest → largest (picker order)
+    func testSingleFileManifestsRetainTransportSize() {
+        for quant in [Quant.proImatrix, .q2Imatrix, .q2q4Imatrix, .q4Imatrix, .q41Q2] {
+            XCTAssertEqual(quant.assemblyFormat, .singleFile)
+            XCTAssertEqual(
+                quant.downloadParts,
+                [
+                    QuantPart(filename: quant.ggufFilename, bytes: Int64(quant.ggufBytes), sha256: quant.sha256)
+                ])
+            XCTAssertEqual(quant.downloadBytes, Int64(quant.ggufBytes))
+        }
+        XCTAssertEqual(Quant.proImatrix.downloadRevision, "main")
+        XCTAssertEqual(Quant.q2Imatrix.downloadRevision, "main")
+        XCTAssertEqual(Quant.q41Q2.downloadRevision, Quant.q41MXFP4.downloadRevision)
+    }
+    func testFlash41QuantLabelsAndPersistedValues() {
+        XCTAssertEqual(Flash41Quant.allCases, [.q2, .mxfp4])
         XCTAssertEqual(Flash41Quant.q2.quant, .q41Q2)
-        XCTAssertEqual(Flash41Quant.q4.quant, .q41Q4)
-        XCTAssertEqual(Flash41Quant.q2.label, "41-q2 · ~152 GiB (341 GiB on disk)")
-        XCTAssertEqual(Flash41Quant.q4.label, "41-q4 · ~294 GiB (483 GiB on disk)")
+        XCTAssertEqual(Flash41Quant.mxfp4.quant, .q41MXFP4)
+        XCTAssertEqual(Flash41Quant.q2.label, "1017-q2 · ~152 GiB (341 GiB on disk)")
+        XCTAssertEqual(Flash41Quant.mxfp4.label, "1017-mxfp4 · ~278 GiB (467 GiB on disk)")
+        XCTAssertEqual(Flash41Quant(rawValue: "q2"), .q2)
+        XCTAssertEqual(Flash41Quant(rawValue: "mxfp4"), .mxfp4)
+        XCTAssertNil(Flash41Quant(rawValue: "q4"))
+    }
+    func testFlash41CachesAreGenerationAndQuantSpecific() {
+        XCTAssertEqual(QuantSelection.flash41(.q2).kvCacheDirectoryName, "kv-flash-41-1017-q2")
+        XCTAssertEqual(QuantSelection.flash41(.mxfp4).kvCacheDirectoryName, "kv-flash-41-1017-mxfp4")
+        XCTAssertEqual(QuantSelection.pro.kvCacheDirectoryName, "kv-pro-0813")
+        for q in FlashQuant.allCases {
+            XCTAssertEqual(QuantSelection.flash(q).kvCacheDirectoryName, "kv-flash-0731")
+        }
+    }
+    func testLegacyFlash41FilenamesAreLimitedToPreviousGeneration() {
+        XCTAssertEqual(
+            Quant.legacyFlash41Filenames,
+            [
+                "DeepSeek-V4.1-Flash-Q2.gguf", "DeepSeek-V4.1-Flash-Q4.gguf",
+                "DeepSeek-V4.1-Flash-Q4.gguf.part1", "DeepSeek-V4.1-Flash-Q4.gguf.part2",
+            ])
+        for quant in [Quant.q41Q2, .q41MXFP4] {
+            XCTAssertFalse(Quant.legacyFlash41Filenames.contains(quant.ggufFilename))
+            for part in quant.downloadParts {
+                XCTAssertFalse(Quant.legacyFlash41Filenames.contains(part.filename))
+            }
+        }
     }
 }

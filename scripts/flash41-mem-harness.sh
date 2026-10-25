@@ -1,16 +1,23 @@
 #!/bin/sh
-# flash41-mem-harness.sh — measure V4.1 Flash (Q2) resident memory across context sizes on a
-# 96 GiB+ Mac (96 GiB is the app's lowest SSD-streaming tier for 41-q2). Spins up the REAL
-# ds4-server with --ssd-streaming, warms the model, prefills to
-# the configured context frontier, and records peak RSS plus ds4's own memory plan.
+# flash41-mem-harness.sh — measure V4.1 Flash 1017 (Q2 or MXFP4) resident memory across
+# context sizes. The app's lowest SSD-streaming tiers are 96 GiB for Q2 and 256 GiB for
+# MXFP4; fully resident runs need enough RAM for the main weights and graph. Spins up the
+# REAL ds4-server, warms the model, prefills to the configured context frontier, and records
+# peak RSS plus ds4's own memory plan. This is a manual validation tool, not CI evidence
+# that a real 1017 model has been loaded on every supported machine tier.
 #
 # The GGUF carries ~189 GiB of disk-only Engram tables that never become resident; only the
-# ~9.4 GiB of non-routed weights, the per-session graph, and the auto-fitted expert cache are.
+# ~9.4 GiB of non-routed weights, the per-session graph, and the auto-fitted expert cache
+# are resident in streaming mode; resident mode also loads all routed experts.
 # The harness cross-checks ds4's `ds4: memory:` line against the Feasibility mirror
 # (`ds41GraphBytes`, `ds41NonRoutedBytes`) that the app uses for its launch gate.
 #
 # Usage: scripts/flash41-mem-harness.sh ["ctx1 ctx2 …"]   (default: 32768 131072)
 # Env:   DS41_LIMIT_GIB  hard machine ceiling (default 128)
+#        DS41_QUANT      q2 (default) or mxfp4
+#        DS41_MODE       streaming (default) or resident
+#        DS41_PROMPT_TOKENS  optional short-prefill smoke override; default ctx minus 64
+#        DS41_SKIP_CONTROL  1 skips the extra no-disk-KV control run (default 0)
 #        DS41_INFERENCE_TIMEOUT_S  curl deadline for one inference request (default 900)
 # Exit non-zero if a run exceeds the ceiling or ds4's memory plan is missing.
 set -u
@@ -18,7 +25,23 @@ set -u
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 DS4="$ROOT/external/ds4"
 GGUF_DIR="${DS4_GGUF_DIR:-$HOME/Library/Application Support/DS4 Control/gguf}"
-Q2="$GGUF_DIR/DeepSeek-V4.1-Flash-Q2.gguf"
+QUANT=${DS41_QUANT:-q2}
+MODE=${DS41_MODE:-streaming}
+case "$QUANT" in
+  q2)
+    GGUF="$GGUF_DIR/DeepSeek-V4.1-Flash-1017-IQ2_XXS-Q2_K-imatrix.gguf"
+    RESIDENT_MAIN_BYTES=162955654128
+    ;;
+  mxfp4)
+    GGUF="$GGUF_DIR/DeepSeek-V4.1-Flash-1017-MXFP4-experts.gguf"
+    RESIDENT_MAIN_BYTES=298851103728
+    ;;
+  *) echo "DS41_QUANT must be q2 or mxfp4"; exit 2 ;;
+esac
+case "$MODE" in
+  streaming|resident) ;;
+  *) echo "DS41_MODE must be streaming or resident"; exit 2 ;;
+esac
 MODEL_ID="deepseek-v4.1-flash"
 PORT=8138
 LIMIT_GIB=${DS41_LIMIT_GIB:-128}   # hard machine ceiling
@@ -28,9 +51,15 @@ RSS_COMPARISON_TOLERANCE_MIB=64
 KVDISK="/tmp/ds41-memharness-kv"
 INFERENCE_TIMEOUT_S=${DS41_INFERENCE_TIMEOUT_S:-900}  # curl deadline for one inference request
 CTXS="${1:-32768 131072}"
+PROMPT_TOKENS=${DS41_PROMPT_TOKENS:-}
+SKIP_CONTROL=${DS41_SKIP_CONTROL:-0}
+case "$PROMPT_TOKENS" in
+  '') ;;
+  *[!0-9]*|0) echo "DS41_PROMPT_TOKENS must be a positive integer"; exit 2 ;;
+esac
 
 [ -x "$DS4/ds4-server" ] || { echo "ds4-server not built at $DS4"; exit 2; }
-[ -s "$Q2" ] || { echo "Q2 gguf missing: $Q2  (run: $DS4/download_model.sh ds41f-q2)"; exit 2; }
+[ -s "$GGUF" ] || { echo "1017 $QUANT GGUF missing: $GGUF (download it in DS4 Control first)"; exit 2; }
 
 # The LIMIT_GIB verdict rests on the OS-maintained lifetime peak (proc_pid_rusage →
 # ri_lifetime_max_phys_footprint): the kernel tracks the process maximum, which polling
@@ -95,18 +124,17 @@ run_one() {
   ctx="$1"; disk="$2"
   total_raw=""
   log="$(mktemp)"
+  set -- -m "$GGUF" --ctx "$ctx" --host 127.0.0.1 --port "$PORT" \
+    --metal --power 100 --warm-weights
+  if [ "$MODE" = streaming ]; then set -- "$@" --ssd-streaming; fi
   if [ "$disk" = 1 ]; then
     rm -rf "$KVDISK"; mkdir -p "$KVDISK"; label="disk-kv "
-    ( cd "$DS4" && unset DS4_METAL_MEMORY_REPORT DS4_METAL_DISABLE_STREAMING_EXPERT_TIMING_SUMMARY && \
-      exec ./ds4-server -m "$Q2" --ctx "$ctx" --host 127.0.0.1 --port "$PORT" \
-        --metal --power 100 --ssd-streaming --warm-weights \
-        --kv-disk-dir "$KVDISK" --kv-disk-space-mb 16384 ) >"$log" 2>&1 &
+    set -- "$@" --kv-disk-dir "$KVDISK" --kv-disk-space-mb 16384
   else
     label="no-disk "
-    ( cd "$DS4" && unset DS4_METAL_MEMORY_REPORT DS4_METAL_DISABLE_STREAMING_EXPERT_TIMING_SUMMARY && \
-      exec ./ds4-server -m "$Q2" --ctx "$ctx" --host 127.0.0.1 --port "$PORT" \
-        --metal --power 100 --ssd-streaming --warm-weights ) >"$log" 2>&1 &
   fi
+  ( cd "$DS4" && unset DS4_METAL_MEMORY_REPORT DS4_METAL_DISABLE_STREAMING_EXPERT_TIMING_SUMMARY && \
+    exec ./ds4-server "$@" ) >"$log" 2>&1 &
   pid=$!   # exec in the subshell => $! is ds4-server itself
   peak_rss=0
   sample_rss   # first reading at spawn, so the load/warm-up phase is never missed
@@ -128,9 +156,10 @@ run_one() {
     kill "$pid" 2>/dev/null; wait "$pid" 2>/dev/null; rm -f "$log"; sleep 2
     return 1
   fi
-  # Streaming must keep the disk-only Engram rows out of the resident model.
-  if awk "BEGIN{exit !($resident_gib > 20)}"; then
-    echo "ctx=$ctx $label: resident model ${resident_gib} GiB exceeds the ~9.4 GiB non-routed set"
+  # Both modes keep Engram on disk. Streaming's resident model is only the non-routed
+  # span; resident mode must match the selected 1017 GGUF minus its Engram tables.
+  if [ "$MODE" = streaming ] && awk "BEGIN{exit !($resident_gib > 20)}"; then
+    echo "ctx=$ctx $label: resident model ${resident_gib} GiB exceeds the ~9.4 GiB streaming non-routed set"
     kill "$pid" 2>/dev/null; wait "$pid" 2>/dev/null; rm -f "$log"; sleep 2
     return 1
   fi
@@ -138,9 +167,14 @@ run_one() {
   # mode the resident model must equal ds41NonRoutedBytes within the sampling tolerance.
   # ds41GraphBytes is ctx-dependent (a full Swift formula with its own pinned unit tests), so
   # the harness validates the constant here rather than re-deriving the graph in shell.
-  mirror_non_routed_gib="$(awk 'BEGIN{printf "%.2f", 10061367744/1073741824}')"
-  if awk "BEGIN{diff=$resident_gib-$mirror_non_routed_gib; if (diff<0) diff=-diff; exit !(diff > $RSS_COMPARISON_TOLERANCE_MIB/1024)}"; then
-    echo "ctx=$ctx $label: resident model ${resident_gib} GiB differs from the ds41NonRoutedBytes mirror (${mirror_non_routed_gib} GiB) by more than ${RSS_COMPARISON_TOLERANCE_MIB} MiB"
+  mirror_non_routed_gib="$(awk 'BEGIN{printf "%.2f", 10060841408/1073741824}')"
+  if [ "$MODE" = streaming ]; then
+    expected_resident_gib="$mirror_non_routed_gib"
+  else
+    expected_resident_gib="$(awk "BEGIN{printf \"%.2f\", $RESIDENT_MAIN_BYTES/1073741824}")"
+  fi
+  if awk "BEGIN{diff=$resident_gib-$expected_resident_gib; if (diff<0) diff=-diff; exit !(diff > $RSS_COMPARISON_TOLERANCE_MIB/1024)}"; then
+    echo "ctx=$ctx $label: resident model ${resident_gib} GiB differs from the $MODE Feasibility mirror (${expected_resident_gib} GiB) by more than ${RSS_COMPARISON_TOLERANCE_MIB} MiB"
     kill "$pid" 2>/dev/null; wait "$pid" 2>/dev/null; rm -f "$log"; sleep 2
     return 1
   fi
@@ -149,6 +183,9 @@ run_one() {
   # lazy Metal scratch reaches its real long-prompt peak. V4.1's tokenizer may split markers, so
   # the check only requires a frontier-scale prompt (≥ half the target).
   prompt_target=$((ctx - FRONTIER_MARGIN_TOKENS))
+  if [ -n "$PROMPT_TOKENS" ] && [ "$PROMPT_TOKENS" -lt "$prompt_target" ]; then
+    prompt_target="$PROMPT_TOKENS"
+  fi
   prompt_floor=$((prompt_target / 2))
   if [ "$prompt_target" -le 0 ]; then
     echo "ctx=$ctx $label: context must exceed $FRONTIER_MARGIN_TOKENS tokens"
@@ -216,14 +253,17 @@ run_one() {
   awk "BEGIN{exit !($total_raw<=$LIMIT_GIB)}"
 }
 
-echo "=== V4.1 Flash q2 resident-memory harness — limit ${LIMIT_GIB} GiB (usable ~${USABLE_GIB} GiB after OS) ==="
-echo "    model: $Q2 (--ssd-streaming --power 100)"
+echo "=== V4.1 Flash 1017 $QUANT $MODE memory harness — limit ${LIMIT_GIB} GiB (usable ~${USABLE_GIB} GiB after OS) ==="
+echo "    model: $GGUF (--power 100; mode=$MODE)"
+if [ -n "$PROMPT_TOKENS" ]; then echo "    smoke prefill override: $PROMPT_TOKENS markers (not a frontier-memory validation)"; fi
 last=""; for c in $CTXS; do last="$c"; done
 for ctx in $CTXS; do
   run_one "$ctx" 1 || fail=1          # disk-KV: the real default path (gated)
 done
-echo "  --- control (no disk KV) ---"
-run_one "$last" 0 || fail=1
+if [ "$SKIP_CONTROL" != 1 ]; then
+  echo "  --- control (no disk KV) ---"
+  run_one "$last" 0 || fail=1
+fi
 
 rm -rf "$KVDISK"
 if [ "$fail" = 0 ]; then

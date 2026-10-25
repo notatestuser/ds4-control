@@ -9,13 +9,18 @@ struct PopupView: View {
     private let ram = systemRamGiB()
     @State private var showStartHint = false
     @State private var showDownloadHint = false
+    @State private var legacyFlash41CleanupError: String?
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
             header
             Divider()
             ModelRowView(supervisor: supervisor, ramGiB: ram)
-            legacyStorageBanner
+            if showLegacyFlash41StorageBanner {
+                legacyFlash41StorageBanner
+            } else {
+                legacyStorageBanner
+            }
             if supervisor.state == .downloading, let d = supervisor.download {
                 ProgressView(value: d.pct, total: 100) {
                     HStack(spacing: 6) {
@@ -23,7 +28,8 @@ struct PopupView: View {
                         if supervisor.downloadProcessLive {
                             ProgressView().progressViewStyle(.circular).controlSize(.small)
                         }
-                        Text(d.file).font(.caption2).lineLimit(1).truncationMode(.middle)
+                        Text(d.phase.rawValue + " · " + d.file)
+                            .font(.caption2).lineLimit(1).truncationMode(.middle)
                     }
                 } currentValueLabel: {
                     Text(downloadStatusLabel(d)).font(.caption2)
@@ -257,6 +263,40 @@ struct PopupView: View {
         }
     }
 
+    private var showLegacyFlash41StorageBanner: Bool {
+        !app.legacyFlash41StoragePromptDismissed
+            && supervisor.canRemoveLegacyFlash41Storage
+            && !supervisor.legacyFlash41StorageURLs().isEmpty
+    }
+
+    @ViewBuilder private var legacyFlash41StorageBanner: some View {
+        if showLegacyFlash41StorageBanner {
+            HStack(alignment: .top, spacing: 6) {
+                Image(systemName: "externaldrive.badge.exclamationmark").foregroundStyle(.orange)
+                VStack(alignment: .leading, spacing: 4) {
+                    Text(
+                        "Old V4.1 Flash data found"
+                            + " (~\(supervisor.legacyFlash41StorageBytes() / 1_073_741_824) GiB). "
+                            + "Flash 1017 uses new weights and a separate KV cache."
+                    )
+                    .font(.caption2).foregroundStyle(.orange).fixedSize(horizontal: false, vertical: true)
+                    HStack(spacing: 12) {
+                        Button("Review cleanup…") {
+                            legacyFlash41CleanupError = Flash41LegacyCleanupPrompt.confirm(
+                                supervisor: supervisor, app: app)
+                        }
+                        Button("Not now") { app.legacyFlash41StoragePromptDismissed = true }
+                    }
+                    .font(.caption2)
+                    if let error = legacyFlash41CleanupError {
+                        Text(error).font(.caption2).foregroundStyle(.red)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
+                }
+            }
+        }
+    }
+
     private func errorMessage(_ e: ServerError) -> String {
         switch e {
         case let .ds4DirInvalid(missing): return "ds4 files not found — missing \(missing). Reinstall the app."
@@ -302,5 +342,71 @@ struct PopupView: View {
         case .stopping: return "Stopping"
         case .error: return "Error"
         }
+    }
+}
+
+/// Shared by the automatic migration banner and Settings. A native modal stays visible
+/// after the menu-bar popup resigns key; Cancel is the Return-key action. The exact path
+/// snapshot shown here is passed back to the supervisor after its process gate is rechecked.
+@MainActor
+enum Flash41LegacyCleanupPrompt {
+    static func confirm(
+        supervisor: SupervisorService, app: AppState,
+        presentConfirmation: (([URL], Int64) -> Bool)? = nil
+    ) -> String? {
+        guard supervisor.canRemoveLegacyFlash41Storage else {
+            return "Stop the server and any download before cleaning up old V4.1 data."
+        }
+        let confirmedURLs = supervisor.legacyFlash41StorageURLs()
+        guard !confirmedURLs.isEmpty else { return nil }
+        let bytes = Flash41LegacyStorage.totalBytes(for: confirmedURLs)
+        let confirmed =
+            presentConfirmation?(confirmedURLs, bytes)
+            ?? showNativeConfirmation(urls: confirmedURLs, bytes: bytes)
+        guard confirmed else { return nil }
+        do {
+            try supervisor.removeLegacyFlash41Storage(confirmedURLs: confirmedURLs)
+            app.legacyFlash41StoragePromptDismissed = supervisor.legacyFlash41StorageURLs().isEmpty
+            return nil
+        } catch {
+            // A partial failure must remain visible and retryable even if the banner was
+            // previously dismissed and this attempt came from Settings.
+            app.legacyFlash41StoragePromptDismissed = false
+            return error.localizedDescription
+        }
+    }
+
+    private static func showNativeConfirmation(urls: [URL], bytes: Int64) -> Bool {
+        let alert = NSAlert()
+        alert.messageText = "Delete old V4.1 Flash data?"
+        alert.informativeText =
+            "These \(urls.count) items use about "
+            + "\(bytes / 1_073_741_824) GiB. "
+            + "Flash 1017 downloads and other models are kept. Deletion cannot be undone."
+        alert.alertStyle = .warning
+        alert.addButton(withTitle: "Delete old data")
+        alert.addButton(withTitle: "Cancel")
+        alert.buttons[0].hasDestructiveAction = true
+        alert.buttons[0].keyEquivalent = ""
+        alert.buttons[1].keyEquivalent = "\r"
+        let scrollView = NSScrollView(frame: NSRect(x: 0, y: 0, width: 480, height: 150))
+        scrollView.hasVerticalScroller = true
+        scrollView.borderType = .lineBorder
+        let textView = NSTextView(frame: scrollView.bounds)
+        textView.isEditable = false
+        textView.isSelectable = true
+        textView.font = NSFont.monospacedSystemFont(ofSize: 11, weight: .regular)
+        textView.string = urls.map(\.path).joined(separator: "\n\n")
+        textView.isVerticallyResizable = true
+        textView.isHorizontallyResizable = false
+        textView.textContainer?.widthTracksTextView = true
+        textView.autoresizingMask = [.width]
+        scrollView.documentView = textView
+        alert.accessoryView = scrollView
+        WindowChrome.windowOpened(title: "ds4-flash41-1017-cleanup-confirmation")
+        NSApplication.shared.activate(ignoringOtherApps: true)
+        let response = alert.runModal()
+        WindowChrome.windowClosed()
+        return response == .alertFirstButtonReturn
     }
 }

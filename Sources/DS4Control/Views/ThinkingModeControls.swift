@@ -132,7 +132,7 @@ enum ThinkingModePrompt {
             ctx: thinkMaxMinCtx,
             host: app.normalizeHostForLaunch(), port: app.port, power: app.power,
             sessions: app.concurrentSessions,
-            kvDiskDir: app.kvDiskCache ? supervisor.kvDiskCacheURL(for: app.selectedVariant) : nil,
+            kvDiskDir: app.kvDiskCache ? supervisor.kvDiskCacheURL(for: app.quantSelection) : nil,
             overrideWiredLimitGate: overrideWiredLimitGate)
         if result == .accepted { app.applyMaxThinkCtxBump(ramGiB: ramGiB) }
         return result

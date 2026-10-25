@@ -4,7 +4,7 @@
 
 A macOS **menu-bar control pane** for **DeepSeek V4** running locally on Apple Silicon via
 [antirez/ds4](https://github.com/antirez/ds4). It launches, supervises, and monitors a local
-`ds4-server` child process; lets you pick **V4 Pro** (0813), **V4.1 Flash**, or **V4 Flash** (0731);
+`ds4-server` child process; lets you pick **V4 Pro** (0813), **V4.1 Flash 1017**, or **V4 Flash** (0731);
 downloads GGUF weights; shows live unified-memory / GPU / CPU / power widgets; provides a built-in
 chat; and can open a coding agent (pi or claude) in Terminal pointed at the local server.
 
@@ -13,27 +13,44 @@ supervises that process and surfaces system metrics + a chat/agent front end.
 
 ## DeepSeek V4 release maintenance
 
-The app pins the official Flash 0731, V4.1 Flash, and Pro 0813 GGUF generations. Pro 0813's Hub LFS
+The app pins the official Flash 0731, V4.1 Flash 1017, and Pro 0813 GGUF generations. Pro 0813's Hub LFS
 metadata reports exactly 464,627,334,560 bytes — the same byte size as the preview file but a
 different content hash — and this value is baked into `Quant.ggufBytes`. V4.1 Flash's exact totals,
 part sizes, and SHA-256 digests live in `Quant` (`ggufBytes`, `downloadParts`, `sha256`); its
-resident main-weight byte counts subtract the 202,778,032,400 B of disk-only Engram tables that
+resident main-weight byte counts subtract the 202,758,032,400 B of disk-only Engram tables that
 ds4 `munmap`s at load.
 
 `external/ds4` is the upstream [antirez/ds4](https://github.com/antirez/ds4) submodule, pinned to
-the V4.1-Flash-support commit `bd66c4020`. THINK_MAX is applied on top via
+commit `a1012463383a09c6d11f8164218e0ee45e267acf`. THINK_MAX is applied on top via
 `patches/ds4-think-max.patch` (`scripts/apply-ds4-patches.sh`) because upstream still emits the
 official 0731/0813 **high** prefix for `reasoning_effort: max` (antirez/ds4#635); it still applies
 at this pin and remains 0731/Pro-only (V4.1 uses numeric reasoning effort and is unaffected). The
 Metal context-allocation formula, shared graph workspace, per-session graph allocations, and
-persistent backend-scratch bounds were verified byte-identical for 0731/Pro between the previous
-pin (`c35cf38`) and `bd66c4020`, so the existing `Feasibility` path and memory tiers carry over.
+persistent backend-scratch bounds are rechecked against this revision before retaining the
+0731/Pro `Feasibility` path and memory tiers.
 V4.1 has its own estimator (`ds41_graph_bytes` / `ds41_memory_admit_for_host`), mirrored as
 `ds41GraphBytes` + `v41FixedWiredMB` in `Feasibility.swift`, with `ds41NonRoutedBytes` and the two
 `ds41Q*PrefillHeadroomBytes` constants derived from the quant recipe and verified against
-`external/ds4` source. The Q4 GGUF ships as two parts that are SHA-256 verified and joined in place
-(see `GGUFJoiner`); if a future ds4 bump changes any allocator or shape assumption, re-verify
-`Feasibility.swift` and the feasibility/variant/downloader tests before release.
+`external/ds4` source. The V4.1 graph header uses `sizeof(struct ds41_graph) == 51,192`, the exact
+non-routed tensor spans total 10,060,841,408 B, and admission enforces ds4's host 7/8 budget
+alongside the live wired limit. 1017 Q2 is one GGUF; MXFP4 has nine standard GGUF shards, pinned
+to Hub revision `9dcee51692e6540f697141fc98b097e3c96492a3`. The native assembler parses and
+rewrites their headers, metadata, and tensor offsets; never concatenate standard shards. A
+shard can be reclaimed only after its tensors and assembly checkpoint are durable. Resumable
+incremental assembly peaks around 562 GiB plus a 1 GiB margin and produces a 467 GiB file; no
+Python is needed. If a future ds4 bump changes any allocator or shape assumption, re-verify
+`Feasibility.swift` and the feasibility/variant/downloader/assembler tests before release.
+
+1017 Q2/MXFP4 keep the 96/256 GiB minimum tiers and use ~152/~278 GiB resident main weights,
+respectively (341/467 GiB on disk). New V4.1 preferences default to MXFP4 on ≥512 GiB and Q2
+below it; a stored `q4` becomes `mxfp4` once while a stored `q2` and every other preference are
+preserved. New disk-KV directories include the 1017 generation and quant. The old V4.1 Q2/Q4
+weights, exact associated sidecars/locks, and `kv-flash-41` are offered for cleanup behind a
+native confirmation listing paths/space with Cancel as default. The 1017 dismissal key is
+independent of previous migrations; Not now hides its banner but Settings retains cleanup.
+Delete only the confirmed snapshot while idle/error with no child/adopted process or download
+live, recheck immediately before deletion, refuse symlink escapes, and retain partial failures
+for retry. Never glob-delete unrelated HF incomplete files.
 
 When bumping ds4, re-read the GA files' exact byte sizes into `Quant.ggufBytes` (and part sizes /
 digests into `downloadParts`), verify the Metal context-allocation formulas against that ds4
@@ -71,10 +88,12 @@ disown
 
 - `scripts/flash-mem-harness.sh` — manual harness that boots the real Flash 0731 model at various
   context sizes and samples resident memory (NOT part of `swift test`; loads ~81 GB).
-- `scripts/flash41-mem-harness.sh` — the V4.1 equivalent: `--ssd-streaming --power 100` on a
-  96 GiB+ Mac (set `DS41_LIMIT_GIB` to the machine's RAM; default 128), cross-checks ds4's
-  `ds4: memory:` plan against the `Feasibility` mirror (loads a 341 GiB GGUF; Engram rows stay
-  on disk).
+- `scripts/flash41-mem-harness.sh` — the V4.1 1017 equivalent. Select `DS41_QUANT=q2|mxfp4`
+  and `DS41_MODE=streaming|resident` (defaults q2/streaming), always `--power 100`; set
+  `DS41_LIMIT_GIB` to the machine's RAM (default 128). Cross-checks ds4's `ds4: memory:` plan
+  against the `Feasibility` mirror; Engram stays on disk. Optional `DS41_PROMPT_TOKENS=64`
+  and `DS41_SKIP_CONTROL=1` provide a short smoke run, which does not validate the long-context
+  frontier. Unit/source tests do not constitute a real 1017 hardware validation.
 - CI: `.github/workflows/ci.yml` (build + test, bundles ds4), `release.yml` (tag-triggered
   Developer ID signed + notarized release).
 
@@ -86,7 +105,7 @@ Entry point `DS4ControlApp.swift` (`@main`) builds one `AppState`, one `Supervis
 | Area | Files | Role |
 |---|---|---|
 | State | `AppState.swift` | Persisted user prefs (port, ctxOverride, variant, flashQuant, flash41Quant, kvDiskCache, thinkingMode, concurrentSessions). Pattern: `@Published var X { didSet { d.set(X, forKey:) } }` + read-back in `init`. |
-| Supervisor | `Services/SupervisorService.swift`, `ProcessRunner.swift`, `ReadinessMatcher.swift`, `HFDownloader.swift`, `ChunkFetcher.swift`, `ChunkBitmap.swift`, `DownloadProbe.swift`, `GGUFJoiner.swift` | Spawns/monitors `ds4-server` (stderr readiness, health poll, graceful stop, crash detect); downloads GGUF weights with a native parallel chunked downloader (offset writes + an on-disk bitmap sidecar for resume-across-restarts); verifies SHA-256 and joins split parts (V4.1 Q4); owns the on-disk KV cache dir. |
+| Supervisor | `Services/SupervisorService.swift`, `ProcessRunner.swift`, `ReadinessMatcher.swift`, `HFDownloader.swift`, `ChunkFetcher.swift`, `ChunkBitmap.swift`, `DownloadProbe.swift`, `GGUFJoiner.swift`, `GGUFShardAssembler.swift`, `GGUFShardDownload.swift`, `Flash41LegacyStorage.swift` | Spawns/monitors `ds4-server` (stderr readiness, health poll, graceful stop, crash detect); downloads GGUF weights with a native parallel chunked downloader (offset writes + an on-disk bitmap sidecar for resume-across-restarts); verifies SHA-256, assembles standard 1017 MXFP4 shards natively, and owns the quant-specific disk-KV cache dirs; scopes legacy V4.1 cleanup to confirmed exact paths. |
 | Models | `Model/Variant.swift`, `Feasibility.swift`, `ServerState.swift` | `Variant` (pro/flash/flash41: layers, exact GGUF sizes, ctxCeiling, modelId, quants) and `QuantSelection` (resolved variant+quant). `Feasibility` mirrors the pinned ds4 Metal context allocator for the RAM/wired-limit gate, plus the separate V4.1 `ds41GraphBytes`/`v41FixedWiredMB` path; owns `defaultCtx`, `defaultFlashQuant`, `defaultFlash41Quant`, and the `thinkMax` threshold (393,216; 0731/Pro only). |
 | Metrics | `Metrics/*` | IOReport/IOKit sampling (memory/GPU/CPU/power) on a 2 s timer; `MetricsManager` + per-collector files + `SparklineView` history. |
 | Chat | `Services/ChatService.swift`, `ChatSSEParser.swift`, `ViewModels/ChatViewModel.swift`, `Views/ChatView.swift`, `MarkdownText.swift` | Streams `ds4-server` `/v1/chat/completions` (SSE). `content` → answer, `reasoning_content` → a collapsible "thinking" section. `MarkdownText` is a selectable NSTextView markdown renderer + light LaTeX cleanup. |

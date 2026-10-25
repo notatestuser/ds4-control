@@ -38,7 +38,8 @@ final class MemoryHarnessSourceTests: XCTestCase {
             contentsOf: repoRoot.appendingPathComponent("scripts/flash41-mem-harness.sh"),
             encoding: .utf8)
 
-        XCTAssertTrue(harness.contains("DeepSeek-V4.1-Flash-Q2.gguf"))
+        XCTAssertTrue(harness.contains("DeepSeek-V4.1-Flash-1017-IQ2_XXS-Q2_K-imatrix.gguf"))
+        XCTAssertTrue(harness.contains("DeepSeek-V4.1-Flash-1017-MXFP4-experts.gguf"))
         XCTAssertTrue(harness.contains("--ssd-streaming"))
         XCTAssertTrue(harness.contains("--power 100"))
         XCTAssertTrue(harness.contains("deepseek-v4.1-flash"))
@@ -121,7 +122,52 @@ final class MemoryHarnessSourceTests: XCTestCase {
             encoding: .utf8)
 
         XCTAssertTrue(harness.contains("ds41NonRoutedBytes"))
+        XCTAssertTrue(harness.contains("10060841408/1073741824"))
+        XCTAssertTrue(harness.contains("RESIDENT_MAIN_BYTES=162955654128"))
+        XCTAssertTrue(harness.contains("RESIDENT_MAIN_BYTES=298851103728"))
         XCTAssertTrue(harness.contains("RSS_COMPARISON_TOLERANCE_MIB/1024"))
+    }
+
+    func testV41HarnessSupportsBoth1017QuantsAndResidentSmokeRuns() throws {
+        let repoRoot = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
+        let harness = try String(
+            contentsOf: repoRoot.appendingPathComponent("scripts/flash41-mem-harness.sh"), encoding: .utf8)
+        XCTAssertTrue(harness.contains("QUANT=${DS41_QUANT:-q2}"))
+        XCTAssertTrue(harness.contains("MODE=${DS41_MODE:-streaming}"))
+        XCTAssertTrue(harness.contains("if [ \"$MODE\" = streaming ]; then set -- \"$@\" --ssd-streaming; fi"))
+        XCTAssertTrue(harness.contains("DS41_PROMPT_TOKENS"))
+        XCTAssertTrue(harness.contains("not a frontier-memory validation"))
+        XCTAssertTrue(harness.contains("SKIP_CONTROL=${DS41_SKIP_CONTROL:-0}"))
+        XCTAssertFalse(harness.contains("DeepSeek-V4.1-Flash-Q2.gguf"))
+        XCTAssertFalse(harness.contains("DeepSeek-V4.1-Flash-Q4.gguf"))
+    }
+
+    func testV41HarnessRejectsInvalidOptionsBeforeItCanLaunchARealModel() throws {
+        let repoRoot = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
+        let harness = repoRoot.appendingPathComponent("scripts/flash41-mem-harness.sh")
+        for (overrides, message) in [
+            (["DS41_QUANT": "q4", "DS41_MODE": "streaming"], "DS41_QUANT must be q2 or mxfp4"),
+            (["DS41_QUANT": "mxfp4", "DS41_MODE": "automatic"], "DS41_MODE must be streaming or resident"),
+            (
+                ["DS41_QUANT": "q2", "DS41_MODE": "resident", "DS41_PROMPT_TOKENS": "bad"],
+                "DS41_PROMPT_TOKENS must be a positive integer"
+            ),
+        ] {
+            let process = Process()
+            process.executableURL = URL(fileURLWithPath: "/bin/sh")
+            process.arguments = [harness.path]
+            process.environment = ProcessInfo.processInfo.environment.merging(overrides) { _, new in new }
+            let output = Pipe()
+            process.standardOutput = output
+            process.standardError = output
+            try process.run()
+            let data = output.fileHandleForReading.readDataToEndOfFile()
+            process.waitUntilExit()
+            XCTAssertEqual(process.terminationStatus, 2)
+            XCTAssertTrue(String(decoding: data, as: UTF8.self).contains(message))
+        }
     }
 
     /// The LIMIT_GIB verdict must rest on the OS-maintained lifetime peak

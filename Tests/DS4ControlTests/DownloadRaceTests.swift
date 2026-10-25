@@ -60,12 +60,17 @@ final class DownloadRaceTests: XCTestCase {
     }
 
     /// A fetch that never returns — the download stays in flight.
-    private let pending: SupervisorService.FetchFile = { _, _, _, _, _, _ in
+    private let pending: SupervisorService.FetchFile = { _, _, _, _, _, _, _ in
         try await Task.sleep(nanoseconds: 600_000_000_000)
     }
 
     func testDownloadEntersDownloadingAndShowsSpinner() throws {
-        let s = SupervisorService(ds4Dir: try makeDir(), runner: NoopRunner(), fetchFile: pending)
+        let s = SupervisorService(
+            ds4Dir: try makeDir(), runner: NoopRunner(), fetchFile: pending,
+            fetchPrefix: { _, _, _, _, _, _ in
+                try await Task.sleep(for: .seconds(600))
+                return Data()
+            })
         s.download(selection: .flash(.q2q4))
         XCTAssertEqual(s.state, .downloading)
         XCTAssertTrue(s.downloadProcessLive, "spinner should show while the download task is in flight")
@@ -76,7 +81,7 @@ final class DownloadRaceTests: XCTestCase {
     func testSuccessfulDownloadGoesIdle() async throws {
         let s = SupervisorService(
             ds4Dir: try makeDir(), runner: NoopRunner(),
-            fetchFile: { _, file, dir, _, _, _ in
+            fetchFile: { _, _, file, dir, _, _, _ in
                 // Sparse materialization at the published size so size verification passes.
                 let url = dir.appendingPathComponent(file)
                 FileManager.default.createFile(atPath: url.path, contents: nil)
@@ -94,7 +99,7 @@ final class DownloadRaceTests: XCTestCase {
     func testFailedDownloadGoesError() async throws {
         let s = SupervisorService(
             ds4Dir: try makeDir(), runner: NoopRunner(),
-            fetchFile: { _, _, _, _, _, _ in throw HFDownloader.Failure.http(503) })
+            fetchFile: { _, _, _, _, _, _, _ in throw HFDownloader.Failure.http(503) })
         s.download(selection: .flash(.q2q4))
         await until { if case .error = s.state { return true } else { return false } }
         guard case .error = s.state else { return XCTFail("expected .error, got \(s.state)") }
@@ -102,7 +107,12 @@ final class DownloadRaceTests: XCTestCase {
     }
 
     func testCancelDownloadReturnsToIdle() throws {
-        let s = SupervisorService(ds4Dir: try makeDir(), runner: NoopRunner(), fetchFile: pending)
+        let s = SupervisorService(
+            ds4Dir: try makeDir(), runner: NoopRunner(), fetchFile: pending,
+            fetchPrefix: { _, _, _, _, _, _ in
+                try await Task.sleep(for: .seconds(600))
+                return Data()
+            })
         s.download(selection: .flash(.q2q4))
         s.cancelDownload()
         XCTAssertEqual(s.state, .idle)
@@ -114,34 +124,43 @@ final class DownloadRaceTests: XCTestCase {
     /// can't clobber state — it's cancelled, and a stale completion is dropped by the generation
     /// guard).
     func testRetryStaysDownloading() throws {
-        let s = SupervisorService(ds4Dir: try makeDir(), runner: NoopRunner(), fetchFile: pending)
+        let s = SupervisorService(
+            ds4Dir: try makeDir(), runner: NoopRunner(), fetchFile: pending,
+            fetchPrefix: { _, _, _, _, _, _ in
+                try await Task.sleep(for: .seconds(600))
+                return Data()
+            })
         s.download(selection: .flash(.q2q4))
         s.retryDownload(selection: .flash(.q2q4))
         XCTAssertEqual(s.state, .downloading)
         s.cancelDownload()
     }
 
-    /// V4.1 Q4 is split: the bar starts on part 1, and cancel removes both parts' partial
-    /// sidecars but keeps a verified `.assembling` prefix for a later resume.
-    func testQ4DownloadStartsOnPart1AndCancelCleansSidecars() throws {
+    /// MXFP4 cancellation preserves both committed assembly and the current stage.
+    func testMXFP4CancelPreservesStagingAndAssembly() throws {
         let dir = try makeDir()
-        let s = SupervisorService(ds4Dir: dir, runner: NoopRunner(), fetchFile: pending)
-        s.download(selection: .flash41(.q4))
+        let s = SupervisorService(
+            ds4Dir: dir, runner: NoopRunner(), fetchFile: pending,
+            fetchPrefix: { _, _, _, _, _, _ in
+                try await Task.sleep(for: .seconds(600))
+                return Data()
+            })
+        s.download(selection: .flash41(.mxfp4))
         XCTAssertEqual(s.state, .downloading)
-        XCTAssertEqual(s.download?.file, Quant.q41Q4.downloadParts[0].filename)
+        XCTAssertEqual(s.download?.file, Quant.q41MXFP4.downloadParts[0].filename)
 
         let gguf = dir.appendingPathComponent("gguf")
-        let sidecars = Quant.q41Q4.downloadParts.map {
+        let sidecars = Quant.q41MXFP4.downloadParts.map {
             gguf.appendingPathComponent($0.filename + ".part.dl")
         }
         for sidecar in sidecars { FileManager.default.createFile(atPath: sidecar.path, contents: Data([1])) }
-        let assembling = gguf.appendingPathComponent(Quant.q41Q4.ggufFilename + ".assembling")
+        let assembling = gguf.appendingPathComponent(Quant.q41MXFP4.ggufFilename + ".assembling")
         FileManager.default.createFile(atPath: assembling.path, contents: Data([1]))
 
         s.cancelDownload()
         XCTAssertEqual(s.state, .idle)
         for sidecar in sidecars {
-            XCTAssertFalse(FileManager.default.fileExists(atPath: sidecar.path))
+            XCTAssertTrue(FileManager.default.fileExists(atPath: sidecar.path))
         }
         XCTAssertTrue(
             FileManager.default.fileExists(atPath: assembling.path),
@@ -154,7 +173,7 @@ final class DownloadRaceTests: XCTestCase {
         let dir = try makeDir()
         let s = SupervisorService(
             ds4Dir: dir, runner: NoopRunner(),
-            fetchFile: { _, file, destDir, _, _, _ in
+            fetchFile: { _, _, file, destDir, _, _, _ in
                 FileManager.default.createFile(
                     atPath: destDir.appendingPathComponent(file).path, contents: Data([0]))
             })
@@ -177,10 +196,15 @@ final class DownloadRaceTests: XCTestCase {
     func testCorruptPreexistingPartIsDiscarded() async throws {
         let dir = try makeDir()
         let part1 = dir.appendingPathComponent("gguf")
-            .appendingPathComponent(Quant.q41Q4.downloadParts[0].filename)
+            .appendingPathComponent(Quant.q41Q2.ggufFilename)
         FileManager.default.createFile(atPath: part1.path, contents: Data([1, 2, 3]))
-        let s = SupervisorService(ds4Dir: dir, runner: NoopRunner(), fetchFile: pending)
-        s.download(selection: .flash41(.q4))
+        let s = SupervisorService(
+            ds4Dir: dir, runner: NoopRunner(), fetchFile: pending,
+            fetchPrefix: { _, _, _, _, _, _ in
+                try await Task.sleep(for: .seconds(600))
+                return Data()
+            })
+        s.download(selection: .flash41(.q2))
         await until { if case .error = s.state { return true } else { return false } }
         guard case let .error(.downloadFailed(detail)) = s.state else {
             return XCTFail("expected .error(.downloadFailed), got \(s.state)")
@@ -188,34 +212,37 @@ final class DownloadRaceTests: XCTestCase {
         XCTAssertTrue(detail.contains("unexpected size"), "got: \(detail)")
         XCTAssertFalse(FileManager.default.fileExists(atPath: part1.path))
         XCTAssertFalse(
-            hasPartialDownload(ggufDir: dir.appendingPathComponent("gguf"), quant: .q41Q4),
+            hasPartialDownload(ggufDir: dir.appendingPathComponent("gguf"), quant: .q41Q2),
             "the discarded part must not count as resumable progress")
     }
 
-    /// A leftover `.assembling` file from an interrupted join resumes the download (the tail
-    /// is fetched; the verified 480 GiB prefix is never re-fetched).
+    /// An assembly triggers resume, but an unvalidated prefix does not skip any shard.
     func testResumePicksUpInterruptedJoin() throws {
         let dir = try makeDir()
         let assembling = dir.appendingPathComponent("gguf")
-            .appendingPathComponent(Quant.q41Q4.ggufFilename + ".assembling")
+            .appendingPathComponent(Quant.q41MXFP4.ggufFilename + ".assembling")
         FileManager.default.createFile(atPath: assembling.path, contents: Data([0]))
-        let s = SupervisorService(ds4Dir: dir, runner: NoopRunner(), fetchFile: pending)
-        s.resumeInFlightDownloadIfAny(selection: .flash41(.q4))
+        let s = SupervisorService(
+            ds4Dir: dir, runner: NoopRunner(), fetchFile: pending,
+            fetchPrefix: { _, _, _, _, _, _ in
+                try await Task.sleep(for: .seconds(600))
+                return Data()
+            })
+        s.resumeInFlightDownloadIfAny(selection: .flash41(.mxfp4))
         XCTAssertEqual(s.state, .downloading)
-        // The assembled prefix is complete, so the bar starts on the missing tail part.
-        XCTAssertEqual(s.download?.file, Quant.q41Q4.downloadParts[1].filename)
+        XCTAssertEqual(s.download?.file, Quant.q41MXFP4.downloadParts[0].filename)
         s.cancelDownload()
     }
 
     func testHasPartialDownloadSeesParts() throws {
         let dir = try makeDir()
         let gguf = dir.appendingPathComponent("gguf")
-        XCTAssertFalse(hasPartialDownload(ggufDir: gguf, quant: .q41Q4))
-        let part2 = gguf.appendingPathComponent(Quant.q41Q4.downloadParts[1].filename)
+        XCTAssertFalse(hasPartialDownload(ggufDir: gguf, quant: .q41MXFP4))
+        let part2 = gguf.appendingPathComponent(Quant.q41MXFP4.downloadParts[1].filename)
         FileManager.default.createFile(atPath: part2.path, contents: Data([1, 2, 3]))
-        XCTAssertTrue(hasPartialDownload(ggufDir: gguf, quant: .q41Q4))
+        XCTAssertTrue(hasPartialDownload(ggufDir: gguf, quant: .q41MXFP4))
         XCTAssertEqual(
-            downloadedBytes(ggufDir: gguf, quant: .q41Q4), 3,
+            downloadedBytes(ggufDir: gguf, quant: .q41MXFP4), 3,
             "a partial tail counts toward aggregate progress")
     }
 
@@ -298,11 +325,11 @@ private final class ContinuationBox: @unchecked Sendable {
 
     /// gen1 returns normally on resume; gen2+ suspend forever.
     var gen1ReturnsFetch: SupervisorService.FetchFile {
-        { _, _, _, _, _, _ in try await self.park(throwOnResume: false) }
+        { _, _, _, _, _, _, _ in try await self.park(throwOnResume: false) }
     }
     /// gen1 throws on resume; gen2+ suspend forever.
     var gen1ThrowsFetch: SupervisorService.FetchFile {
-        { _, _, _, _, _, _ in try await self.park(throwOnResume: true) }
+        { _, _, _, _, _, _, _ in try await self.park(throwOnResume: true) }
     }
 
     private func park(throwOnResume: Bool) async throws {
