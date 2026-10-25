@@ -18,6 +18,51 @@ private final class NoopRunner: ProcessRunner {
 /// cancel/return-to-idle.
 @MainActor
 final class DownloadRaceTests: XCTestCase {
+    func testAlreadyCompletedShardDrainClearsState() async throws {
+        let s = SupervisorService(ds4Dir: try makeDir(), runner: NoopRunner())
+        let task = Task<Void, Never> {}
+        await task.value
+
+        let waiter = s.trackShardDrain(task, generation: 1)
+        await waiter.value
+
+        XCTAssertNil(s.drainingShardGeneration)
+        XCTAssertTrue(s.canRemoveLegacyFlash41Storage)
+    }
+
+    func testPendingShardDrainKeepsStorageBlockedUntilCompletion() async throws {
+        let s = SupervisorService(ds4Dir: try makeDir(), runner: NoopRunner())
+        let gate = ShardDrainGate()
+        let task = Task { await gate.wait() }
+        let waiter = s.trackShardDrain(task, generation: 1)
+
+        XCTAssertEqual(s.drainingShardGeneration, 1)
+        XCTAssertFalse(s.canRemoveLegacyFlash41Storage)
+        await gate.release()
+        await waiter.value
+
+        XCTAssertNil(s.drainingShardGeneration)
+        XCTAssertTrue(s.canRemoveLegacyFlash41Storage)
+    }
+
+    func testOlderShardDrainWaiterPreservesNewerDrain() async throws {
+        let s = SupervisorService(ds4Dir: try makeDir(), runner: NoopRunner())
+        let older = ShardDrainGate()
+        let newer = ShardDrainGate()
+        let olderWaiter = s.trackShardDrain(Task { await older.wait() }, generation: 1)
+        let newerWaiter = s.trackShardDrain(Task { await newer.wait() }, generation: 2)
+
+        await older.release()
+        await olderWaiter.value
+        XCTAssertEqual(s.drainingShardGeneration, 2)
+        XCTAssertFalse(s.canRemoveLegacyFlash41Storage)
+
+        await newer.release()
+        await newerWaiter.value
+        XCTAssertNil(s.drainingShardGeneration)
+        XCTAssertTrue(s.canRemoveLegacyFlash41Storage)
+    }
+
     private func makeDir() throws -> URL {
         let dir = URL(fileURLWithPath: NSTemporaryDirectory()).appendingPathComponent(UUID().uuidString)
         try FileManager.default.createDirectory(
@@ -304,6 +349,22 @@ final class DownloadRaceTests: XCTestCase {
         XCTAssertTrue(s.downloadProcessLive, "gen2 is still in flight — the stale gen1 failure is dropped")
         XCTAssertEqual(s.download?.file, Quant.q2q4Imatrix.ggufFilename, "gen2's download remains the live one")
         s.cancelDownload()
+    }
+}
+
+private actor ShardDrainGate {
+    private var released = false
+    private var continuation: CheckedContinuation<Void, Never>?
+
+    func wait() async {
+        if released { return }
+        await withCheckedContinuation { continuation = $0 }
+    }
+
+    func release() {
+        released = true
+        continuation?.resume()
+        continuation = nil
     }
 }
 

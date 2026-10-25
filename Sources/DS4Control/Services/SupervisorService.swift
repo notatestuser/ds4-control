@@ -746,12 +746,6 @@ final class SupervisorService: ObservableObject {
         downloadTask?.cancel()
         let draining = drainingShardTask
         downloadTask = Task { [weak self] in
-            defer {
-                if self?.drainingShardGeneration == gen {
-                    self?.drainingShardGeneration = nil
-                    self?.drainingShardTask = nil
-                }
-            }
             // A cancelled assembler must finish its durable checkpoint before another
             // attempt touches the same paths. The process lock also excludes other apps.
             if let draining { await draining.value }
@@ -877,13 +871,25 @@ final class SupervisorService: ObservableObject {
         preexistingFinalOnDownloadStart = false
     }
 
+    /// Register cleanup independently of the download, which may have already finished.
+    @discardableResult
+    func trackShardDrain(_ task: Task<Void, Never>, generation gen: Int) -> Task<Void, Never> {
+        drainingShardTask = task
+        drainingShardGeneration = gen
+        return Task { [weak self] in
+            await task.value
+            guard let self, self.drainingShardGeneration == gen else { return }
+            self.drainingShardTask = nil
+            self.drainingShardGeneration = nil
+        }
+    }
+
     /// Cancel whatever download is in flight and start a fresh one — the user's escape hatch from a
     /// stuck/stalled or errored progress bar. The native downloader cancels through the cancelled
     /// task; `download` re-resumes from the on-disk bitmap.
     func retryDownload(selection: QuantSelection, highPerformance: Bool = false) {
-        if activeDownloadSelection?.quant.assemblyFormat == .ggufShards {
-            drainingShardTask = downloadTask
-            drainingShardGeneration = downloadGeneration
+        if activeDownloadSelection?.quant.assemblyFormat == .ggufShards, let task = downloadTask {
+            trackShardDrain(task, generation: downloadGeneration)
         }
         downloadTask?.cancel()
         downloadTask = nil
@@ -897,9 +903,8 @@ final class SupervisorService: ObservableObject {
     /// makes the cancelled task's completion callback stale, so it can't flip state to error.
     func cancelDownload() {
         guard state == .downloading else { return }
-        if activeDownloadSelection?.quant.assemblyFormat == .ggufShards {
-            drainingShardTask = downloadTask
-            drainingShardGeneration = downloadGeneration
+        if activeDownloadSelection?.quant.assemblyFormat == .ggufShards, let task = downloadTask {
+            trackShardDrain(task, generation: downloadGeneration)
         }
         downloadGeneration += 1
         downloadTask?.cancel()
